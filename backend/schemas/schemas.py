@@ -147,7 +147,7 @@ class DeviceResponse(BaseModel):
     hostname: Optional[str] = None
     ip_address: Optional[str] = None
     status: str
-    last_seen: datetime
+    last_seen: Optional[datetime] = None
     enrolled_at: Optional[datetime] = None
     registered_at: Optional[datetime] = None
     organization_id: Optional[str] = None
@@ -155,8 +155,8 @@ class DeviceResponse(BaseModel):
     device_metadata: Optional[str] = None
     os_type: Optional[str] = None
     agent_version: Optional[str] = None
-    files_scanned: int = 0
-    incidents_count: int = 0
+    files_scanned: Optional[int] = 0
+    incidents_count: Optional[int] = 0
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -231,7 +231,7 @@ class DeviceHeartbeatRequest(BaseModel):
 class DeviceHeartbeatResponse(BaseModel):
     status: str = "ok"
     device_id: str
-    last_seen: datetime
+    last_seen: Optional[datetime] = None
     policy_version: str = "1.0"
     ack_timestamp: datetime
 
