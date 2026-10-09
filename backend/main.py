@@ -83,7 +83,7 @@ cors_origins = (
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
-    allow_origin_regex=r"^https?:\/\/([a-zA-Z0-9_-]+\.)*(devtunnels\.ms|github\.dev|app\.github\.dev|loca\.lt|ngrok-free\.app|ngrok\.io|localhost)(:\d+)?$",
+    allow_origin_regex=r"^https?:\/\/([a-zA-Z0-9_-]+\.)*(devtunnels\.ms|github\.dev|app\.github\.dev|loca\.lt|ngrok-free\.app|ngrok\.io|vercel\.app|localhost)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
