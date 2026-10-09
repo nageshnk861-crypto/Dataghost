@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.DataGhost" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">#00d4ff</item>
+        <item name="colorPrimaryVariant">#0099cc</item>
+        <item name="colorOnPrimary">#0a0f1e</item>
+        <item name="colorSecondary">#34d058</item>
+        <item name="android:windowBackground">#0a0f1e</item>
+        <item name="android:statusBarColor">#0a0f1e</item>
+    </style>
+</resources>

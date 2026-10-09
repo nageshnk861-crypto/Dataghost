@@ -1,0 +1,38 @@
+{
+  "id": "FEAT-002",
+  "type": "feat",
+  "title": "Backend: Implement Secure Enrollment API Endpoints",
+  "description": "Create c:\\Users\\ARUN\\Desktop\\dataghost\\backend\\api\\enrollment_routes.py with 6 new endpoints for zero-touch device enrollment. All endpoints use Bearer token authentication or device tokens. Bootstrap endpoint is single-use (token consumed on first call, replay prevention). Attestation endpoint validates platform-provided cryptographic attestation. Complete endpoint transitions device from REGISTERING to ENROLLED state. All sensitive operations (token validation, device identity creation, policy assignment) happen server-side.",
+  "status": "completed",
+  "steps": [
+    "Create backend/api/enrollment_routes.py with APIRouter(prefix='/device-enrollment', tags=['enrollment']). Import hashlib, secrets, timedelta, HTTPException, status, Depends, Session, get_db, get_current_user, Device, DeviceProvisioning, DeviceIdentity, EnrollmentToken, EnrollmentState, User.",
+    "Implement POST /bootstrap endpoint: accepts bootstrap token (Bearer auth, consumed on use), device platform, model, OS version, serial number. Validates token exists, not yet used, not expired. Returns serverUrl, organizationId, enrollmentPolicy, deviceIdentityPublicKey (server generates and stores public key). Mark token as CONSUMED_BOOTSTRAP. Log action with device info (platform, model, serial).",
+    "Implement POST /attest endpoint: accepts deviceToken (issued during bootstrap), platform attestation data (JSON), device public key (PEM-encoded). Validates attestation signature matches platform (Android SafetyNet/Play Integrity, iOS DeviceCheck, Windows TPM attestation). Stores attestationData in DeviceIdentity. Returns attestationValid boolean. Refresh deviceToken for next step.",
+    "Implement POST /complete endpoint: accepts deviceToken, deviceId (user-supplied, validated format), platform, publicKey (PEM-encoded), enrollmentCode. Validates all fields match prior bootstrap/attest calls. Creates permanent Device record (or updates if exists and status=REGISTERING). Assigns unique DG-DEVICE-XXXXXXXX identifier. Stores public key fingerprint (SHA-256 of public key PEM). Updates EnrollmentState to ACTIVE. Return permanent deviceId, heartbeat interval (30 seconds default).",
+    "Implement GET /configuration endpoint: accepts deviceToken (Bearer auth). Returns { organizationId, policyId, dlpRules: [{}], serverUrl, heartbeatInterval, agentConfiguration }. Pulls from Device.organization_id and related policies. Allows device to discover its configuration after enrollment.",
+    "Implement GET /policy endpoint: accepts deviceToken. Returns { policyId, rules: [], configurations }. Returns full DLP policy rules for device to execute locally. Caches policy in-memory to avoid repeated DB queries on frequent heartbeats.",
+    "Add helper functions: _validate_attestation(platform, attestation_data, public_key) delegates to platform-specific validation (Android SafetyNet stub for now). _consume_token(token, db) marks token as used, returns enrollment record or raises 401. _generate_device_id(platform, db) generates unique DG-{platform}-{hex} identifier.",
+    "Add comprehensive logging for all enrollment steps: platform, device info, token consumption, attestation result, device ID assignment. No plaintext secrets in logs.",
+    "Mount enrollment_routes router in backend/api/router.py: router.include_router(enrollment_router) with prefix /v1 already in place from main.py."
+  ],
+  "acceptance_criteria": [
+    "POST /api/v1/device-enrollment/bootstrap accepts bearer token, returns encrypted configuration",
+    "Bootstrap token consumed on first call, second call with same token returns 401",
+    "POST /api/v1/device-enrollment/attest validates device attestation (stub implementation for now)",
+    "POST /api/v1/device-enrollment/complete creates Device record with DG-DEVICE-XXXXXXXX ID",
+    "Device enrollmentState transitions to ACTIVE after /complete",
+    "GET /configuration returns full device configuration including policies",
+    "GET /policy returns DLP rules device can execute locally",
+    "All endpoints require Bearer token authentication",
+    "No plaintext tokens or secrets in responses or logs"
+  ],
+  "verification": [
+    "Run: cd backend && pytest tests/test_enrollment.py -v",
+    "Test bootstrap endpoint: curl -H 'Authorization: Bearer <token>' http://localhost:8000/api/v1/device-enrollment/bootstrap -X POST",
+    "Verify token consumed: second call with same token returns 401",
+    "Test complete endpoint creates Device in DB",
+    "Swagger docs show all 6 endpoints: http://localhost:8000/docs"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

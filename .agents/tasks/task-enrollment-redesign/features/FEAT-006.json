@@ -1,0 +1,42 @@
+{
+  "id": "FEAT-006",
+  "type": "test",
+  "title": "Backend: Comprehensive Enrollment Tests and End-to-End Verification",
+  "description": "Add backend unit tests covering provisioning creation, single-use token enforcement, bootstrap/attest/complete enrollment flow, device identity assignment, policy download, and error cases. Add integration tests for full enrollment pipeline from QR code generation to device activation. Verify no broken existing functionality (regression). Test database migrations don't corrupt existing tables.",
+  "status": "completed",
+  "steps": [
+    "Create backend/tests/test_enrollment_provisioning.py: (1) Test POST /api/v1/device-provisioning/create with valid platform/org. Verify returns enrollment record with hashed bootstrap token (not plaintext). (2) Test token hashing: call create twice with same org, verify two different token hashes generated. (3) Test token expiry: set expiration to 1 minute, wait past expiry, verify token_expired flag. (4) Test revoke: POST /revoke endpoint sets status=REVOKED, subsequent bootstrap call rejects token. (5) Test platform validation: invalid platform name returns 400. (6) Test RBAC: non-admin user cannot create provisioning record (403). (7) Use existing test fixtures from conftest.py (admin_user, db).",
+    "Create backend/tests/test_enrollment_flow.py: (1) Test bootstrap endpoint: valid token returns config payload, marks token as consumed. (2) Test single-use: call bootstrap twice with same token, second call returns 401. (3) Test token consumption prevents other consumption types: after bootstrap, cannot call attest with same token. (4) Test complete endpoint: valid deviceToken creates Device record with DG-DEVICE-XXXX ID. (5) Verify Device.publicKeyFingerprint computed correctly (SHA-256 of PEM). (6) Verify Device.attestationStatus set to COMPLETE. (7) Test idempotency: calling complete twice with same deviceToken returns same device ID (no duplicate device). (8) Test configuration endpoint returns organization/policy data. (9) Test policy endpoint returns DLP rules.",
+    "Create backend/tests/test_enrollment_attestation.py: (1) Test invalid attestation data rejected. (2) Test missing attestation data allows fallback (attestationStatus=SKIPPED). (3) Test AndroidSafetyNet validation stub (mock for now). (4) Test iOS DeviceCheck stub. (5) Test Windows TPM stub.",
+    "Create backend/tests/test_enrollment_errors.py: (1) Test expired token rejected (401 + detail). (2) Test revoked token rejected. (3) Test invalid platform raises 400. (4) Test missing required fields raises 422. (5) Test malformed PEM public key rejected. (6) Test network timeout during config fetch doesn't block /complete. (7) Test concurrent enrollment with same token (race condition) - verify one succeeds, other gets 409 Conflict.",
+    "Create backend/tests/test_device_migrations.py: (1) Test database.init_db() creates new tables without error. (2) Test on fresh database: DeviceProvisioning, DeviceIdentity tables created. (3) Test on existing database with Device table: migration adds new columns (publicKeyFingerprint, attestationStatus, etc.) without dropping data. (4) Query existing Device records post-migration: should still be readable. (5) Test adding new columns idempotent: call init_db() twice, no errors.",
+    "Create backend/tests/test_device_identity.py: (1) Test DeviceIdentity created with unique deviceId (DG-DEVICE-XXXX format). (2) Test enrollmentCode unique per device. (3) Test publicKey stored in PEM format. (4) Test attestationData stored as JSON. (5) Query DeviceIdentity by deviceId, by enrollmentCode, verify indexes used.",
+    "Create backend/tests/test_enrollment_integration.py (end-to-end): (1) Setup: POST /create provisioning record, receive token. (2) Step 1: Call POST /bootstrap with token. Verify token consumed, returns config. (3) Step 2: Call POST /attest with attestation payload. Verify returns attestationValid=true. (4) Step 3: Call POST /complete with public key. Verify Device created with status=ACTIVE. (5) Verify device appears in GET /devices list. (6) Verify heartbeat endpoint works: POST /devices/{device_id}/heartbeat. (7) Verify policy download works: GET /policy returns rules. All in sequence without manual DB manipulation.",
+    "Add regression tests in backend/tests/test_device_routes_regression.py: (1) Existing POST /devices/enrollment/register endpoint still works (backward compatibility). (2) Existing GET /devices endpoint works. (3) Existing POST /devices/heartbeat endpoint works. (4) Existing device creation, status updates not broken by new models. (5) Use existing devices from fixture, verify still queryable.",
+    "Run full test suite: pytest backend/tests/ -v --cov=backend --cov-report=html. Target minimum 80% coverage for new enrollment code.",
+    "Add conftest.py fixtures if missing: mock admin_user, mock db session, mock enrolled device, mock provisioning record. Fixtures should be reusable across all test files."
+  ],
+  "acceptance_criteria": [
+    "backend/tests/test_enrollment_*.py files exist with comprehensive coverage",
+    "Unit tests for provisioning creation, token hashing, expiry",
+    "Unit tests for bootstrap/attest/complete flow",
+    "Single-use token enforcement verified (replay prevention)",
+    "Device idempotency verified (duplicate calls return same device)",
+    "Integration test covers full enrollment pipeline",
+    "Regression tests verify existing endpoints not broken",
+    "Database migrations tested and verified non-destructive",
+    "Test coverage >= 80% for new enrollment code",
+    "All tests pass: pytest backend/tests/ -v"
+  ],
+  "verification": [
+    "Run: cd backend && python -m pytest tests/test_enrollment_provisioning.py -v",
+    "Run: cd backend && python -m pytest tests/test_enrollment_flow.py -v",
+    "Run: cd backend && python -m pytest tests/test_enrollment_integration.py -v",
+    "Run: cd backend && python -m pytest tests/ -v --cov=backend (full suite)",
+    "Verify coverage: cd backend && python -m pytest tests/ --cov=backend --cov-report=html && open htmlcov/index.html",
+    "Verify no regressions: existing device tests still pass",
+    "Verify database migration: rm backend/dataghost.db && python -c 'from database import init_db; init_db()' (creates fresh DB with new tables)"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

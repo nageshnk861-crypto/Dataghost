@@ -1,0 +1,41 @@
+{
+  "id": "FEAT-005",
+  "type": "feat",
+  "title": "Frontend: Add Admin Device Management Pages",
+  "description": "Create three new admin dashboard pages under frontend/app/(app)/admin/ for device provisioning and management. (1) /admin/provisioning: Admin creates bulk device provisioning records, generates QR codes, tracks usage, revokes expired tokens. (2) /admin/devices: View all enrolled devices, filter by platform/status, reset/revoke device enrollment, download device manifest. (3) /admin/enrollment-policies: Create/edit enrollment policies per organization/platform, assign DLP rules, set compliance requirements. All pages use existing Next.js App Router, Tailwind CSS, and dg-card component patterns from current codebase.",
+  "status": "completed",
+  "steps": [
+    "Create frontend/app/(app)/admin/layout.tsx: Shared layout for all admin pages. Add TopBar component, Sidebar navigation with links to /admin/provisioning, /admin/devices, /admin/enrollment-policies. Show current user role (admin-only access). Add breadcrumb: Admin > [Page Name].",
+    "Create frontend/app/(app)/admin/provisioning/page.tsx: (1) Fetch list of provisioning records via GET /api/v1/device-provisioning?limit=50. (2) Display table: ID, Platform, Status, Device Count, Created At, Expires At, Last Used, Actions. (3) Filter by platform (dropdown: Windows|Linux|macOS|Android|iOS). (4) Filter by status (ACTIVE|REVOKED|EXPIRED). (5) 'Create New' button opens modal: select platform, organization, device count, expiration (days). (6) On create, POST /api/v1/device-provisioning/create, receive enrollmentCode and qr_data. (7) Display generated QR code (use qrcode.react library). (8) Copy enrollment code to clipboard. (9) Show 'Revoke' button for each active record. (10) Show expiration countdown timer. (11) Pagination: limit=50, offset. (12) Refresh button to reload list.",
+    "Create frontend/app/(app)/admin/devices/page.tsx: (1) Fetch list of enrolled devices via GET /api/v1/devices?limit=50. (2) Display table: Device ID, Name, Platform, Status, Last Seen, Enrolled At, Organization, Files Scanned, Recent Incidents, Actions. (3) Color-code status: ACTIVE=green, OFFLINE=gray, DISABLED=red. (4) Filter by platform, status, organization. (5) Search by device name/id (client-side filter). (6) Click row to open device detail drawer: device specs, IP, OS version, agent version, heartbeat interval, last 10 incidents. (7) 'Reset Enrollment' button: clears device auth tokens, forces re-enrollment next start. (8) 'Disable Device' button: sets status=DISABLED, device cannot authenticate. (9) 'View Incidents' button: navigate to /incidents?device_id=DG-DEVICE-XXXX. (10) 'Download Manifest' button: export device metadata as JSON/CSV. (11) Pagination and refresh.",
+    "Create frontend/app/(app)/admin/enrollment-policies/page.tsx: (1) Fetch list of enrollment policies via GET /api/v1/enrollment-policies?limit=50. (2) Display table: Policy ID, Name, Platform, Organization, DLP Rules Count, Created At, Status, Actions. (3) 'Create New' button opens modal: name, platform, organization, select DLP rules (multi-select from existing rules), set compliance level (LOW|MEDIUM|HIGH), require attestation (checkbox). (4) POST /api/v1/enrollment-policies/create with selected rules. (5) Click row to open policy detail drawer: full rule list, compliance settings, assigned devices count. (6) 'Edit' button opens modal to update policy (if not yet assigned to devices). (7) 'Delete' button (if no devices assigned). (8) 'Duplicate' button: copy policy with new name. (9) Pagination and refresh.",
+    "Extend frontend/lib/api.ts with new functions: (1) fetchProvisioningRecords(limit, offset, platform?, status?): GET /api/v1/device-provisioning. (2) createProvisioningRecord(platform, organizationId, deviceCount, expirationDays): POST /api/v1/device-provisioning/create. (3) revokeProvisioningRecord(recordId): POST /api/v1/device-provisioning/{recordId}/revoke. (4) fetchDevices(): already exists, no change. (5) resetDeviceEnrollment(deviceId): POST /api/v1/devices/{deviceId}/reset-enrollment. (6) disableDevice(deviceId): PATCH /api/v1/devices/{deviceId} {status: 'DISABLED'}. (7) fetchEnrollmentPolicies(limit, offset, platform?, org?): GET /api/v1/enrollment-policies. (8) createEnrollmentPolicy(name, platform, org, ruleIds, complianceLevel, requireAttestation): POST /api/v1/enrollment-policies/create. All functions add Bearer token via apiFetch.",
+    "Create shared admin components: (1) frontend/components/AdminHeader.tsx: displays current admin user, organization context. (2) frontend/components/AdminNav.tsx: sidebar with links to provisioning, devices, policies. (3) frontend/components/DeviceDetailDrawer.tsx: shows device specs in a slide-out panel. (4) frontend/components/ProvisioningModal.tsx: form to create new provisioning record. (5) frontend/components/PolicyModal.tsx: form to create/edit enrollment policy.",
+    "Add RBAC check to all admin pages: use get_current_user from auth context, check role='admin'. If not admin, show 403 Forbidden page. Use existing AuthError pattern from codebase.",
+    "Add TypeScript types in frontend/lib/api.ts: ProvisioningRecord, EnrollmentPolicy, DeviceResetRequest, PolicyCreateRequest, etc.",
+    "Add error handling and loading states: show loading spinner while fetching. Show error toast if API call fails. Add 'Retry' button on error. Auto-refresh data every 30 seconds (configurable)."
+  ],
+  "acceptance_criteria": [
+    "POST /api/v1/device-provisioning endpoint exists and returns provisioning record with QR data",
+    "Frontend /admin/provisioning page lists, creates, and revokes provisioning records",
+    "Frontend /admin/devices page lists enrolled devices with full details and reset/disable actions",
+    "Frontend /admin/enrollment-policies page lists, creates, and edits policies",
+    "QR code displays correctly in provisioning modal",
+    "Enrollment code copy-to-clipboard works",
+    "Device detail drawer shows all specs including IP, agent version, recent incidents",
+    "RBAC enforced: non-admin users cannot access /admin pages",
+    "All pages handle API errors gracefully with toast/retry",
+    "Pagination and filtering work correctly"
+  ],
+  "verification": [
+    "Run: cd frontend && npm run build",
+    "Run: cd frontend && npm run test (if tests written)",
+    "Manual test: Login as admin, navigate to /admin/provisioning, create new provisioning record, verify QR generated",
+    "Manual test: Navigate to /admin/devices, verify device list loads, click device to open detail drawer",
+    "Manual test: Navigate to /admin/enrollment-policies, create new policy with DLP rules",
+    "Manual test: Login as non-admin user, try to access /admin/provisioning, verify 403 error",
+    "Inspect network: verify all API calls use correct endpoints (/api/v1/...) and include Bearer token"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

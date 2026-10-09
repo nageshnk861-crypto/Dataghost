@@ -1,0 +1,53 @@
+DataGhost – Fix Summary
+=======================
+
+Finding fixed
+-------------
+ThreatFeed schema mismatch (review.json finding #1).
+
+What was wrong
+--------------
+backend/schemas/schemas.py defined ThreatItem with only three fields:
+  { label: str, score: int, severity: str }
+
+backend/api/dashboard_routes.py populated ThreatItem using only those
+three fields.
+
+frontend/components/ThreatFeed.tsx expected seven fields:
+  { incident_id, filename, risk_score, severity, user, timestamp, action_taken }
+
+When the backend was live the feed received objects whose keys did not
+match, so filename, user, risk_score, timestamp, and action_taken all
+resolved to undefined. Because the array was non-empty the mock-data
+guard was bypassed, producing a broken live feed.
+
+Files changed
+-------------
+1. backend/schemas/schemas.py
+   - Added six new optional fields to ThreatItem:
+       incident_id: str = ""
+       filename:    str = ""
+       risk_score:  int = 0
+       user:        str = ""
+       timestamp:   str = ""
+       action_taken: str = ""
+   - Original label/score fields kept for backward compatibility.
+
+2. backend/api/dashboard_routes.py
+   - Updated the ThreatItem(...) constructor in dashboard_stats() to
+     populate all six new fields from the Incident ORM row:
+       incident_id  <- inc.incident_id
+       filename     <- inc.filename or inc.incident_id
+       risk_score   <- inc.risk_score
+       user         <- inc.user or "unknown"
+       timestamp    <- inc.timestamp.isoformat()
+       action_taken <- inc.action_taken
+
+No frontend files were changed. The frontend ThreatFeed.tsx already
+had the correct interface definition.
+
+Verification
+------------
+- python -m py_compile passed on both changed Python files (exit 0).
+- npm run build in frontend/ completed with exit 0, all 15 pages
+  generated successfully.

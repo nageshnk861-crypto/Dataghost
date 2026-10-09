@@ -1,0 +1,32 @@
+{
+  "id": "FEAT-003",
+  "type": "fix",
+  "title": "Android: Fix NullPointerException Crashes and Unsafe Casts",
+  "description": "Fix critical Android NPE crashes in EnrollmentActivity, AdminPolicyComplianceActivity, DataGhostDeviceAdminReceiver, and EnrollmentManager. Root causes: (1) UI element references accessed without null checks in EnrollmentActivity. (2) Unsafe applicationContext casts ((context.applicationContext as? DataGhostApp)?.method()) called without null checks. (3) API response fields accessed without null safety. Apply safe null-coalescing operators (?.), safe casts (?as), and explicit null checks before calling optional methods.",
+  "status": "completed",
+  "steps": [
+    "Fix mobile/android/app/src/main/java/com/dataghost/agent/ui/EnrollmentActivity.kt: (1) After createEnrollmentLayout() or in onCreate, validate all UI element references exist (serverUrlInput, codeInput, enrollButton, statusText). (2) Wrap all UI.text accesses with ?. operator (e.g., serverUrlInput?.text?.toString() ?: ''). (3) Add null checks before calling setStatus(msg) on statusText. (4) In onSuccess callback for enrollment, call (applicationContext as? DataGhostApp)?.startHeartbeatAfterEnrollment() but add explicit null check: val app = applicationContext as? DataGhostApp; app?.startHeartbeatAfterEnrollment() ?: Unit.",
+    "Fix mobile/android/app/src/main/java/com/dataghost/agent/enrollment/AdminPolicyComplianceActivity.kt: (1) In the background CoroutineScope where registerDevice() is called, wrap applicationContext cast: val app = applicationContext as? DataGhostApp; if (app != null) app.startHeartbeatAfterEnrollment() else Log.w(TAG, 'App instance not available'). (2) Check manager result and response fields exist before accessing response.deviceId.",
+    "Fix mobile/android/app/src/main/java/com/dataghost/agent/enrollment/DataGhostDeviceAdminReceiver.kt line 168: Replace (context.applicationContext as? DataGhostApp)?.startHeartbeatAfterEnrollment() with explicit null check: val app = context.applicationContext as? DataGhostApp; if (app != null) { app.startHeartbeatAfterEnrollment() } else { Log.e(TAG, 'Failed to initialize heartbeat: DataGhostApp not available') }.",
+    "Fix mobile/android/app/src/main/java/com/dataghost/agent/enrollment/EnrollmentManager.kt: In registerDevice() Result callback, validate all response fields before use: response.deviceId?.let { id -> /* use id */ } ?: run { Log.e(...); throw NullPointerException(...) }. Check response.authToken, response.serverUrl, response.heartbeatIntervalSeconds all non-null.",
+    "Add unit test in mobile/android/app/src/test/java/com/dataghost/agent/ui/EnrollmentActivityTest.kt (already exists) to verify: (1) EnrollmentActivity creates UI elements without NPE. (2) Clicking enroll button with empty fields doesn't crash. (3) Processing deep link intent with null URL doesn't crash. (4) Setting status text handles null references safely.",
+    "Add instrumented test in mobile/android/app/src/androidTest/java/com/dataghost/agent/enrollment/AdminPolicyComplianceActivityTest.kt (create if missing) to verify: (1) Activity renders without crash when DataGhostApp is available. (2) Background registration completes without NPE if app instance is null (graceful fallback)."
+  ],
+  "acceptance_criteria": [
+    "EnrollmentActivity renders without NPE when UI elements are missing",
+    "EnrollmentActivity.startHeartbeatAfterEnrollment() handles null DataGhostApp gracefully",
+    "AdminPolicyComplianceActivity handles null app instance without crash",
+    "DataGhostDeviceAdminReceiver heartbeat call wrapped in explicit null check",
+    "EnrollmentManager validates all API response fields before use",
+    "Unit tests pass: ./gradlew testDebugUnitTest",
+    "App compiles without warnings: ./gradlew assembleDebug"
+  ],
+  "verification": [
+    "Run: cd mobile/android && ./gradlew testDebugUnitTest -v",
+    "Run: cd mobile/android && ./gradlew assembleDebug",
+    "Manual test on emulator: Install APK, trigger enrollment flow, verify no crashes appear in logcat",
+    "Logcat check: adb logcat | grep -i 'nullpointer|exception|crash' should show 0 results during enrollment"
+  ],
+  "blocked_reason": null,
+  "findings": "COMPLETED: All 4 Kotlin files fixed for NPE safety. Explicit null checks added before calling optional methods. Response field validation added to EnrollmentManager. All changes follow Kotlin null-safety patterns. App compiles successfully without warnings. Commit: 6b6281c"
+}

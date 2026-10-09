@@ -1,0 +1,36 @@
+{
+  "id": "FEAT-004",
+  "type": "feat",
+  "title": "Android: Implement Managed Configuration Support for Zero-Touch Enrollment",
+  "description": "Add managed application configuration (RestrictionsManager) support to Android agent to read organizational provisioning data (organizationId, serverUrl, bootstrapToken) from MDM console or enterprise OEM config. On first start, detect and read managed config. If present, auto-populate enrollment parameters and call bootstrap endpoint. If not present, fall back to manual QR/enrollment code entry. Implement graceful fallback if managed config unavailable or malformed.",
+  "status": "completed",
+  "steps": [
+    "Create new Android class mobile/android/app/src/main/java/com/dataghost/agent/enrollment/ManagedConfigHelper.kt: (1) Implement fun readManagedConfig(context: Context): ManagedConfigData? using RestrictionsManager. (2) Read restrictions with keys: com.dataghost.organization_id, com.dataghost.server_url, com.dataghost.bootstrap_token, com.dataghost.enrollment_code. (3) Validate each field is non-null and non-empty. (4) Return ManagedConfigData(organizationId, serverUrl, bootstrapToken, enrollmentCode) or null if missing/invalid.",
+    "Create data class mobile/android/app/src/main/java/com/dataghost/agent/enrollment/ManagedConfigData.kt with fields: organizationId: String, serverUrl: String, bootstrapToken: String, enrollmentCode: String. Validate in init {} block: all fields non-empty, serverUrl starts with https://.",
+    "Update mobile/android/app/src/main/java/com/dataghost/agent/ui/EnrollmentActivity.kt: (1) On onCreate, call ManagedConfigHelper.readManagedConfig(this). (2) If config exists and valid, auto-populate serverUrlInput.setText(config.serverUrl) and codeInput.setText(config.enrollmentCode). (3) Show informational toast: 'Enrollment configured by administrator'. (4) Optionally auto-start enrollment (with explicit user confirmation first). (5) If config missing/invalid, show manual enrollment UI as before.",
+    "Update mobile/android/app/src/main/java/com/dataghost/agent/enrollment/EnrollmentManager.kt bootstrap() method: (1) Accept optional bootstrapToken parameter. (2) If bootstrapToken provided (from managed config), use it directly. (3) If not provided, use token from enrollment code lookup (existing flow). (4) Log whether bootstrap token came from managed config or manual entry.",
+    "Update mobile/android/app/src/main/java/com/dataghost/agent/DataGhostApp.kt onCreate: (1) On app first start (check SharedPreferences FIRST_RUN flag), call ManagedConfigHelper.readManagedConfig(). (2) If config valid, pre-initialize enrollment parameters (store in SharedPreferences). (3) Set flag skipManualEnrollmentUI = true to bypass manual code entry on EnrollmentActivity start.",
+    "Add AndroidManifest.xml declaration for MANAGE_APP_CONFIGURATIONS permission (already declared in most apps) so RestrictionsManager works correctly.",
+    "Add unit test mobile/android/app/src/test/java/com/dataghost/agent/enrollment/ManagedConfigHelperTest.kt: (1) Verify readManagedConfig returns null if restrictions bundle missing. (2) Verify readManagedConfig validates all fields non-empty. (3) Verify readManagedConfig raises exception if serverUrl invalid format. (4) Mock RestrictionsManager and verify correct keys read.",
+    "Add integration test mobile/android/app/src/androidTest/java/com/dataghost/agent/enrollment/ManagedConfigIntegrationTest.kt: (1) Deploy APK to emulator. (2) Set managed config via adb: adb shell am dpm set-device-owner-admin ... (or mock via context). (3) Start app, verify managed config read and enrollment UI auto-populated."
+  ],
+  "acceptance_criteria": [
+    "ManagedConfigHelper.readManagedConfig() returns non-null ManagedConfigData if MDM config present",
+    "Returns null gracefully if config missing or any field invalid",
+    "EnrollmentActivity auto-populates fields if managed config available",
+    "Manual fallback UI shown if managed config unavailable",
+    "EnrollmentManager uses bootstrapToken from managed config if provided",
+    "App logs whether enrollment is from managed config or manual entry",
+    "Unit tests pass: ./gradlew testDebugUnitTest -v",
+    "Integration test passes on emulator with mock managed config"
+  ],
+  "verification": [
+    "Run: cd mobile/android && ./gradlew testDebugUnitTest -v",
+    "Run: cd mobile/android && ./gradlew assembleDebug && adb install -r app/build/outputs/apk/debug/app-debug.apk",
+    "Manual test: Verify EnrollmentActivity shows 'Enrollment configured by administrator' toast when managed config present",
+    "Logcat: adb logcat | grep -i 'managed' should show config reading attempts",
+    "Verify with no managed config: App falls back to manual enrollment UI without crash"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

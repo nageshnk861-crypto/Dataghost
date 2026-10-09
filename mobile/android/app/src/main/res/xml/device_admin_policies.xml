@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  DataGhost Android Enterprise Agent – Device Admin Policies.
+
+  Declares the device administration capabilities requested by the DPC.
+  For Android Enterprise / Work Profile, these policies are enforced
+  by the Android Device Policy Controller framework.
+
+  Reference: https://developer.android.com/guide/topics/admin/device-admin
+-->
+<device-admin>
+    <uses-policies>
+        <!-- Lock the screen on policy violation -->
+        <force-lock />
+        <!-- Wipe the work profile on command from server -->
+        <wipe-data />
+        <!-- Set minimum password complexity -->
+        <limit-password />
+        <!-- Lock screen timeout -->
+        <watch-login />
+        <!-- Disable camera in work profile (optional, enforced via EMM policy) -->
+        <disable-camera />
+        <!-- Disable keyguard features -->
+        <disable-keyguard-features />
+        <!-- Set global proxy for work profile network traffic -->
+        <set-global-proxy />
+    </uses-policies>
+</device-admin>

@@ -1,0 +1,9 @@
+{
+  "watch_dirs": ["~/Documents", "~/Downloads", "~/Desktop"],
+  "api_url": "http://localhost:8000",
+  "device_id": "agent-001",
+  "user": "student01",
+  "scan_on_modify": true,
+  "excluded_extensions": [".exe", ".dll", ".so", ".dylib", ".bin", ".jpg", ".jpeg", ".png", ".gif", ".mp4", ".mp3"],
+  "max_file_size_mb": 50
+}

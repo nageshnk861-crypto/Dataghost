@@ -1,0 +1,14 @@
+{
+  "task_id": "task-enrollment-redesign",
+  "task_description": "Redesign and implement DataGhost device enrollment system for zero-touch automatic enrollment across Windows, Android, macOS, and iOS platforms. Fix critical Android NullPointerException crashes. Extend backend with provisioning models and secure enrollment APIs. Add admin dashboard pages for device management.",
+  "status": "pending",
+  "feature_order": [
+    "FEAT-001",
+    "FEAT-002",
+    "FEAT-003",
+    "FEAT-004",
+    "FEAT-005",
+    "FEAT-006"
+  ],
+  "blocked_reason": null
+}

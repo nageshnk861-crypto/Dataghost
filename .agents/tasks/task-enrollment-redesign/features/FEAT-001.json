@@ -1,0 +1,32 @@
+{
+  "id": "FEAT-001",
+  "type": "feat",
+  "title": "Backend: Add ORM Models for Device Provisioning and Identity",
+  "description": "Extend backend/models.py with three new SQLAlchemy ORM models to support secure device provisioning, identity management, and enrollment state tracking. DeviceProvisioning stores admin-created bulk provisioning records with hashed bootstrap tokens (never plaintext). DeviceIdentity tracks unique cryptographic identities per device. EnrollmentState is a Python enum (no None values) to avoid ambiguous enrollment state. Reuse existing EnrollmentToken model where it already handles single-use credentials.",
+  "status": "completed",
+  "steps": [
+    "Add Python Enum 'EnrollmentState' to backend/models.py with 11 values (NEW, DISCOVERING_CONFIGURATION, CONFIGURATION_FOUND, AUTHENTICATING_DEVICE, ATTESTING_DEVICE, REGISTERING_DEVICE, ENROLLED, CONFIGURING_AGENT, POLICY_DOWNLOADED, ACTIVE) and 6 failure states (CONFIGURATION_NOT_FOUND, AUTHENTICATION_FAILED, ATTESTATION_FAILED, REGISTRATION_FAILED, POLICY_DOWNLOAD_FAILED, NETWORK_ERROR, UNSUPPORTED_PLATFORM). Use string values for database compatibility.",
+    "Add SQLAlchemy ORM class 'DeviceProvisioning' to backend/models.py with columns: id (PK), organizationId, enrollmentPolicyId, platform (Windows|Android|macOS|iOS), status (ACTIVE|REVOKED), provisioningMethod (AUTOMATIC_ENROLLMENT|QR_ENROLLMENT|MANUAL_CODE), bootstrapTokenHash (String 64, SHA-256, unique), deviceCount, createdAt, expiresAt, lastUsedAt, revokedAt. Add index on bootstrapTokenHash and organizationId.",
+    "Add SQLAlchemy ORM class 'DeviceIdentity' to backend/models.py with columns: id (PK), deviceId (String 32, unique, format DG-DEVICE-XXXXXXXX), platform, publicKey (Text, PEM-encoded), attestationData (JSON, nullable), enrollmentCode (String 16, unique, format DG-XXXX-XXXX), createdAt. Add indexes on deviceId and enrollmentCode.",
+    "Update existing 'Device' model in backend/models.py to add optional columns: publicKeyFingerprint (String 64), attestationStatus (String 32, default 'PENDING'), identityProvidedBy (String 32), cryptoAlgorithm (String 32, default 'RSA-2048'). No data migration needed—columns will be NULL for existing devices.",
+    "Create SQLite safe-migration code in backend/database.py init_db() function (following existing pattern) to add DeviceProvisioning and DeviceIdentity tables if missing. Use ALTER TABLE ADD COLUMN for existing tables, with IF NOT EXISTS checks to prevent errors on re-runs.",
+    "Add docstrings to all new classes explaining the security model (hashed tokens, no plaintext storage, one-time-use credentials, cryptographic attestation where available)."
+  ],
+  "acceptance_criteria": [
+    "backend/models.py defines EnrollmentState enum with all 17 values and string values",
+    "DeviceProvisioning model persists to SQLite with correct schema",
+    "DeviceIdentity model persists to SQLite with correct schema",
+    "Device model adds new optional columns without breaking existing data",
+    "backend/database.py init_db() creates tables and handles migrations safely",
+    "All models have appropriate indexes on frequently-queried columns",
+    "No plaintext tokens in any model field"
+  ],
+  "verification": [
+    "Run: cd backend && python -m pytest tests/ -v -k model",
+    "Run: cd backend && python -c 'from database import init_db; from models import EnrollmentState, DeviceProvisioning, DeviceIdentity; init_db(); print(\"Models OK\")'",
+    "Inspect backend/dataghost.db schema: sqlite3 dataghost.db '.schema device_provisioning' and '.schema device_identity' should show all columns",
+    "Verify existing Device table not corrupted: sqlite3 dataghost.db 'SELECT COUNT(*) FROM devices' should return a number >= 0"
+  ],
+  "blocked_reason": null,
+  "findings": "All models implemented successfully. EnrollmentState enum created with 17 values (10 success + 7 failure states). DeviceProvisioning and DeviceIdentity models added with proper security documentation. Device model extended with 4 new optional columns for enrollment system integration. Database migration code updated to safely create new tables and columns without corrupting existing data. All 116 backend tests pass (excluding pre-existing firebase_auth failures). Schema verified in SQLite database with all columns and indexes present."
+}

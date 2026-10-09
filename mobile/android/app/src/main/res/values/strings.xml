@@ -1,0 +1,11 @@
+<resources>
+    <string name="app_name">DataGhost Agent</string>
+    <string name="label_enrollment">DataGhost Enrollment</string>
+    <string name="label_device_admin">DataGhost Enterprise DLP</string>
+    <string name="device_admin_description">
+        DataGhost DLP secures your organization\'s data on this device.
+        When enabled as a Device Administrator, DataGhost can enforce
+        security policies, monitor Work Profile content for data leakage,
+        and remotely wipe the work profile if a security incident occurs.
+    </string>
+</resources>
