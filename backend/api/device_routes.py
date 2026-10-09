@@ -24,7 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
-from auth import get_current_user, require_admin
+from auth import get_current_user, require_admin, require_analyst_or_admin
 from config import settings
 from database import get_db
 from models import Device, EnrollmentToken, Incident, ScanLog, User
@@ -804,9 +804,9 @@ def update_device(
     device_id_or_id: str,
     payload: DeviceUpdateRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_analyst_or_admin),
 ):
-    """Update device properties, such as re-enabling or disabling an endpoint (Admin only)."""
+    """Update device properties, such as re-enabling or disabling an endpoint (Admin / Analyst)."""
     device = _find_device(device_id_or_id, db)
     if not device:
         raise HTTPException(
@@ -842,7 +842,7 @@ def update_device(
 def delete_device(
     device_id_or_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_analyst_or_admin),
 ):
     """Remove a device record from management (Admin only)."""
     device = _find_device(device_id_or_id, db)
