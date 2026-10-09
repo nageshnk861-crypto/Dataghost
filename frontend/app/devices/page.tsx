@@ -100,6 +100,10 @@ export default function DevicesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // --- Selection and Bulk Actions State ---
+  const [selectedDeviceIds, setSelectedDeviceIds] = useState<string[]>([]);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+
   // --- Add Device Modal state ---
   const [showAddModal, setShowAddModal] = useState(false);
   const [selectedPlatform, setSelectedPlatform] = useState<PlatformType>("Windows");
@@ -430,9 +434,58 @@ export default function DevicesPage() {
     }
     try {
       await deleteDevice(devId);
+      setSelectedDeviceIds((prev) => prev.filter((id) => id !== devId));
       await loadDevices(true);
     } catch (err: unknown) {
       alert(err instanceof Error ? err.message : "Failed to remove device");
+    }
+  };
+
+  // --- Selection and Bulk Delete logic ---
+  const isDeviceSelected = (devId: string) => selectedDeviceIds.includes(devId);
+
+  const toggleSelectDevice = (e: React.MouseEvent, devId: string) => {
+    e.stopPropagation();
+    setSelectedDeviceIds((prev) =>
+      prev.includes(devId) ? prev.filter((id) => id !== devId) : [...prev, devId]
+    );
+  };
+
+  const handleSelectAllDevices = () => {
+    const allIds = devices.map((d) => d.device_id || String(d.id));
+    if (selectedDeviceIds.length === allIds.length && allIds.length > 0) {
+      setSelectedDeviceIds([]);
+    } else {
+      setSelectedDeviceIds(allIds);
+    }
+  };
+
+  const handleBulkDeleteDevices = async () => {
+    if (selectedDeviceIds.length === 0) return;
+    if (!window.confirm(`Are you sure you want to remove ${selectedDeviceIds.length} selected device(s)?`)) return;
+    setBulkDeleting(true);
+    try {
+      await Promise.all(selectedDeviceIds.map((id) => deleteDevice(id)));
+      setSelectedDeviceIds([]);
+      await loadDevices(true);
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : "Failed to remove selected devices");
+    } finally {
+      setBulkDeleting(false);
+    }
+  };
+
+  const handleBulkDeactivateDevices = async () => {
+    if (selectedDeviceIds.length === 0) return;
+    setBulkDeleting(true);
+    try {
+      await Promise.all(selectedDeviceIds.map((id) => updateDevice(id, { status: "DISABLED" })));
+      setSelectedDeviceIds([]);
+      await loadDevices(false);
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : "Failed to deactivate selected devices");
+    } finally {
+      setBulkDeleting(false);
     }
   };
 
@@ -556,10 +609,81 @@ export default function DevicesPage() {
             >
               ↻ Refresh
             </button>
+
+            {devices.length > 0 && (
+              <button
+                type="button"
+                onClick={handleSelectAllDevices}
+                className="px-2.5 py-1.5 rounded-lg text-xs font-semibold text-slate-300 hover:text-white transition-colors border border-slate-700 bg-slate-900/60"
+              >
+                {selectedDeviceIds.length === devices.length ? "Deselect All" : "Select All"}
+              </button>
+            )}
           </div>
         </div>
 
         <div className="p-6 animate-fade-up space-y-5">
+          {/* Bulk Selection Action Bar */}
+          {selectedDeviceIds.length > 0 && (
+            <div
+              className="px-4 py-3 rounded-xl flex flex-wrap items-center justify-between gap-4 animate-fade-in shadow-xl"
+              style={{
+                background: "linear-gradient(135deg, rgba(239,68,68,0.15), rgba(15,23,41,0.95))",
+                border: "1px solid rgba(239,68,68,0.4)",
+              }}
+            >
+              <div className="flex items-center gap-3">
+                <input
+                  type="checkbox"
+                  checked={selectedDeviceIds.length === devices.length && devices.length > 0}
+                  onChange={handleSelectAllDevices}
+                  className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-cyan-500 cursor-pointer accent-cyan-500"
+                />
+                <span className="text-sm font-bold text-white">
+                  {selectedDeviceIds.length} of {devices.length} device(s) selected
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleBulkDeactivateDevices}
+                  disabled={bulkDeleting}
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold text-amber-300 bg-amber-950/40 hover:bg-amber-900/60 border border-amber-500/30 transition-all disabled:opacity-50"
+                >
+                  ⏸️ Deactivate Selected
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleBulkDeleteDevices}
+                  disabled={bulkDeleting}
+                  className="px-4 py-1.5 rounded-lg text-xs font-bold text-white bg-red-600 hover:bg-red-500 transition-all shadow-md active:scale-95 disabled:opacity-50 flex items-center gap-1.5"
+                >
+                  {bulkDeleting ? (
+                    <>
+                      <span className="w-3.5 h-3.5 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+                      <span>Removing...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>🗑️</span>
+                      <span>Remove Selected ({selectedDeviceIds.length})</span>
+                    </>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setSelectedDeviceIds([])}
+                  className="text-xs text-slate-400 hover:text-white px-2 py-1"
+                >
+                  Clear Selection
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Error Banner */}
           {error && (
             <div
@@ -658,6 +782,8 @@ export default function DevicesPage() {
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
               {devices.map((device) => {
+                const devId = device.device_id || String(device.id);
+                const isSelected = isDeviceSelected(devId);
                 const isActive = device.status === "ACTIVE";
                 const isOffline = device.status === "OFFLINE";
                 const isDisabled = device.status === "DISABLED";
@@ -669,16 +795,31 @@ export default function DevicesPage() {
 
                 return (
                   <div
-                    key={device.device_id || String(device.id)}
+                    key={devId}
                     onClick={() => handleDeviceClick(device)}
                     className="rounded-xl p-5 transition-all duration-200 hover:-translate-y-1 hover:border-cyan-500/40 cursor-pointer group shadow-lg"
                     style={{
-                      background: "#0f1729",
-                      border: `1px solid ${isActive ? "rgba(52,208,88,0.2)" : isOffline ? "rgba(255,59,59,0.2)" : "#1a2744"}`,
+                      background: isSelected ? "rgba(0,212,255,0.04)" : "#0f1729",
+                      border: isSelected
+                        ? "1px solid #00d4ff"
+                        : `1px solid ${isActive ? "rgba(52,208,88,0.2)" : isOffline ? "rgba(255,59,59,0.2)" : "#1a2744"}`,
+                      boxShadow: isSelected ? "0 0 15px rgba(0,212,255,0.15)" : "none",
                     }}
                   >
                     <div className="flex items-start justify-between mb-4">
-                      <div className="flex items-center gap-3">
+                      <div className="flex items-center gap-2.5">
+                        <div
+                          onClick={(e) => toggleSelectDevice(e, devId)}
+                          className="p-1 rounded-md hover:bg-slate-800 transition-colors flex items-center justify-center cursor-pointer"
+                          title={isSelected ? "Deselect device" : "Select device"}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => {}}
+                            className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-cyan-500 cursor-pointer accent-cyan-500"
+                          />
+                        </div>
                         <div
                           className="w-10 h-10 rounded-lg flex items-center justify-center text-xl transition-transform group-hover:scale-110"
                           style={{ background: "rgba(26,39,68,0.7)", border: "1px solid #1a2744" }}
