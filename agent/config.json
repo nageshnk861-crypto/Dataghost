@@ -1,9 +1,18 @@
 {
-  "watch_dirs": ["~/Documents", "~/Downloads", "~/Desktop"],
-  "api_url": "http://localhost:8000",
-  "device_id": "agent-001",
-  "user": "student01",
+  "api_url": "https://t1zzc9hp-8000.inc1.devtunnels.ms",
+  "device_id": "dg-win-a6ab1f6a",
+  "user": "admin",
+  "watch_dirs": [
+    "~/Documents",
+    "~/Downloads",
+    "~/Desktop"
+  ],
   "scan_on_modify": true,
-  "excluded_extensions": [".exe", ".dll", ".so", ".dylib", ".bin", ".jpg", ".jpeg", ".png", ".gif", ".mp4", ".mp3"],
+  "excluded_extensions": [
+    ".exe", ".dll", ".so", ".dylib", ".bin",
+    ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".ico", ".svg",
+    ".mp4", ".mp3", ".wav", ".avi", ".mkv",
+    ".zip", ".tar", ".gz", ".rar", ".7z"
+  ],
   "max_file_size_mb": 50
 }

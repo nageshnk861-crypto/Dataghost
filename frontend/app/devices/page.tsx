@@ -145,16 +145,24 @@ export default function DevicesPage() {
   };
 
   // Detect the actual host platform from the browser
-  const detectHostPlatform = (): { platform: PlatformType; osName: string; hostname: string } => {
+  const detectHostPlatform = (): { platform: PlatformType; osName: string; hostname: string; osVersion: string } => {
     const ua = navigator.userAgent.toLowerCase();
     const plat = (navigator as any).userAgentData?.platform?.toLowerCase?.() || navigator.platform?.toLowerCase() || "";
 
-    if (ua.includes("android")) return { platform: "Android", osName: "Android", hostname: "ANDROID-DEVICE" };
-    if (ua.includes("iphone") || ua.includes("ipad") || ua.includes("ipod")) return { platform: "iOS", osName: "iOS", hostname: "IOS-DEVICE" };
-    if (plat.includes("mac") || ua.includes("macintosh")) return { platform: "macOS", osName: "macOS", hostname: "MAC-WORKSTATION" };
-    if (plat.includes("linux") || ua.includes("linux")) return { platform: "Linux", osName: "Linux", hostname: "LINUX-WORKSTATION" };
-    // Default to Windows
-    return { platform: "Windows", osName: "Windows", hostname: "WINDOWS-WORKSTATION" };
+    // Extract OS version from user-agent string
+    let osVersion = "";
+    const winMatch = ua.match(/windows nt ([\d.]+)/);
+    const macMatch = ua.match(/mac os x ([\d_]+)/);
+    const androidMatch = ua.match(/android ([\d.]+)/);
+    if (winMatch) osVersion = `Windows ${winMatch[1] === "10.0" ? "10/11" : winMatch[1]}`;
+    else if (macMatch) osVersion = `macOS ${macMatch[1].replace(/_/g, ".")}`;
+    else if (androidMatch) osVersion = `Android ${androidMatch[1]}`;
+
+    if (ua.includes("android")) return { platform: "Android", osName: "Android", hostname: "ANDROID-DEVICE", osVersion: osVersion || "Android" };
+    if (ua.includes("iphone") || ua.includes("ipad") || ua.includes("ipod")) return { platform: "iOS", osName: "iOS", hostname: "IOS-DEVICE", osVersion: "iOS" };
+    if (plat.includes("mac") || ua.includes("macintosh")) return { platform: "macOS", osName: "macOS", hostname: "MAC-WORKSTATION", osVersion: osVersion || "macOS" };
+    if (plat.includes("linux") || ua.includes("linux")) return { platform: "Linux", osName: "Linux", hostname: "LINUX-WORKSTATION", osVersion: "Linux" };
+    return { platform: "Windows", osName: "Windows", hostname: "WINDOWS-WORKSTATION", osVersion: osVersion || "Windows 10/11" };
   };
 
   // Automatically provision and enroll this device (detected from the browser)
@@ -164,17 +172,22 @@ export default function DevicesPage() {
       const host = detectHostPlatform();
       const tokenRes = await createEnrollmentToken(host.platform);
       if (tokenRes?.enrollment_code) {
+        // Unique device name: platform + last 4 chars of code to avoid duplicates
+        const suffix = tokenRes.enrollment_code.replace(/[^A-Z0-9]/g, "").slice(-4) || "0001";
+        const deviceName = `${host.hostname}-${suffix}`;
         await registerEnrollmentDevice({
           enrollment_code: tokenRes.enrollment_code,
-          device_name: `${host.hostname}`,
+          device_name: deviceName,
           platform: host.platform,
-          os_name: `${host.osName} Enterprise`,
-          hostname: host.hostname,
+          os_name: host.osVersion,
+          os_version: host.osVersion,
+          hostname: deviceName,
         });
       }
       await loadDevices(true);
     } catch (err: unknown) {
       console.error("Auto-enroll error:", err);
+      alert(err instanceof Error ? err.message : "Auto-enrollment failed. Please try again.");
     } finally {
       setBatchEnrolling(false);
     }
