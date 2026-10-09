@@ -2,6 +2,8 @@
 DataGhost – application configuration.
 Reads settings from environment variables or a .env file via pydantic-settings.
 """
+import os
+import tempfile
 from typing import Optional, List, Union
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -21,6 +23,21 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
     ENVIRONMENT: str = "development"
+
+    @property
+    def effective_database_url(self) -> str:
+        url = self.DATABASE_URL
+        if url.startswith("sqlite"):
+            is_vercel = os.environ.get("VERCEL") == "1" or os.environ.get("VERCEL_ENV") is not None
+            if is_vercel:
+                tmp_db = os.path.join(tempfile.gettempdir(), "dataghost.db")
+                return f"sqlite:///{tmp_db}"
+            db_file_path = url.replace("sqlite:///", "")
+            dir_path = os.path.dirname(db_file_path) or "."
+            if not os.access(dir_path, os.W_OK):
+                tmp_db = os.path.join(tempfile.gettempdir(), "dataghost.db")
+                return f"sqlite:///{tmp_db}"
+        return url
 
     # Multi-Device Management Configuration
     DEVICE_HEARTBEAT_TIMEOUT_SECONDS: int = 120

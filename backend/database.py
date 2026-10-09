@@ -2,6 +2,7 @@
 DataGhost – SQLAlchemy database setup.
 Uses a synchronous engine; compatible with both SQLite (dev) and PostgreSQL (prod).
 """
+import os
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 from config import settings
@@ -10,23 +11,27 @@ from config import settings
 # ---------------------------------------------------------------------------
 # Engine
 # ---------------------------------------------------------------------------
+db_url = getattr(settings, "effective_database_url", settings.DATABASE_URL)
 connect_args = {}
-if settings.DATABASE_URL.startswith("sqlite"):
+if db_url.startswith("sqlite"):
     connect_args = {"check_same_thread": False}
 
 engine = create_engine(
-    settings.DATABASE_URL,
+    db_url,
     connect_args=connect_args,
     pool_pre_ping=True,
 )
 
 # Enable WAL mode for SQLite so agent and API can read concurrently.
-if settings.DATABASE_URL.startswith("sqlite"):
+if db_url.startswith("sqlite"):
     @event.listens_for(engine, "connect")
     def _set_wal_mode(dbapi_conn, _connection_record):
-        cursor = dbapi_conn.cursor()
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.close()
+        try:
+            cursor = dbapi_conn.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.close()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
