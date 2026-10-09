@@ -15,20 +15,30 @@
  */
 
 export function getApiBaseUrl(): string {
-  // 1. If explicit env variable is set and not empty, use it
   const envUrl = process.env.NEXT_PUBLIC_API_URL?.trim();
-  if (envUrl) {
-    return envUrl.replace(/\/+$/, "");
-  }
 
-  // 2. In browser environment:
-  // If running in browser and no explicit NEXT_PUBLIC_API_URL, return empty string
-  // which causes requests to use relative URLs (e.g. /api/...) routed through Next.js rewrites proxy
+  // In browser environment:
   if (typeof window !== "undefined") {
+    if (envUrl) {
+      const currentHost = window.location.hostname;
+      const isDevTunnel = envUrl.includes("devtunnels.ms") || envUrl.includes("localhost") || envUrl.includes("127.0.0.1");
+      const isDeployedHost = currentHost.endsWith(".vercel.app") || currentHost.endsWith(".render.com") || (!currentHost.includes("localhost") && !currentHost.includes("127.0.0.1"));
+
+      // If running on deployed domain (e.g. *.vercel.app), ignore devtunnel/localhost URLs
+      // and use relative paths ("") so Vercel rewrites route /api/* to the serverless backend.
+      if (isDevTunnel && isDeployedHost) {
+        return "";
+      }
+      return envUrl.replace(/\/+$/, "");
+    }
     return "";
   }
 
-  // 3. Server-side / SSR default
+  // Server-side / SSR default
+  if (envUrl && !envUrl.includes("devtunnels.ms")) {
+    return envUrl.replace(/\/+$/, "");
+  }
+
   return (
     process.env.BACKEND_INTERNAL_URL ||
     process.env.BACKEND_URL ||
