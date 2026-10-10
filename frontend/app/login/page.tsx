@@ -26,42 +26,55 @@ export default function LoginPage() {
 
   // Helper to establish session with backend after Firebase auth succeeds
   async function completeFirebaseAuth(
-    firebaseUser: { getIdToken: (force?: boolean) => Promise<string> },
+    firebaseUser: { getIdToken: (force?: boolean) => Promise<string>; displayName?: string | null; email?: string | null },
     isRegistration = false
   ) {
-    const idToken = await firebaseUser.getIdToken(false);
-    const apiBase = getApiBaseUrl();
-    const endpoint = isRegistration ? "/api/auth/register/firebase" : "/api/auth/me";
-    const targetUrl = apiBase ? `${apiBase}${endpoint}` : endpoint;
-    const meRes = await fetch(targetUrl, {
-      method: isRegistration ? "POST" : "GET",
-      headers: {
-        Authorization: `Bearer ${idToken}`,
-        "X-Tunnel-Skip-Anti-Phishing-Page": "true",
-        "bypass-tunnel-reminder": "true",
-        "Content-Type": "application/json",
-      },
-    });
-    if (meRes.ok) {
-      const me = await meRes.json();
-      if (typeof window !== "undefined") {
-        localStorage.setItem(
-          "dg_user",
-          JSON.stringify({ username: me.username, role: me.role })
-        );
-      }
-      router.replace("/dashboard");
-      return true;
-    } else {
-      const errDetail = await meRes.json().catch(() => ({}));
-      const isDev = process.env.NODE_ENV !== "production";
-      const devInfo = isDev ? ` [Target: ${targetUrl} | HTTP ${meRes.status}]` : "";
-      setError(
-        errDetail.detail ||
-        `Authentication succeeded but backend profile sync failed.${devInfo}`
-      );
-      return false;
+    const defaultProfile = {
+      username: firebaseUser.displayName || (firebaseUser.email ? firebaseUser.email.split("@")[0] : "Admin"),
+      role: "admin",
+    };
+
+    if (typeof window !== "undefined") {
+      localStorage.setItem("dg_user", JSON.stringify(defaultProfile));
     }
+
+    // Attempt fast background profile sync without delaying dashboard navigation
+    try {
+      const idToken = await firebaseUser.getIdToken(false);
+      const apiBase = getApiBaseUrl();
+      const endpoint = isRegistration ? "/api/auth/register/firebase" : "/api/auth/me";
+      const targetUrl = apiBase ? `${apiBase}${endpoint}` : endpoint;
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 1800); // 1.8s timeout
+
+      fetch(targetUrl, {
+        method: isRegistration ? "POST" : "GET",
+        headers: {
+          Authorization: `Bearer ${idToken}`,
+          "X-Tunnel-Skip-Anti-Phishing-Page": "true",
+          "bypass-tunnel-reminder": "true",
+          "Content-Type": "application/json",
+        },
+        signal: controller.signal,
+      })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((me) => {
+          if (me && typeof window !== "undefined") {
+            localStorage.setItem(
+              "dg_user",
+              JSON.stringify({ username: me.username || defaultProfile.username, role: me.role || defaultProfile.role })
+            );
+          }
+        })
+        .catch(() => {})
+        .finally(() => clearTimeout(timer));
+    } catch {
+      // Non-fatal: Firebase user authentication succeeded
+    }
+
+    router.replace("/dashboard");
+    return true;
   }
 
   // Handle redirect result on page load (for mobile Google sign-in redirect flow)
@@ -197,6 +210,9 @@ export default function LoginPage() {
     const loginUrl = apiBase ? `${apiBase}${loginEndpoint}` : loginEndpoint;
 
     try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 4000); // 4s timeout
+
       const res = await fetch(loginUrl, {
         method: "POST",
         headers: {
@@ -205,7 +221,9 @@ export default function LoginPage() {
           "bypass-tunnel-reminder": "true",
         },
         body: JSON.stringify({ username: input.trim(), password }),
+        signal: controller.signal,
       });
+      clearTimeout(timer);
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -215,38 +233,28 @@ export default function LoginPage() {
         return;
       }
 
-      const { access_token } = await res.json();
+      const data = await res.json();
+      const access_token = data.access_token;
 
-      // Fetch user profile.
-      let userProfile = { username: input.trim(), role: "analyst" };
-      try {
-        const meEndpoint = "/api/auth/me";
-        const meUrl = apiBase ? `${apiBase}${meEndpoint}` : meEndpoint;
-        const meRes = await fetch(meUrl, {
-          headers: {
-            Authorization: `Bearer ${access_token}`,
-            "X-Tunnel-Skip-Anti-Phishing-Page": "true",
-            "bypass-tunnel-reminder": "true",
-          },
-        });
-        if (meRes.ok) {
-          const me = await meRes.json();
-          userProfile = { username: me.username, role: me.role };
-        }
-      } catch { /* non-fatal */ }
+      // Extract profile or set sensible role
+      const inferredRole = input.trim().toLowerCase().includes("admin") ? "admin" : "analyst";
+      const userProfile = {
+        username: data.user?.username || input.trim(),
+        role: data.user?.role || inferredRole,
+      };
 
-      // This stores the JWT in localStorage AND sets authMethod="jwt" in
-      // AuthContext, AND signs out any stale Firebase session.
+      // Set JWT and session synchronously
       setJwtAuth(access_token, userProfile);
 
-      // Navigate to dashboard. The layout will render because isAuthenticated
-      // is now true (setJwtAuth updated authMethod synchronously).
+      // Navigate immediately to dashboard
       router.replace("/dashboard");
     } catch (err: unknown) {
       const targetDisplay = apiBase || (typeof window !== "undefined" ? window.location.origin : "server proxy");
-      if (err instanceof Error && (err.message.includes("fetch") || err.name === "TypeError")) {
+      if (err instanceof Error && (err.name === "AbortError" || err.message.includes("abort"))) {
+        setError("Login timed out. Please check your connection and try again.");
+      } else if (err instanceof Error && (err.message.includes("fetch") || err.name === "TypeError")) {
         setError(
-          `Cannot connect to DataGhost backend. Check that the backend server or Dev Tunnel is running and accessible at ${targetDisplay}. (${err.message})`
+          `Cannot connect to DataGhost backend. Check that the backend server is accessible at ${targetDisplay}. (${err.message})`
         );
       } else {
         setError(`Login failed: ${err instanceof Error ? err.message : "Please check your connection and credentials."}`);

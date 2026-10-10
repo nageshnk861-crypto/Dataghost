@@ -3,11 +3,5 @@
   "installCommand": "if [ -d frontend ]; then cd frontend; fi && npm install",
   "buildCommand": "if [ -d frontend ]; then cd frontend; fi && npm run build",
   "outputDirectory": "frontend/.next",
-  "framework": "nextjs",
-  "rewrites": [
-    {
-      "source": "/api/:path*",
-      "destination": "/api/index.py"
-    }
-  ]
+  "framework": "nextjs"
 }

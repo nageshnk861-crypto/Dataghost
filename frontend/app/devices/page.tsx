@@ -252,12 +252,13 @@ export default function DevicesPage() {
 
     try {
       let res;
+      const targetPlatform = selectedPlatform || "Android";
       if (mode === "easy") {
-        res = await createEasyEnrollmentToken(selectedPlatform);
+        res = await createEasyEnrollmentToken(targetPlatform);
       } else if (mode === "enterprise") {
         res = await createAndroidEnterpriseEnrollmentToken();
       } else {
-        res = await createEnrollmentToken(selectedPlatform);
+        res = await createEnrollmentToken(targetPlatform);
       }
 
       setEnrollmentData(res);
