@@ -1,9 +1,8 @@
 import { redirect } from "next/navigation";
 
 /**
- * Root route — redirects to the authenticated dashboard.
- * The real dashboard lives at app/(app)/dashboard/page.tsx.
+ * Root route — redirects to the login page.
  */
 export default function RootPage() {
-  redirect("/dashboard");
+  redirect("/login");
 }

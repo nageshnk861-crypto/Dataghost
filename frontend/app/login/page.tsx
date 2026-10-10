@@ -16,7 +16,7 @@ import { API_BASE, getApiBaseUrl } from "../../lib/auth";
 
 export default function LoginPage() {
   const router = useRouter();
-  const { authReady, isAuthenticated, setJwtAuth } = useAuthContext();
+  const { authReady, isAuthenticated, user, logout, setJwtAuth } = useAuthContext();
 
   const [input, setInput]       = useState("");
   const [password, setPassword] = useState("");
@@ -93,13 +93,6 @@ export default function LoginPage() {
       isMounted = false;
     };
   }, [router]);
-
-  // If already authenticated, go straight to dashboard.
-  useEffect(() => {
-    if (authReady && isAuthenticated) {
-      router.replace("/dashboard");
-    }
-  }, [authReady, isAuthenticated, router]);
 
   // ── Google / Firebase sign-in ─────────────────────────────────────────────
   async function handleGoogleSignIn() {
@@ -311,6 +304,42 @@ export default function LoginPage() {
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
             <span className="text-xs font-medium" style={{ color: "#94a3b8" }}>Security Operations Center</span>
           </div>
+
+          {/* Active session banner if already logged in */}
+          {isAuthenticated && (
+            <div
+              className="mb-5 p-3 rounded-xl flex items-center justify-between gap-3 animate-fade-in"
+              style={{
+                background: "rgba(6,182,212,0.08)",
+                border: "1px solid rgba(6,182,212,0.25)",
+              }}
+            >
+              <div className="min-w-0">
+                <p className="text-xs text-slate-200">
+                  Signed in as <span className="font-semibold text-cyan-400">{user?.username || "Active User"}</span>
+                </p>
+                <p className="text-[10px] text-slate-400 capitalize">{user?.role || "analyst"}</p>
+              </div>
+              <div className="flex items-center gap-1.5 flex-shrink-0">
+                <button
+                  type="button"
+                  onClick={() => router.push("/dashboard")}
+                  className="px-2.5 py-1 text-xs rounded-lg font-semibold transition-colors cursor-pointer"
+                  style={{ background: "#06b6d4", color: "#030712" }}
+                >
+                  Dashboard →
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void logout()}
+                  className="px-2 py-1 text-xs rounded-lg transition-colors text-slate-400 hover:text-red-400 cursor-pointer"
+                  style={{ background: "rgba(30,41,59,0.5)", border: "1px solid rgba(148,163,184,0.15)" }}
+                >
+                  Sign Out
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Google sign-in */}
           <button type="button" onClick={handleGoogleSignIn} disabled={loading}
