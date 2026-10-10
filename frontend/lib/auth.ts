@@ -1,6 +1,6 @@
-"use client";
+﻿"use client";
 /**
- * DataGhost – low-level auth helpers.
+ * DataGhost â€“ low-level auth helpers.
  *
  * ONLY handles localStorage read/write for the DataGhost JWT.
  * No window.location, no React state, no Firebase here.
@@ -8,7 +8,7 @@
  * apiFetch is a thin fetch wrapper that:
  *   1. Gets a token from the registered getter (set by AuthProvider).
  *   2. Attaches it as Authorization: Bearer.
- *   3. On 401 → throws AuthError.  NEVER calls window.location or clearToken.
+ *   3. On 401 â†’ throws AuthError.  NEVER calls window.location or clearToken.
  *      The caller decides what to do.
  *
  * SECURITY: tokens are never logged.
@@ -48,7 +48,7 @@ export function getApiBaseUrl(): string {
 
 export const API_BASE = getApiBaseUrl();
 
-// ── JWT localStorage ──────────────────────────────────────────────────────────
+// â”€â”€ JWT localStorage â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const JWT_KEY  = "dg_token";
 const USER_KEY = "dg_user";
@@ -79,21 +79,21 @@ export function getSavedUser(): { username: string; role: string } | null {
   try { return JSON.parse(raw); } catch { return null; }
 }
 
-// ── Legacy aliases (keep old callers working) ─────────────────────────────────
+// â”€â”€ Legacy aliases (keep old callers working) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export const getToken  = getJwt;
 export const setToken  = saveJwt;
 export const clearToken = removeJwt;
 export const getUser   = getSavedUser;
 
-// ── Token getter (set by AuthProvider, never null for long) ───────────────────
-// This is a single stable reference — we never set it to null between updates.
+// â”€â”€ Token getter (set by AuthProvider, never null for long) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// This is a single stable reference â€” we never set it to null between updates.
 let _tokenGetter: (() => Promise<string | null>) | null = null;
 
 export function setTokenGetter(fn: () => Promise<string | null>) {
   _tokenGetter = fn;
 }
 
-// ── AuthError & Diagnostic Errors ─────────────────────────────────────────────
+// â”€â”€ AuthError & Diagnostic Errors â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export class AuthError extends Error {
   readonly status = 401;
   constructor(path: string) {
@@ -122,7 +122,7 @@ export class ApiConnectionError extends Error {
   }
 }
 
-// ── apiFetch ──────────────────────────────────────────────────────────────────
+// â”€â”€ apiFetch â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export async function apiFetch(
   path: string,
   opts?: RequestInit
@@ -173,25 +173,73 @@ export async function apiFetch(
   }
 
   if (res.status === 401) {
-    // Do NOT clear the token here — the token might still be valid
+    // Do NOT clear the token here â€” the token might still be valid
     // for other requests; this particular endpoint might have a bug.
     // The caller (dashboard, etc.) decides whether to log out.
-    // Do NOT call window.location — that causes the redirect loop.
+    // Do NOT call window.location â€” that causes the redirect loop.
     throw new AuthError(path);
   }
 
   return res;
 }
 
-// ── Legacy exports (kept for compatibility) ───────────────────────────────────
+// ── Fetch User Profile from Backend ──────────────────────────────────────────
+/**
+ * Fetch the authenticated user's profile from the backend GET /auth/me endpoint.
+ * This returns the user's role directly from the database, not hardcoded values.
+ * 
+ * @param token - JWT token to authenticate the request
+ * @returns User profile with username and role from the backend, or null on error
+ */
+export async function fetchUserProfileFromBackend(
+  token: string
+): Promise<{ username: string; role: string } | null> {
+  if (!token) return null;
+
+  const apiBase = getApiBaseUrl();
+  const targetUrl = apiBase ? `${apiBase}/auth/me` : `/auth/me`;
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
+
+    const res = await fetch(targetUrl, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "X-Tunnel-Skip-Anti-Phishing-Page": "true",
+        "bypass-tunnel-reminder": "true",
+        "Content-Type": "application/json",
+      },
+      signal: controller.signal,
+    });
+
+    clearTimeout(timer);
+
+    if (!res.ok) {
+      return null;
+    }
+
+    const data = await res.json();
+    return {
+      username: data.username || "User",
+      role: data.role || "analyst",
+    };
+  } catch (err: unknown) {
+    // Silently fail - no fallback to hardcoded admin role
+    return null;
+  }
+}
+
+// â”€â”€ Legacy exports (kept for compatibility) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export function registerTokenGetter(fn: () => Promise<string | null>) {
   setTokenGetter(fn);
 }
 export function unregisterTokenGetter() {
-  // Intentionally a no-op — we never null out the getter to avoid null windows.
+  // Intentionally a no-op â€” we never null out the getter to avoid null windows.
 }
 export function registerAuthFailureHandler(_fn: () => void) {
-  // No-op — auth failures are now handled by callers, not a global callback.
+  // No-op â€” auth failures are now handled by callers, not a global callback.
 }
 export function unregisterAuthFailureHandler() {
   // No-op.
@@ -207,3 +255,4 @@ export function useAuth() {
     },
   };
 }
+

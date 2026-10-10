@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
@@ -12,7 +12,7 @@ import {
 } from "firebase/auth";
 import { auth } from "../../lib/firebase";
 import { useAuthContext } from "../../lib/AuthContext";
-import { API_BASE, getApiBaseUrl } from "../../lib/auth";
+import { API_BASE, getApiBaseUrl, fetchUserProfileFromBackend } from "../../lib/auth";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -30,8 +30,8 @@ export default function LoginPage() {
     isRegistration = false
   ) {
     const defaultProfile = {
-      username: firebaseUser.displayName || (firebaseUser.email ? firebaseUser.email.split("@")[0] : "Admin"),
-      role: "admin",
+      username: firebaseUser.displayName || (firebaseUser.email ? firebaseUser.email.split("@")[0] : "User"),
+      role: "analyst", // Default role, will be overridden by backend
     };
 
     if (typeof window !== "undefined") {
@@ -107,7 +107,7 @@ export default function LoginPage() {
     };
   }, [router]);
 
-  // ── Google / Firebase sign-in ─────────────────────────────────────────────
+  // â”€â”€ Google / Firebase sign-in â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   async function handleGoogleSignIn() {
     if (!auth) {
       setError("Firebase is not configured. Use username/password login.");
@@ -162,7 +162,7 @@ export default function LoginPage() {
     }
   }
 
-  // ── Form submit ───────────────────────────────────────────────────────────
+  // â”€â”€ Form submit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!input.trim() || !password.trim()) {
@@ -174,7 +174,7 @@ export default function LoginPage() {
 
     const isEmail = input.includes("@");
 
-    // ── Path A: Firebase email/password ───────────────────────────────────
+    // â”€â”€ Path A: Firebase email/password â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (auth && isEmail) {
       try {
         const cred = isSignUp
@@ -204,7 +204,7 @@ export default function LoginPage() {
       }
     }
 
-    // ── Path B: DataGhost backend JWT (username OR email fallback) ────────
+    // â”€â”€ Path B: DataGhost backend JWT (username OR email fallback) â”€â”€â”€â”€â”€â”€â”€â”€
     const apiBase = getApiBaseUrl();
     const loginEndpoint = "/api/auth/login";
     const loginUrl = apiBase ? `${apiBase}${loginEndpoint}` : loginEndpoint;
@@ -236,11 +236,18 @@ export default function LoginPage() {
       const data = await res.json();
       const access_token = data.access_token;
 
-      // Extract profile or set sensible role
-      const inferredRole = input.trim().toLowerCase().includes("admin") ? "admin" : "analyst";
+      // Fetch the authenticated user's profile from the backend
+      // This ensures the role comes from the database, not from inferred logic
+      const backendProfile = await fetchUserProfileFromBackend(access_token);
+      
+      if (!backendProfile) {
+        setError("Failed to verify user role from backend. Please try again.");
+        return;
+      }
+
       const userProfile = {
-        username: data.user?.username || input.trim(),
-        role: data.user?.role || inferredRole,
+        username: backendProfile.username,
+        role: backendProfile.role,
       };
 
       // Set JWT and session synchronously
@@ -335,7 +342,7 @@ export default function LoginPage() {
                   className="px-2.5 py-1 text-xs rounded-lg font-semibold transition-colors cursor-pointer"
                   style={{ background: "#06b6d4", color: "#030712" }}
                 >
-                  Dashboard →
+                  Dashboard â†’
                 </button>
                 <button
                   type="button"
@@ -379,21 +386,21 @@ export default function LoginPage() {
             <div>
               <label className="block text-xs font-semibold mb-1.5 text-slate-400">PASSWORD</label>
               <input id="password" className="dg-input font-mono text-sm" type="password"
-                placeholder="••••••••" autoComplete="current-password"
+                placeholder="â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢" autoComplete="current-password"
                 value={password} onChange={(e) => setPassword(e.target.value)} required />
             </div>
 
             {error && (
               <div className="px-3 py-2 rounded-lg text-xs font-medium"
                 style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.25)", color: "#f87171" }}>
-                ⚠ {error}
+                âš  {error}
               </div>
             )}
 
             <button id="login-submit" type="submit"
               className="btn-primary w-full flex items-center justify-center gap-2 py-3 mt-2" disabled={loading}>
               {loading ? (
-                <><span className="spinner" style={{ width: 16, height: 16, borderWidth: 2 }} />Authenticating…</>
+                <><span className="spinner" style={{ width: 16, height: 16, borderWidth: 2 }} />Authenticatingâ€¦</>
               ) : isSignUp ? "Create Account" : (
                 <>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
@@ -417,14 +424,16 @@ export default function LoginPage() {
 
 
           <p className="text-center text-[10px] mt-5" style={{ color: "#1e3a5f" }}>
-            TLS Encrypted · RBAC Protected · Audit Logged
+            TLS Encrypted Â· RBAC Protected Â· Audit Logged
           </p>
         </div>
       </div>
 
       <div className="absolute bottom-4 left-1/2 -translate-x-1/2 font-mono text-[10px]" style={{ color: "#1e293b" }}>
-        DataGhost v1.0.0 · Final Year Project
+        DataGhost v1.0.0 Â· Final Year Project
       </div>
     </div>
   );
 }
+
+
