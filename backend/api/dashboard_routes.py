@@ -29,15 +29,15 @@ from schemas.schemas import ActivityDataPoint, DashboardStats, ThreatItem
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 
-def _analyst_device_ids(db: Session) -> list[str]:
+def _analyst_device_ids(db: Session, current_user: User) -> list[str]:
     """Return the list of device_ids that analysts are allowed to see.
 
-    Access model: analysts may view all devices in 'default-org'.
+    Access model: analysts may view their own owned devices.
     Admins bypass this function entirely and query all devices.
     """
     devices = (
         db.query(Device.device_id)
-        .filter(Device.organization_id == "default-org")
+        .filter(Device.user_id == current_user.id)
         .all()
     )
     return [d.device_id for d in devices]
@@ -87,21 +87,21 @@ def dashboard_stats(
         )
 
     else:
-        # Analyst: scoped to default-org devices only
-        allowed_device_ids = _analyst_device_ids(db)
+        # Analyst: scoped to user's owned devices
+        allowed_device_ids = _analyst_device_ids(db, current_user)
 
         protected_devices = (
             db.query(Device)
             .filter(
                 Device.status == "ACTIVE",
-                Device.organization_id == "default-org",
+                Device.user_id == current_user.id,
             )
             .count()
         )
 
         files_scanned = (
             db.query(func.sum(Device.files_scanned))
-            .filter(Device.organization_id == "default-org")
+            .filter(Device.user_id == current_user.id)
             .scalar()
             or 0
         )
@@ -184,7 +184,7 @@ def dashboard_activity(
     default-org devices only.
     """
     is_admin = current_user.role == "admin"
-    allowed_device_ids = None if is_admin else _analyst_device_ids(db)
+    allowed_device_ids = None if is_admin else _analyst_device_ids(db, current_user)
 
     today = datetime.utcnow().date()
     result = []

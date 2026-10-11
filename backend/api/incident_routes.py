@@ -32,11 +32,11 @@ router = APIRouter(prefix="/incidents", tags=["incidents"])
 ALLOWED_STATUSES = {"OPEN", "ACKNOWLEDGED", "RESOLVED"}
 
 
-def _allowed_device_ids_for_analyst(db: Session) -> List[str]:
-    """Return device_ids visible to analyst role (default-org scope)."""
+def _allowed_device_ids_for_analyst(db: Session, current_user: User) -> List[str]:
+    """Return device_ids visible to analyst role (owned devices scope)."""
     devices = (
         db.query(Device.device_id)
-        .filter(Device.organization_id == "default-org")
+        .filter(Device.user_id == current_user.id)
         .all()
     )
     return [d.device_id for d in devices]
@@ -125,7 +125,7 @@ def list_incidents(
 
     # RBAC scope filter – applied BEFORE any user-supplied filters.
     if current_user.role != "admin":
-        allowed_ids = _allowed_device_ids_for_analyst(db)
+        allowed_ids = _allowed_device_ids_for_analyst(db, current_user)
         if allowed_ids:
             q = q.filter(Incident.device_id.in_(allowed_ids))
         else:
@@ -205,7 +205,7 @@ def get_incident(
 
     # RBAC: analysts may only access incidents for their allowed devices.
     if current_user.role != "admin":
-        allowed_ids = _allowed_device_ids_for_analyst(db)
+        allowed_ids = _allowed_device_ids_for_analyst(db, current_user)
         if incident.device_id and incident.device_id not in allowed_ids:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -247,7 +247,7 @@ def update_incident_status(
 
     # RBAC: analysts may only update incidents for their allowed devices.
     if current_user.role != "admin":
-        allowed_ids = _allowed_device_ids_for_analyst(db)
+        allowed_ids = _allowed_device_ids_for_analyst(db, current_user)
         if incident.device_id and incident.device_id not in allowed_ids:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

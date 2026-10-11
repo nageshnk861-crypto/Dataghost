@@ -96,8 +96,10 @@ async function tryProxyToBackend(req: NextRequest, fullPath: string): Promise<Re
   const target = `${backendUrl}${fullPath}${searchParams}`;
 
   try {
+    const isScanRequest = fullPath.includes("/scan");
+    const timeoutMs = isScanRequest ? 45000 : 15000;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000); // 2 second fast timeout
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
 
     const headers = new Headers(req.headers);
     headers.delete("host");
@@ -138,83 +140,28 @@ export async function GET(request: NextRequest, { params }: { params: { path: st
     return NextResponse.json({ status: "healthy", timestamp: new Date().toISOString(), platform: "cloud" });
   }
 
-  // ── Users / Auth Profile ──
+  // ── Authentication Profile (Strict Backend Source of Truth) ──
   if (pathStr === "/auth/me" || pathStr === "/users/me") {
-    return NextResponse.json({
-      id: 1,
-      username: "admin",
-      email: "admin@dataghost.io",
-      role: "admin",
-      is_active: true,
-      organization_id: "default-org",
-      created_at: new Date().toISOString(),
-    });
+    return NextResponse.json(
+      { detail: "Backend authentication service unavailable" },
+      { status: 502 }
+    );
   }
 
-  // ── Dashboard Stats ──
-  if (pathStr === "/dashboard/stats") {
-    const activeDevs = devicesStore.filter((d) => d.status === "ACTIVE").length;
-    return NextResponse.json({
-      protected_devices: Math.max(activeDevs, 2),
-      files_scanned: 1845,
-      sensitive_files: 42,
-      blocked_transfers: 7,
-      critical_incidents: 2,
-      recent_threats: [
-        {
-          incident_id: "inc-1092",
-          filename: "customer_pii_export.csv",
-          risk_score: 94,
-          severity: "CRITICAL",
-          user: "alex.turner",
-          timestamp: new Date(Date.now() - 1000 * 60 * 18).toISOString(),
-          action_taken: "BLOCKED",
-        },
-        {
-          incident_id: "inc-1091",
-          filename: "aws_credentials_backup.env",
-          risk_score: 88,
-          severity: "HIGH",
-          user: "dev.ops",
-          timestamp: new Date(Date.now() - 1000 * 60 * 95).toISOString(),
-          action_taken: "BLOCKED",
-        },
-      ],
-    });
+  // ── Dashboard Stats & Activity (Strict Backend Source of Truth) ──
+  if (pathStr === "/dashboard/stats" || pathStr === "/dashboard/activity") {
+    return NextResponse.json(
+      { detail: "Backend dashboard service unavailable" },
+      { status: 502 }
+    );
   }
 
-  // ── Dashboard Activity ──
-  if (pathStr === "/dashboard/activity") {
-    const days = 7;
-    const activity = Array.from({ length: days }, (_, i) => {
-      const d = new Date();
-      d.setDate(d.getDate() - (days - 1 - i));
-      return {
-        date: d.toISOString().split("T")[0],
-        scans: 120 + i * 25 + Math.floor(Math.random() * 40),
-        sensitive: 5 + i * 2,
-        blocked: Math.floor(Math.random() * 3),
-      };
-    });
-    return NextResponse.json(activity);
-  }
-
-  // ── Devices List ──
-  if (pathStr === "/devices") {
-    return NextResponse.json(devicesStore);
-  }
-
-  // ── Device Detail: /devices/:id ──
-  if (pathSegments[0] === "devices" && pathSegments.length === 2 && pathSegments[1] !== "enrollment") {
-    const devId = pathSegments[1];
-    const dev = devicesStore.find((d) => d.device_id === devId || String(d.id) === devId) || devicesStore[0];
-    return NextResponse.json({
-      ...dev,
-      activity_log: [
-        { id: 1, action: "AGENT_HEARTBEAT", timestamp: new Date().toISOString(), status: "SUCCESS" },
-        { id: 2, action: "DLP_RULES_SYNCED", timestamp: new Date(Date.now() - 3600000).toISOString(), status: "SUCCESS" },
-      ],
-    });
+  // ── Incidents (Strict Backend Source of Truth) ──
+  if (pathStr === "/incidents") {
+    return NextResponse.json(
+      { detail: "Backend incidents service unavailable" },
+      { status: 502 }
+    );
   }
 
   // ── Enrollment Status: /devices/enrollment/status/:code ──
@@ -245,28 +192,12 @@ export async function GET(request: NextRequest, { params }: { params: { path: st
     });
   }
 
-  // ── Incidents ──
-  if (pathStr === "/incidents") {
-    return NextResponse.json({
-      items: [
-        {
-          incident_id: "inc-1092",
-          timestamp: new Date(Date.now() - 1000 * 60 * 18).toISOString(),
-          user: "alex.turner",
-          filename: "customer_pii_export.csv",
-          classification: "PII_CONFIDENTIAL",
-          risk_score: 94,
-          severity: "CRITICAL",
-          action_taken: "BLOCKED",
-          destination: "USB_STORAGE",
-          device_id: "dev-desktop-01",
-          status: "OPEN",
-        },
-      ],
-      total: 1,
-      page: 1,
-      per_page: 20,
-    });
+  // ── Devices List & Details (Strict Backend Source of Truth) ──
+  if (pathSegments[0] === "devices" && pathSegments[1] !== "enrollment") {
+    return NextResponse.json(
+      { detail: "Backend device service unavailable" },
+      { status: 502 }
+    );
   }
 
   return NextResponse.json({ message: "Not found", path: fullApiPath }, { status: 404 });
@@ -290,29 +221,12 @@ export async function POST(request: NextRequest, { params }: { params: { path: s
 
   const origin = request.nextUrl.origin;
 
-  // ── Authentication / Login ──
-  if (pathStr === "/auth/login") {
-    const username = (body.username || "admin").trim();
-    const token = createToken({ sub: username, role: "admin", exp: Math.floor(Date.now() / 1000) + 86400 });
-    return NextResponse.json({
-      access_token: token,
-      token_type: "bearer",
-      user: {
-        username: username,
-        role: "admin",
-      },
-    });
-  }
-
-  // ── User Registration ──
-  if (pathStr === "/users/register") {
-    const username = (body.username || body.email || "user").trim();
-    return NextResponse.json({
-      id: Date.now(),
-      username: username,
-      role: "admin",
-      created_at: new Date().toISOString(),
-    });
+  // ── Authentication / Login (Strict Backend Source of Truth) ──
+  if (pathStr === "/auth/login" || pathStr === "/users/register") {
+    return NextResponse.json(
+      { detail: "Backend authentication service unavailable" },
+      { status: 502 }
+    );
   }
 
   // ── Standard Enrollment QR (/api/devices/enrollment/create) ──
@@ -475,65 +389,12 @@ export async function POST(request: NextRequest, { params }: { params: { path: s
     });
   }
 
-  // ── Quick Device Scan Trigger (/devices/:id/scan) ──
+  // ── Device Scan Trigger (/devices/:id/scan) ──
   if (pathSegments[0] === "devices" && pathSegments[2] === "scan") {
-    const devId = pathSegments[1];
-    const dev = devicesStore.find((d) => d.device_id === devId || String(d.id) === devId);
-    
-    if (dev) {
-      // Simulate scan: increment counters
-      dev.total_scans = (dev.total_scans || 0) + 1;
-      dev.sensitive_files_count = Math.max(dev.sensitive_files_count || 0, Math.floor(Math.random() * 5));
-      
-      // Return response matching backend structure
-      return NextResponse.json({
-        status: "success",
-        message: 'Real-time scan completed successfully',
-        source: "live_filesystem",
-        device: {
-          device_id: dev.device_id,
-          device_name: dev.device_name,
-          platform: dev.platform,
-          status: dev.status,
-          files_scanned: dev.total_scans,
-          incidents_count: dev.sensitive_files_count,
-          last_seen: dev.last_seen,
-          hostname: dev.hostname,
-          ip_address: dev.ip_address,
-          os_name: dev.os_version,
-          os_version: dev.os_version,
-        },
-        scanned_files_count: Math.floor(Math.random() * 50) + 10,
-        threats_detected: dev.sensitive_files_count,
-        high_risk_count: Math.max(0, dev.sensitive_files_count - 2),
-        total_bytes_scanned: Math.floor(Math.random() * 1000000000),
-        scan_results: [
-          {
-            scan_id: "SCAN-" + Date.now(),
-            filename: "sample_data.txt",
-            file_hash: "abc123",
-            file_size: 2048,
-            findings: dev.sensitive_files_count > 0 ? [{
-              rule: "CREDENTIAL_EXPOSURE",
-              category: "CREDENTIALS",
-              severity: "HIGH",
-              start: 0,
-              end: 32,
-              matched_text: "***REDACTED***"
-            }] : [],
-            total_findings: dev.sensitive_files_count > 0 ? 1 : 0,
-            classification: "CONFIDENTIAL",
-            confidence: 0.95,
-            risk_score: dev.sensitive_files_count * 30,
-            severity: dev.sensitive_files_count > 0 ? "HIGH" : "LOW",
-            incident_id: dev.sensitive_files_count > 0 ? "INC-" + Date.now() : null,
-            timestamp: new Date().toISOString()
-          }
-        ]
-      });
-    }
-    
-    return NextResponse.json({ status: "error", message: "Device not found" }, { status: 404 });
+    return NextResponse.json(
+      { detail: "Backend scanner service unavailable. Please verify the device agent and backend are online." },
+      { status: 502 }
+    );
   }
 
   // ── Text DLP Scanner (/api/scan/text) ──

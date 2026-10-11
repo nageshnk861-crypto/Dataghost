@@ -2,7 +2,7 @@
 DataGhost – Pydantic v2 request/response schemas.
 """
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from pydantic import BaseModel, Field
 
 
@@ -151,7 +151,7 @@ class DeviceResponse(BaseModel):
     enrolled_at: Optional[datetime] = None
     registered_at: Optional[datetime] = None
     organization_id: Optional[str] = None
-    user_id: Optional[str] = None
+    user_id: Optional[Union[str, int]] = None
     device_metadata: Optional[str] = None
     os_type: Optional[str] = None
     agent_version: Optional[str] = None

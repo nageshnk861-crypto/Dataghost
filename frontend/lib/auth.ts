@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 /**
  * DataGhost â€“ low-level auth helpers.
  *
@@ -197,7 +197,8 @@ export async function fetchUserProfileFromBackend(
   if (!token) return null;
 
   const apiBase = getApiBaseUrl();
-  const targetUrl = apiBase ? `${apiBase}/auth/me` : `/auth/me`;
+  const normalizedBase = apiBase.endsWith("/api") ? apiBase : (apiBase ? `${apiBase}/api` : "/api");
+  const targetUrl = `${normalizedBase}/auth/me`;
 
   try {
     const controller = new AbortController();
