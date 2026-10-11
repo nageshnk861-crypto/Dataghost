@@ -31,6 +31,22 @@ def db() -> Session:
 
 
 @pytest.fixture(scope="function")
+def db_session() -> Session:
+    """Alias for db session fixture."""
+    session = SessionLocal()
+    yield session
+    session.close()
+
+
+@pytest.fixture(scope="function")
+def client():
+    """FastAPI TestClient fixture."""
+    from fastapi.testclient import TestClient
+    from main import app
+    return TestClient(app)
+
+
+@pytest.fixture(scope="function")
 def cleanup_db(db: Session):
     """Clean up test data after each test."""
     yield

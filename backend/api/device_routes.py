@@ -139,7 +139,7 @@ def list_devices(
     else:
         devices = (
             db.query(Device)
-            .filter(Device.organization_id == "default-org")
+            .filter(Device.user_id == current_user.id)
             .order_by(Device.device_name)
             .all()
         )
@@ -190,6 +190,7 @@ def create_enrollment_token(
         platform=norm_platform,
         organization_id=payload.organization_id or "default-org",
         created_by=current_user.username,
+        user_id=current_user.id,
         expires_at=expires_at,
         status="PENDING",
     )
@@ -362,6 +363,7 @@ def create_android_enterprise_enrollment(
         platform="Android",
         organization_id=payload.organization_id or "default-org",
         created_by=current_user.username,
+        user_id=current_user.id,
         expires_at=expires_at,
         status="PENDING",
     )
@@ -580,6 +582,15 @@ def register_with_enrollment(
 
     device_name = payload.device_name.strip() or payload.hostname or f"DataGhost {platform} Device"
 
+    # Resolve creator user_id
+    creator_user_id = 1
+    if getattr(enrollment, "user_id", None):
+        creator_user_id = enrollment.user_id
+    elif enrollment.created_by:
+        creator = db.query(User).filter(User.username == enrollment.created_by).first()
+        if creator:
+            creator_user_id = creator.id
+
     # Create new Device
     device = Device(
         device_id=new_device_id,
@@ -596,6 +607,7 @@ def register_with_enrollment(
         enrolled_at=now,
         registered_at=now,
         organization_id=enrollment.organization_id or "default-org",
+        user_id=creator_user_id,
         os_type=platform,
         device_metadata=json.dumps(payload.device_metadata) if payload.device_metadata else None,
         files_scanned=0,
@@ -708,7 +720,7 @@ def get_device_details(
             detail=f"Device '{device_id_or_id}' not found.",
         )
 
-    if current_user.role != "admin" and device.organization_id != "default-org":
+    if current_user.role != "admin" and str(device.user_id) != str(current_user.id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access forbidden: You do not have permission to view details for this device.",
@@ -800,18 +812,31 @@ def get_device_details(
 # 7. Update Device (Enable / Disable / Rename)
 # ---------------------------------------------------------------------------
 @router.patch("/{device_id_or_id}", response_model=DeviceResponse)
+@router.put("/{device_id_or_id}", response_model=DeviceResponse)
 def update_device(
     device_id_or_id: str,
     payload: DeviceUpdateRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_analyst_or_admin),
 ):
-    """Update device properties, such as re-enabling or disabling an endpoint (Admin / Analyst)."""
+    """Update device properties (Admin or owning Analyst)."""
     device = _find_device(device_id_or_id, db)
     if not device:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Device '{device_id_or_id}' not found.",
+        )
+
+    if current_user.role != "admin" and str(device.user_id) != str(current_user.id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access forbidden: You do not have permission to update this device.",
+        )
+
+    if payload.status is not None and current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access forbidden: Only administrators can change device status.",
         )
 
     if payload.device_name is not None:
@@ -842,7 +867,7 @@ def update_device(
 def delete_device(
     device_id_or_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_analyst_or_admin),
+    current_user: User = Depends(require_admin),
 ):
     """Remove a device record from management (Admin only)."""
     device = _find_device(device_id_or_id, db)
@@ -887,6 +912,12 @@ def trigger_device_scan(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Device '{device_id_or_id}' not found.",
+        )
+
+    if current_user.role != "admin" and str(device.user_id) != str(current_user.id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access forbidden: You do not have permission to trigger a scan on this device.",
         )
 
     from api.scan_routes import _process_scan

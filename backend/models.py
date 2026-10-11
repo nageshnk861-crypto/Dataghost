@@ -6,7 +6,7 @@ Compatible with SQLite (dev) and PostgreSQL (prod).
 from datetime import datetime, timezone
 from enum import Enum
 from sqlalchemy import (
-    Column, Integer, String, Boolean, DateTime, Text, Float, Index, JSON, event
+    Column, Integer, String, Boolean, DateTime, Text, Float, Index, JSON, ForeignKey, event
 )
 from database import Base
 
@@ -98,7 +98,7 @@ class Device(Base):
     enrolled_at = Column(DateTime, default=_utc_now)
     registered_at = Column(DateTime, default=_utc_now)
     organization_id = Column(String(64), default="default-org", nullable=True)
-    user_id = Column(String(64), nullable=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, default=1, index=True)
     device_metadata = Column(Text, nullable=True)                    # JSON string with hardware/client specs
     os_type = Column(String(32), nullable=True)                      # Kept for backward compatibility
     agent_version = Column(String(32), nullable=True)
@@ -128,6 +128,7 @@ class EnrollmentToken(Base):
     platform = Column(String(32), nullable=False)                                 # Windows | Linux | macOS | Android | iOS
     organization_id = Column(String(64), default="default-org", nullable=False)
     created_by = Column(String(64), nullable=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     expires_at = Column(DateTime, nullable=False, index=True)
     used_at = Column(DateTime, nullable=True)
     status = Column(String(16), default="PENDING", index=True)                    # PENDING | USED | EXPIRED | CANCELLED

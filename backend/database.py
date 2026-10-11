@@ -137,11 +137,18 @@ def init_db():
                         UPDATE devices SET platform = 'Windows' 
                         WHERE platform IS NULL OR platform = ''
                     """))
+
+                    # Backfill user_id for existing devices if NULL or empty
+                    conn.execute(text("""
+                        UPDATE devices SET user_id = 1 
+                        WHERE user_id IS NULL OR user_id = ''
+                    """))
+                    conn.execute(text("""
+                        CREATE INDEX IF NOT EXISTS idx_device_user_id ON devices(user_id)
+                    """))
                     conn.commit()
             except Exception:
                 pass
-
-
 
             # 3. Migrate users table if needed
             try:
@@ -150,6 +157,16 @@ def init_db():
                 if usr_cols:
                     if "firebase_uid" not in usr_cols:
                         conn.execute(text("ALTER TABLE users ADD COLUMN firebase_uid VARCHAR(128)"))
+                    conn.commit()
+            except Exception:
+                pass
+
+            # 4. Migrate enrollment_tokens table if needed
+            try:
+                res_tok = conn.execute(text("PRAGMA table_info(enrollment_tokens)"))
+                tok_cols = {row[1] for row in res_tok.fetchall()}
+                if tok_cols and "user_id" not in tok_cols:
+                    conn.execute(text("ALTER TABLE enrollment_tokens ADD COLUMN user_id INTEGER"))
                     conn.commit()
             except Exception:
                 pass

@@ -662,6 +662,11 @@ def complete_enrollment(
         enrolled_at=now,
         registered_at=now,
         organization_id=organization_id,
+        user_id=(
+            db.query(User).filter(User.username == prov.created_by).first().id
+            if (prov and getattr(prov, "created_by", None) and db.query(User).filter(User.username == prov.created_by).first())
+            else 1
+        ),
         device_metadata=json.dumps({
             "enrollment_code": req.enrollment_code,
             "device_supplied_id": req.device_supplied_id,
