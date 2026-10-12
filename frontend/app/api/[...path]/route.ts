@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+﻿import { NextRequest, NextResponse } from "next/server";
 
 // In-memory store for enrolled devices and active enrollment sessions
 // This provides high-speed, 100% reliable responses on Vercel Serverless
@@ -593,7 +593,7 @@ export async function POST(request: NextRequest, { params }: { params: { path: s
     });
   }
 
-  // ── Device Scan Trigger (/devices/:id/scan) ──
+  // -- Device Scan Trigger (/devices/:id/scan) --
   if (pathSegments[0] === "devices" && pathSegments[2] === "scan") {
     const devId = pathSegments[1];
     const dev = devicesStore.find((d) => d.device_id === devId || String(d.id) === devId) || {
@@ -620,14 +620,19 @@ export async function POST(request: NextRequest, { params }: { params: { path: s
 
     const isMac = (dev.platform || "").toLowerCase().includes("mac");
     const isAndroid = (dev.platform || "").toLowerCase().includes("android");
+    const isLinux = (dev.platform || "").toLowerCase().includes("linux");
 
-    const scanResults = [
+    // Path builder per platform
+    const fp = (p: string) =>
+      isMac ? `/Users/analyst/${p}` :
+      isAndroid ? `/storage/emulated/0/${p}` :
+      isLinux ? `/home/analyst/${p}` :
+      `C:\\Users\\Analyst\\${p.replace(/\//g, "\\\\")}`;
+
+    // Sensitive findings (always present)
+    const sensitiveFiles = [
       {
-        filename: isMac
-          ? "/Users/analyst/Downloads/aws_service_credentials.env"
-          : isAndroid
-          ? "/storage/emulated/0/Download/api_secret_keys.env"
-          : "C:\\Users\\Analyst\\Downloads\\cloud_access_keys.env",
+        filename: fp("Downloads/cloud_access_keys.env"),
         classification: "CREDENTIALS",
         risk_score: 95,
         action_taken: "BLOCKED",
@@ -641,11 +646,7 @@ export async function POST(request: NextRequest, { params }: { params: { path: s
         ],
       },
       {
-        filename: isMac
-          ? "/Users/analyst/Documents/q3_customer_billing_records.csv"
-          : isAndroid
-          ? "/storage/emulated/0/Documents/customer_billing_records.csv"
-          : "C:\\Users\\Analyst\\Documents\\q3_customer_billing_records.csv",
+        filename: fp("Documents/q3_customer_billing_records.csv"),
         classification: "PCI_DSS",
         risk_score: 88,
         action_taken: "BLOCKED",
@@ -659,11 +660,7 @@ export async function POST(request: NextRequest, { params }: { params: { path: s
         ],
       },
       {
-        filename: isMac
-          ? "/Users/analyst/Desktop/staff_directory_pii.xlsx"
-          : isAndroid
-          ? "/storage/emulated/0/Download/staff_directory_pii.xlsx"
-          : "C:\\Users\\Analyst\\Desktop\\staff_directory_pii.xlsx",
+        filename: fp("Desktop/staff_directory_pii.xlsx"),
         classification: "PII",
         risk_score: 55,
         action_taken: "ALERT",
@@ -676,32 +673,63 @@ export async function POST(request: NextRequest, { params }: { params: { path: s
           { rule: "PII_EMAIL", matched_text: "analyst@organization.com", detail: "Employee corporate email" },
         ],
       },
-      {
-        filename: isMac
-          ? "/Users/analyst/Documents/quarterly_security_policy.pdf"
-          : isAndroid
-          ? "/storage/emulated/0/Documents/security_policy.pdf"
-          : "C:\\Users\\Analyst\\Documents\\quarterly_security_policy.pdf",
-        classification: "INTERNAL",
-        risk_score: 10,
-        action_taken: "ALLOWED",
-        file_hash: "5f10293847102938471029384710293847102938471029384710293847102938",
-        file_size: 204800,
-        severity: "LOW",
-        incident_id: null,
-        findings: [],
-      },
     ];
 
-    const threatsDetected = scanResults.filter((r) => r.risk_score >= 30).length;
-    const highRiskCount = scanResults.filter((r) => r.risk_score >= 70).length;
+    // Generate clean files to fill up to the device total files_scanned count
+    const totalFilesOnDevice = Math.max(dev.files_scanned || 0, sensitiveFiles.length);
+    const cleanCount = Math.max(0, totalFilesOnDevice - sensitiveFiles.length);
+
+    const cleanDirs = isMac
+      ? ["Documents", "Downloads", "Desktop", "Library/Application Support", "Pictures", "Movies", "Music"]
+      : isAndroid
+      ? ["Download", "Documents", "DCIM/Camera", "Pictures", "Music", "Movies"]
+      : isLinux
+      ? ["Documents", "Downloads", "Desktop", "projects", ".config", "logs", "backups"]
+      : ["Documents", "Downloads", "Desktop", "AppData/Local", "AppData/Roaming", "Projects", "Videos"];
+
+    const cleanTemplates = [
+      "README.md", "CHANGELOG.md", "package.json", "tsconfig.json", "webpack.config.js",
+      "report_q3.docx", "meeting_notes.docx", "project_plan.xlsx", "budget_overview.xlsx",
+      "presentation_2026.pptx", "architecture_diagram.pdf", "system_guide.pdf", "audit_log.txt",
+      "backup_config.json", "app.log", "error.log", "access.log", "deploy.sh", "Makefile",
+      "docker-compose.yml", "nginx.conf", "schema.sql", "migrations_v2.sql",
+      "profile_photo.png", "banner.jpg", "logo_final.svg", "icon_set.zip",
+      "test_results.xml", "coverage_report.html", "lint_output.txt", "build_artifact.tar.gz",
+      "feature_flags.yaml", "env.example", "api_docs.html", "swagger.json",
+      "invoice_2026_03.pdf", "invoice_2026_04.pdf", "invoice_2026_05.pdf",
+      "db_schema_v3.png", "erd_diagram.drawio", "sequence_diagram.puml",
+    ];
+
+    const fileSizes = [2048, 4096, 8192, 16384, 32768, 65536, 131072, 204800];
+
+    const cleanFiles = Array.from({ length: cleanCount }, (_, i) => {
+      const dir = cleanDirs[i % cleanDirs.length];
+      const tpl = cleanTemplates[i % cleanTemplates.length];
+      const name = i > 0 && i % cleanTemplates.length === 0 ? tpl.replace(/(\.\w+)$/, `_v${Math.floor(i / cleanTemplates.length)}$1`) : tpl;
+      const fullPath = fp(`${dir}/${name}`);
+      const seed = (i * 1234567891 + 987654321) >>> 0;
+      const hashPrefix = seed.toString(16).padStart(8, "0");
+      return {
+        filename: fullPath,
+        classification: "CLEAN",
+        risk_score: 0,
+        action_taken: "ALLOWED",
+        file_hash: `${hashPrefix}${"0".repeat(56)}`,
+        file_size: fileSizes[i % fileSizes.length],
+        severity: "NONE",
+        incident_id: null,
+        findings: [],
+      };
+    });
+
+    const scanResults = [...sensitiveFiles, ...cleanFiles];
+    const threatsDetected = sensitiveFiles.filter((r) => r.risk_score >= 30).length;
+    const highRiskCount = sensitiveFiles.filter((r) => r.risk_score >= 70).length;
     const totalBytesScanned = scanResults.reduce((acc, r) => acc + r.file_size, 0);
 
-    // Update in-memory telemetry for this device
-    dev.files_scanned = (dev.files_scanned || 0) + scanResults.length;
+    // Keep the device telemetry consistent -- do not increment files_scanned on repeat scans
     dev.total_scans = (dev.total_scans || 0) + 1;
     dev.last_seen = new Date().toISOString();
-    dev.incidents_count = (dev.incidents_count || 0) + threatsDetected;
 
     return NextResponse.json({
       status: "success",

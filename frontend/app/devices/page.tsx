@@ -1939,79 +1939,94 @@ export default function DevicesPage() {
 
               {/* Scanned Files & Detailed Information */}
               <div>
-                <h3 className="text-xs font-bold uppercase tracking-wider text-cyan-400 mb-3 flex items-center gap-1.5">
-                  <span>📄</span> Scanned Files & Security Findings
-                </h3>
-                <div className="space-y-3">
-                  {scanResultData.scan_results?.map((res: any, idx: number) => {
-                    const isHigh = res.risk_score >= 70;
-                    const isMed = res.risk_score >= 30 && res.risk_score < 70;
-                    const badgeBg = isHigh ? "rgba(255,59,59,0.15)" : isMed ? "rgba(245,158,11,0.15)" : "rgba(52,208,88,0.15)";
-                    const badgeColor = isHigh ? "#ff3b3b" : isMed ? "#f59e0b" : "#34d058";
-
-                    return (
-                      <div
-                        key={idx}
-                        className="p-3.5 rounded-xl space-y-2"
-                        style={{ background: "rgba(15,23,41,0.7)", border: `1px solid ${isHigh ? "rgba(255,59,59,0.3)" : "#1a2744"}` }}
-                      >
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2">
-                            <span className="text-base">{isHigh ? "🚨" : isMed ? "⚠️" : "✅"}</span>
-                            <span className="font-mono text-xs font-bold text-white">{res.filename}</span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <span
-                              className="text-[10px] font-bold px-2 py-0.5 rounded uppercase"
-                              style={{ background: badgeBg, color: badgeColor, border: `1px solid ${badgeColor}30` }}
-                            >
-                              {res.classification} ({res.risk_score}/100)
-                            </span>
-                            <span
-                              className="text-[10px] font-bold px-2 py-0.5 rounded uppercase"
-                              style={{
-                                background: res.action_taken === "BLOCKED" ? "rgba(255,59,59,0.2)" : "rgba(0,212,255,0.15)",
-                                color: res.action_taken === "BLOCKED" ? "#ff3b3b" : "#00d4ff",
-                              }}
-                            >
-                              {res.action_taken}
-                            </span>
-                          </div>
-                        </div>
-
-                        {/* File metadata row */}
-                        <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-[10px] text-slate-500 font-mono">
-                          {res.file_hash && <span>SHA-256: {res.file_hash.slice(0, 16)}…</span>}
-                          {res.file_size != null && res.file_size > 0 && (
-                            <span>
-                              Size: {res.file_size > 1024 ? `${(res.file_size / 1024).toFixed(1)} KB` : `${res.file_size} B`}
-                            </span>
-                          )}
-                          {res.severity && <span>Severity: <strong className="uppercase" style={{ color: badgeColor }}>{res.severity}</strong></span>}
-                          {res.incident_id && <span>Incident: {res.incident_id}</span>}
-                        </div>
-
-                        {res.findings && res.findings.length > 0 ? (
-                          <div className="mt-2 space-y-1">
-                            <p className="text-[10px] text-slate-400 uppercase font-semibold">Sensitive Data Discovered:</p>
-                            <div className="flex flex-wrap gap-1.5">
-                              {res.findings.map((f: any, fIdx: number) => (
-                                <span
-                                  key={fIdx}
-                                  className="text-[11px] px-2 py-0.5 rounded font-mono"
-                                  style={{ background: "rgba(255,59,59,0.1)", color: "#fca5a5", border: "1px solid rgba(255,59,59,0.2)" }}
+                {/* Sensitive / flagged files */}
+                {(() => {
+                  const flagged = (scanResultData.scan_results || []).filter((r: any) => r.risk_score > 0);
+                  const clean = (scanResultData.scan_results || []).filter((r: any) => r.risk_score === 0);
+                  return (
+                    <>
+                      {/* ── Sensitive Findings ── */}
+                      {flagged.length > 0 && (
+                        <div className="mb-4">
+                          <h3 className="text-xs font-bold uppercase tracking-wider mb-3 flex items-center gap-1.5" style={{ color: "#ff6b6b" }}>
+                            <span>🚨</span> Sensitive Findings ({flagged.length} file{flagged.length !== 1 ? "s" : ""})
+                          </h3>
+                          <div className="space-y-3">
+                            {flagged.map((res: any, idx: number) => {
+                              const isHigh = res.risk_score >= 70;
+                              const isMed = res.risk_score >= 30 && res.risk_score < 70;
+                              const badgeBg = isHigh ? "rgba(255,59,59,0.15)" : isMed ? "rgba(245,158,11,0.15)" : "rgba(52,208,88,0.15)";
+                              const badgeColor = isHigh ? "#ff3b3b" : isMed ? "#f59e0b" : "#34d058";
+                              return (
+                                <div
+                                  key={idx}
+                                  className="p-3.5 rounded-xl space-y-2"
+                                  style={{ background: "rgba(15,23,41,0.7)", border: `1px solid ${isHigh ? "rgba(255,59,59,0.3)" : "rgba(245,158,11,0.3)"}` }}
                                 >
-                                  {f.rule}: {f.matched_text}
-                                </span>
+                                  <div className="flex items-center justify-between flex-wrap gap-2">
+                                    <div className="flex items-center gap-2 min-w-0">
+                                      <span className="text-base flex-shrink-0">{isHigh ? "🚨" : "⚠️"}</span>
+                                      <span className="font-mono text-xs font-bold text-white truncate">{res.filename}</span>
+                                    </div>
+                                    <div className="flex items-center gap-2 flex-shrink-0">
+                                      <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase" style={{ background: badgeBg, color: badgeColor, border: `1px solid ${badgeColor}30` }}>
+                                        {res.classification} ({res.risk_score}/100)
+                                      </span>
+                                      <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase" style={{ background: "rgba(255,59,59,0.2)", color: "#ff3b3b" }}>
+                                        {res.action_taken}
+                                      </span>
+                                    </div>
+                                  </div>
+                                  <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-[10px] text-slate-500 font-mono">
+                                    {res.file_hash && <span>SHA-256: {res.file_hash.slice(0, 16)}…</span>}
+                                    {res.file_size > 0 && <span>Size: {res.file_size > 1024 ? `${(res.file_size / 1024).toFixed(1)} KB` : `${res.file_size} B`}</span>}
+                                    {res.severity && <span>Severity: <strong className="uppercase" style={{ color: badgeColor }}>{res.severity}</strong></span>}
+                                    {res.incident_id && <span>Incident: {res.incident_id}</span>}
+                                  </div>
+                                  {res.findings?.length > 0 && (
+                                    <div className="mt-2 space-y-1">
+                                      <p className="text-[10px] text-slate-400 uppercase font-semibold">Sensitive Data Discovered:</p>
+                                      <div className="flex flex-wrap gap-1.5">
+                                        {res.findings.map((f: any, fIdx: number) => (
+                                          <span key={fIdx} className="text-[11px] px-2 py-0.5 rounded font-mono" style={{ background: "rgba(255,59,59,0.1)", color: "#fca5a5", border: "1px solid rgba(255,59,59,0.2)" }}>
+                                            {f.rule}: {f.matched_text}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* ── Clean Files Summary ── */}
+                      {clean.length > 0 && (
+                        <div>
+                          <h3 className="text-xs font-bold uppercase tracking-wider mb-3 flex items-center gap-1.5" style={{ color: "#34d058" }}>
+                            <span>✅</span> Clean Files ({clean.length} file{clean.length !== 1 ? "s" : ""} — No threats found)
+                          </h3>
+                          <div className="rounded-xl overflow-hidden" style={{ border: "1px solid rgba(52,208,88,0.2)", background: "rgba(52,208,88,0.03)" }}>
+                            <div className="px-4 py-3 flex items-center justify-between" style={{ borderBottom: "1px solid rgba(52,208,88,0.15)" }}>
+                              <span className="text-xs text-slate-300">All files passed DLP policy checks — no PII, credentials or sensitive data detected.</span>
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded" style={{ background: "rgba(52,208,88,0.15)", color: "#34d058" }}>ALLOWED</span>
+                            </div>
+                            <div className="px-4 py-3 max-h-48 overflow-y-auto space-y-1">
+                              {clean.map((f: any, i: number) => (
+                                <div key={i} className="flex items-center justify-between gap-2 py-0.5">
+                                  <span className="font-mono text-[11px] text-slate-400 truncate">{f.filename}</span>
+                                  <span className="text-[10px] text-slate-600 flex-shrink-0">{f.file_size > 1024 ? `${(f.file_size / 1024).toFixed(0)} KB` : `${f.file_size} B`}</span>
+                                </div>
                               ))}
                             </div>
                           </div>
-                        ) : (
-                          <p className="text-[11px] text-slate-400">Clean file — no sensitive PII or credentials detected.</p>
-                        )}
-                      </div>
-                    );
-                  })}
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
                 </div>
               </div>
             </div>
