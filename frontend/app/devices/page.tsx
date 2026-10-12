@@ -404,7 +404,14 @@ export default function DevicesPage() {
     setScanLoadingDevice(devId);
     try {
       const data = await triggerDeviceScan(devId);
-      setScanResultData(data);
+      const enrichedData = {
+        ...data,
+        device: {
+          ...dev,
+          ...(data?.device || {}),
+        },
+      };
+      setScanResultData(enrichedData);
       await loadDevices(false);
     } catch (err: unknown) {
       alert(err instanceof Error ? err.message : "Failed to run scan on device");
