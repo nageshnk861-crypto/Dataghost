@@ -1,0 +1,34 @@
+services:
+  - type: web
+    name: dataghost-backend
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: pip install --no-cache-dir -r requirements.txt
+    startCommand: cd backend && uvicorn main:app --host 0.0.0.0 --port 8000
+    rootDir: backend
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11
+      - key: APP_ENV
+        value: production
+      - key: APP_NAME
+        value: DataGhost
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: 1440
+      - key: DATABASE_URL
+        value: sqlite:///./dataghost.db
+      - key: POSTGRES_USER
+        value: dataghost
+      - key: POSTGRES_PASSWORD
+        generateValue: true
+      - key: POSTGRES_DB
+        value: dataghost
+      - key: POSTGRES_HOST
+        value: localhost
+      - key: POSTGRES_PORT
+        value: 5432
+      - key: CORS_ORIGINS
+        value: "https://dataghost-five.vercel.app"

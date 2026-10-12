@@ -186,14 +186,14 @@ export default function AdminNav() {
                 className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold text-white uppercase"
                 style={{ background: "linear-gradient(135deg, #a855f7, #d946ef)" }}
               >
-                {mounted && (user?.username || "A")[0]}
+                {mounted && ((user?.username || "?")[0])}
               </div>
               <div className="min-w-0">
                 <p className="text-xs font-semibold text-white truncate">
-                  {mounted && (user?.username || "Admin")}
+                  {mounted && (user?.username || "")}
                 </p>
                 <p className="text-[10px] text-slate-400 capitalize">
-                  {mounted && (user?.role || "admin")}
+                  {mounted && (user?.role || "")}
                 </p>
               </div>
             </div>

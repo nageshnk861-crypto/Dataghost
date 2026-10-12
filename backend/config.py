@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     @property
     def effective_database_url(self) -> str:
         url = self.DATABASE_URL
+
+        # Render provides DATABASE_URL with the "postgres://" scheme, but
+        # SQLAlchemy 2.0 requires "postgresql://".
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql://", 1)
+
         if url.startswith("sqlite"):
             is_vercel = os.environ.get("VERCEL") == "1" or os.environ.get("VERCEL_ENV") is not None
             if is_vercel:
@@ -57,6 +63,7 @@ class Settings(BaseSettings):
         "http://127.0.0.1:8000",
         "https://inc1.devtunnels.ms",
         "https://dataghost.vercel.app",
+        "https://dataghost-five.vercel.app",
         "https://dataghost-git-main-nagesh17.vercel.app",
     ]
 

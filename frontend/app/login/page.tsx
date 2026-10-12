@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
@@ -24,58 +24,71 @@ export default function LoginPage() {
   const [loading, setLoading]   = useState(false);
   const [error, setError]       = useState("");
 
-  // Helper to establish session with backend after Firebase auth succeeds
+  // Helper to establish session with backend after Firebase auth succeeds.
+  // Always calls POST /auth/register/firebase which:
+  //   1. Verifies the Firebase token server-side.
+  //   2. Creates/links the DB profile (role always from DB, never client-supplied).
+  //   3. Returns a DataGhost-issued JWT so the two auth methods never conflict.
   async function completeFirebaseAuth(
     firebaseUser: { getIdToken: (force?: boolean) => Promise<string>; displayName?: string | null; email?: string | null },
-    isRegistration = false
+    _isRegistration = false   // kept for call-site compatibility, logic always uses POST now
   ) {
-    const defaultProfile = {
-      username: firebaseUser.displayName || (firebaseUser.email ? firebaseUser.email.split("@")[0] : "User"),
-      role: "analyst", // Default role, will be overridden by backend
-    };
-
-    if (typeof window !== "undefined") {
-      localStorage.setItem("dg_user", JSON.stringify(defaultProfile));
+    let idToken: string;
+    try {
+      idToken = await firebaseUser.getIdToken(true); // force-refresh to get a fresh token
+    } catch {
+      throw new Error("Unable to retrieve Firebase ID token.");
     }
 
-    // Attempt fast background profile sync without delaying dashboard navigation
+    const apiBase = getApiBaseUrl();
+    const endpoint = "/api/auth/register/firebase";
+    const targetUrl = apiBase ? `${apiBase}${endpoint}` : endpoint;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000); // 8s – backend may cold-start
+
+    let backendProfile: { access_token: string; username: string; role: string } | null = null;
     try {
-      const idToken = await firebaseUser.getIdToken(false);
-      const apiBase = getApiBaseUrl();
-      const endpoint = isRegistration ? "/api/auth/register/firebase" : "/api/auth/me";
-      const targetUrl = apiBase ? `${apiBase}${endpoint}` : endpoint;
-
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 1800); // 1.8s timeout
-
-      fetch(targetUrl, {
-        method: isRegistration ? "POST" : "GET",
+      const res = await fetch(targetUrl, {
+        method: "POST",
         headers: {
           Authorization: `Bearer ${idToken}`,
+          "Content-Type": "application/json",
           "X-Tunnel-Skip-Anti-Phishing-Page": "true",
           "bypass-tunnel-reminder": "true",
-          "Content-Type": "application/json",
         },
         signal: controller.signal,
-      })
-        .then((res) => (res.ok ? res.json() : null))
-        .then((me) => {
-          if (me && typeof window !== "undefined") {
-            localStorage.setItem(
-              "dg_user",
-              JSON.stringify({ username: me.username || defaultProfile.username, role: me.role || defaultProfile.role })
-            );
-          }
-        })
-        .catch(() => {})
-        .finally(() => clearTimeout(timer));
+      });
+      clearTimeout(timer);
+      if (res.ok) {
+        backendProfile = await res.json();
+      }
     } catch {
-      // Non-fatal: Firebase user authentication succeeded
+      clearTimeout(timer);
+      // If backend is unreachable, fall through with Firebase-only session.
+      // The role will be "analyst" and token validation will fail on protected
+      // routes, prompting re-login — safer than accepting an unknown role.
+    }
+
+    if (backendProfile?.access_token) {
+      // Backend issued a DataGhost JWT — switch to JWT auth mode.
+      // setJwtAuth() signs out of Firebase to prevent dual-token conflicts.
+      setJwtAuth(backendProfile.access_token, {
+        username: backendProfile.username,
+        role: backendProfile.role,
+      });
+    } else {
+      // Backend unavailable – store a conservative analyst profile temporarily.
+      const fallbackUsername =
+        firebaseUser.displayName ||
+        (firebaseUser.email ? firebaseUser.email.split("@")[0] : "user");
+      setJwtAuth("", { username: fallbackUsername, role: "analyst" });
     }
 
     router.replace("/dashboard");
     return true;
   }
+
 
   // Handle redirect result on page load (for mobile Google sign-in redirect flow)
   useEffect(() => {

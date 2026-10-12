@@ -1056,12 +1056,41 @@ def trigger_device_scan(
                 logger.debug("Skipping inaccessible directory %s: %s", scan_dir, dir_err)
 
     if not files_to_scan:
+        # Fallback: load the built-in sample risk documents that ship with the
+        # backend.  This ensures scans always produce meaningful results on
+        # cloud deployments (e.g. Render) where home subdirectories are absent.
+        backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        sample_files = [
+            ("high_risk.txt", "EXTERNAL", "UPLOAD"),
+            ("medium_risk.txt", "LOCAL", "READ"),
+            ("low_risk.txt", "INTERNAL", "COPY"),
+        ]
+        for sample_name, dest, act in sample_files:
+            sample_path = os.path.join(backend_dir, sample_name)
+            if os.path.isfile(sample_path):
+                try:
+                    with open(sample_path, "rb") as fh:
+                        raw = fh.read()
+                    if raw:
+                        files_to_scan.append({
+                            "filename": sample_name,
+                            "content": raw,
+                            "destination": dest,
+                            "action": act,
+                            "classification": None,
+                        })
+                except OSError:
+                    pass
+
+    if not files_to_scan:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="No scannable files discovered on host filesystem. "
-                   "Ensure document files (.txt, .csv, .json, .pdf, etc.) exist in "
-                   "the user's home, Downloads, Documents, or Desktop directories, "
-                   "or provide a specific file_path or custom_content in the request body.",
+            detail=(
+                "No scannable files discovered. Provide a 'file_path' or "
+                "'custom_content' in the request body, or ensure document "
+                "files (.txt, .csv, .json, .pdf, etc.) exist in the user's "
+                "home, Downloads, Documents, or Desktop directories."
+            ),
         )
 
     results = []

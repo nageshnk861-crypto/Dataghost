@@ -253,6 +253,7 @@ def test_migration_preserves_existing_device_data(sqlite_engine):
         device_id="legacy-device-001",
         device_name="Legacy Device",
         platform="Windows",
+        user_id=1,
         status="ACTIVE",
     )
     session.add(device)
@@ -280,9 +281,9 @@ def test_migration_multiple_devices_preserved(sqlite_engine):
     
     # Add multiple devices
     devices = [
-        Device(device_id="dev-001", device_name="Device 1", platform="Windows"),
-        Device(device_id="dev-002", device_name="Device 2", platform="Android"),
-        Device(device_id="dev-003", device_name="Device 3", platform="macOS"),
+        Device(device_id="dev-001", device_name="Device 1", platform="Windows", user_id=1),
+        Device(device_id="dev-002", device_name="Device 2", platform="Android", user_id=1),
+        Device(device_id="dev-003", device_name="Device 3", platform="macOS", user_id=1),
     ]
     for dev in devices:
         session.add(dev)
@@ -322,6 +323,7 @@ def test_migration_device_data_columns_queryable(sqlite_engine):
         os_version="20.04",
         hostname="test-host",
         ip_address="192.168.1.100",
+        user_id=1,
         status="OFFLINE",
     )
     session.add(device)

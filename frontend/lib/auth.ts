@@ -55,10 +55,17 @@ const USER_KEY = "dg_user";
 
 export function getJwt(): string | null {
   if (typeof window === "undefined") return null;
-  return localStorage.getItem(JWT_KEY);
+  const val = localStorage.getItem(JWT_KEY);
+  return val && val.trim() ? val : null;  // treat blank as absent
 }
 export function saveJwt(token: string) {
-  if (typeof window !== "undefined") localStorage.setItem(JWT_KEY, token);
+  if (typeof window === "undefined") return;
+  if (!token || !token.trim()) {
+    // Empty token = remove — never persist a blank JWT
+    localStorage.removeItem(JWT_KEY);
+    return;
+  }
+  localStorage.setItem(JWT_KEY, token);
 }
 export function removeJwt() {
   if (typeof window !== "undefined") {

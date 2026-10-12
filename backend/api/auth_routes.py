@@ -186,7 +186,14 @@ def register_via_firebase(
             detail="Account is inactive or could not be provisioned.",
         )
 
+    # Issue a DataGhost JWT so the frontend uses one authoritative token for
+    # all subsequent API calls.  Role is always read from the database here,
+    # so the client cannot influence it.
+    access_token = create_access_token({"sub": user.username})
+
     return {
+        "access_token": access_token,
+        "token_type": "bearer",
         "id": user.id,
         "username": user.username,
         "email": user.email,

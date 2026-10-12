@@ -87,7 +87,14 @@ function createToken(payload: object): string {
 
 // Helper to proxy request to backend if available
 async function tryProxyToBackend(req: NextRequest, fullPath: string): Promise<Response | null> {
-  const backendUrl = (process.env.BACKEND_INTERNAL_URL || process.env.BACKEND_URL || "").trim().replace(/\/+$/, "");
+  // Support all three possible backend URL env vars (server-side and public)
+  const backendUrl = (
+    process.env.BACKEND_INTERNAL_URL ||
+    process.env.BACKEND_URL ||
+    process.env.NEXT_PUBLIC_API_URL ||
+    ""
+  ).trim().replace(/\/+$/, "");
+
   if (!backendUrl || backendUrl.includes("devtunnels.ms")) {
     return null; // Avoid dead dev tunnels
   }

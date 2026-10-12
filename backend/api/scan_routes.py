@@ -159,33 +159,58 @@ def _process_scan(
 
             # Persist Incident if risk >= 30 (MEDIUM, HIGH, CRITICAL)
             if risk_result.risk_score >= 30:
-                incident_id = _make_incident_id(db)
                 findings_dump = [f.model_dump() for f in masked_findings]
                 categories_list = sorted(list(set(f.category for f in masked_findings if f.category)))
                 rules_list = sorted(list(set(f.rule for f in masked_findings if f.rule)))
-                
-                incident = Incident(
-                    incident_id=incident_id,
-                    user=user_label,
-                    filename=filename,
-                    file_hash=file_hash,
-                    classification=classification,
-                    confidence=confidence,
-                    risk_score=risk_result.risk_score,
-                    severity=risk_result.severity,
-                    recommended_action=risk_result.recommended_action,
-                    action_taken=risk_result.action_taken,
-                    destination=destination.upper(),
-                    action=action.upper(),
-                    status="OPEN",
-                    findings_json=json.dumps(findings_dump),
-                    categories_json=json.dumps(categories_list),
-                    triggered_rules_json=json.dumps(rules_list),
-                    device_id=device_id,
+
+                # Deduplication: avoid creating a new incident if this exact file
+                # on this device already has an open/acknowledged incident.
+                existing_incident = (
+                    db.query(Incident)
+                    .filter(
+                        Incident.file_hash == file_hash,
+                        Incident.device_id == device_id,
+                        Incident.status.in_(["OPEN", "ACKNOWLEDGED"]),
+                    )
+                    .first()
                 )
-                db.add(incident)
-                if device:
-                    device.incidents_count = (device.incidents_count or 0) + 1
+
+                if existing_incident:
+                    # Update existing incident with fresh scan results
+                    existing_incident.risk_score = risk_result.risk_score
+                    existing_incident.severity = risk_result.severity
+                    existing_incident.recommended_action = risk_result.recommended_action
+                    existing_incident.action_taken = risk_result.action_taken
+                    existing_incident.findings_json = json.dumps(findings_dump)
+                    existing_incident.categories_json = json.dumps(categories_list)
+                    existing_incident.triggered_rules_json = json.dumps(rules_list)
+                    existing_incident.updated_at = datetime.now(timezone.utc)
+                    incident_id = existing_incident.incident_id
+                else:
+                    # Create a new incident (first time this file is flagged on this device)
+                    incident_id = _make_incident_id(db)
+                    incident = Incident(
+                        incident_id=incident_id,
+                        user=user_label,
+                        filename=filename,
+                        file_hash=file_hash,
+                        classification=classification,
+                        confidence=confidence,
+                        risk_score=risk_result.risk_score,
+                        severity=risk_result.severity,
+                        recommended_action=risk_result.recommended_action,
+                        action_taken=risk_result.action_taken,
+                        destination=destination.upper(),
+                        action=action.upper(),
+                        status="OPEN",
+                        findings_json=json.dumps(findings_dump),
+                        categories_json=json.dumps(categories_list),
+                        triggered_rules_json=json.dumps(rules_list),
+                        device_id=device_id,
+                    )
+                    db.add(incident)
+                    if device:
+                        device.incidents_count = (device.incidents_count or 0) + 1
 
             db.commit()
 
