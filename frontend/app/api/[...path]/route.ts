@@ -193,12 +193,28 @@ export async function GET(request: NextRequest, { params }: { params: { path: st
 
   // ── Dashboard Stats & Activity ──
   if (pathStr === "/dashboard/stats") {
+    const totalFilesScanned = devicesStore.reduce((acc, d) => acc + (d.files_scanned || d.total_scans || 0), 0);
+    const activeCount = devicesStore.filter((d) => d.status === "ACTIVE").length;
+
     return NextResponse.json({
-      total_scans: 142,
+      protected_devices: activeCount || devicesStore.length,
+      active_devices: activeCount || devicesStore.length,
+      files_scanned: totalFilesScanned || 240,
+      total_scans: totalFilesScanned || 240,
       sensitive_files: 3,
       blocked_transfers: 1,
       critical_incidents: 1,
-      active_devices: devicesStore.length,
+      recent_threats: [
+        {
+          incident_id: "DG-2026-0001",
+          filename: "cloud_access_keys.env",
+          risk_score: 95,
+          severity: "CRITICAL",
+          user: "hanumamma",
+          timestamp: new Date().toISOString(),
+          action_taken: "BLOCKED",
+        },
+      ],
     });
   }
 
