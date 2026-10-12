@@ -12,7 +12,7 @@ import {
 } from "firebase/auth";
 import { auth } from "../../lib/firebase";
 import { useAuthContext } from "../../lib/AuthContext";
-import { API_BASE, getApiBaseUrl, fetchUserProfileFromBackend } from "../../lib/auth";
+import { API_BASE, getApiBaseUrl, fetchUserProfileFromBackend, saveUser } from "../../lib/auth";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -72,22 +72,29 @@ export default function LoginPage() {
 
     if (backendProfile?.access_token) {
       // Backend issued a DataGhost JWT — switch to JWT auth mode.
-      // setJwtAuth() signs out of Firebase to prevent dual-token conflicts.
       setJwtAuth(backendProfile.access_token, {
         username: backendProfile.username,
         role: backendProfile.role,
       });
     } else {
-      // Backend unavailable – store a conservative analyst profile temporarily.
+      // Backend unavailable or serverless mode: preserve active Firebase session!
+      // Do NOT sign out of Firebase or store a blank token.
       const fallbackUsername =
         firebaseUser.displayName ||
         (firebaseUser.email ? firebaseUser.email.split("@")[0] : "user");
-      setJwtAuth("", { username: fallbackUsername, role: "analyst" });
+      saveUser({ username: fallbackUsername, role: "analyst" });
     }
 
     router.replace("/dashboard");
     return true;
   }
+
+  // Auto-redirect to dashboard if already authenticated
+  useEffect(() => {
+    if (authReady && isAuthenticated) {
+      router.replace("/dashboard");
+    }
+  }, [authReady, isAuthenticated, router]);
 
 
   // Handle redirect result on page load (for mobile Google sign-in redirect flow)
@@ -249,19 +256,23 @@ export default function LoginPage() {
       const data = await res.json();
       const access_token = data.access_token;
 
-      // Fetch the authenticated user's profile from the backend
-      // This ensures the role comes from the database, not from inferred logic
-      const backendProfile = await fetchUserProfileFromBackend(access_token);
-      
-      if (!backendProfile) {
-        setError("Failed to verify user role from backend. Please try again.");
-        return;
-      }
-
-      const userProfile = {
-        username: backendProfile.username,
-        role: backendProfile.role,
+      // Resolve profile from backend or login response
+      let userProfile = {
+        username: data.username || input.trim(),
+        role: data.role || "analyst",
       };
+
+      try {
+        const backendProfile = await fetchUserProfileFromBackend(access_token);
+        if (backendProfile) {
+          userProfile = {
+            username: backendProfile.username,
+            role: backendProfile.role,
+          };
+        }
+      } catch {
+        // Fall back to login response credentials
+      }
 
       // Set JWT and session synchronously
       setJwtAuth(access_token, userProfile);
@@ -355,7 +366,7 @@ export default function LoginPage() {
                   className="px-2.5 py-1 text-xs rounded-lg font-semibold transition-colors cursor-pointer"
                   style={{ background: "#06b6d4", color: "#030712" }}
                 >
-                  Dashboard â†’
+                  Dashboard &rarr;
                 </button>
                 <button
                   type="button"

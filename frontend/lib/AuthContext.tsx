@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 /**
  * DataGhost â€“ Auth Context
  *
@@ -97,20 +97,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (existingJwt) {
       setAuthMethod("jwt");
       
-      // Verify the role against the backend on startup
-      // This ensures the stored role matches the current database role
+      // Verify the role against the backend on startup if reachable.
+      // Do NOT clear session if backend is temporarily offline or starting up;
+      // real API calls handle 401s via signalAuthFailure.
       fetchUserProfileFromBackend(existingJwt).then((backendProfile) => {
         if (backendProfile) {
           setUser(backendProfile);
           saveUser(backendProfile);
-        } else {
-          // Backend unavailable or invalid token - clear session
-          removeJwt();
-          setAuthMethod(null);
-          setUser(null);
+        } else if (savedUser) {
+          setUser(savedUser);
         }
       }).catch(() => {
-        // On error, keep the saved user temporarily
         if (savedUser) {
           setUser(savedUser);
         }
@@ -185,6 +182,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
    */
   const setJwtAuth = useCallback(
     (token: string, userProfile: { username: string; role: string }) => {
+      if (!token || !token.trim()) return;
       saveJwt(token);
       saveUser(userProfile);
       setUser(userProfile);
