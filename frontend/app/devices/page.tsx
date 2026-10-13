@@ -1875,7 +1875,7 @@ export default function DevicesPage() {
             </div>
 
             {/* Scan Metrics Overview */}
-            <div className="py-5 space-y-5 max-h-[70vh] overflow-y-auto pr-1">
+            <div className="py-5 space-y-5 max-h-[78vh] overflow-y-auto pr-1">
               {/* Device Info Bar */}
               {scanResultData.device && (
                 <div
@@ -1897,31 +1897,153 @@ export default function DevicesPage() {
                   {scanResultData.source && (
                     <span className="text-slate-400">Source: <strong className="text-cyan-300 uppercase">{scanResultData.source?.replace(/_/g, " ")}</strong></span>
                   )}
+                  <span className="text-slate-400">Scanned: <strong className="text-cyan-300">{new Date().toLocaleTimeString()}</strong></span>
                 </div>
               )}
 
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+              {/* ── PRIMARY RISK METRICS: Risk Level + Block Level ── */}
+              <div className="grid grid-cols-2 gap-3">
+                {/* Risk Level */}
+                <div
+                  className="p-4 rounded-xl flex flex-col items-center justify-center gap-1"
+                  style={{
+                    background: scanResultData.risk_level === "CRITICAL"
+                      ? "rgba(255,59,59,0.12)"
+                      : scanResultData.risk_level === "HIGH"
+                      ? "rgba(255,159,10,0.12)"
+                      : scanResultData.risk_level === "MEDIUM"
+                      ? "rgba(245,158,11,0.10)"
+                      : "rgba(52,208,88,0.08)",
+                    border: `1px solid ${
+                      scanResultData.risk_level === "CRITICAL" ? "rgba(255,59,59,0.4)"
+                      : scanResultData.risk_level === "HIGH" ? "rgba(255,159,10,0.4)"
+                      : scanResultData.risk_level === "MEDIUM" ? "rgba(245,158,11,0.3)"
+                      : "rgba(52,208,88,0.3)"
+                    }`,
+                  }}
+                >
+                  <span className="text-2xl">
+                    {scanResultData.risk_level === "CRITICAL" ? "🔴" : scanResultData.risk_level === "HIGH" ? "🟠" : scanResultData.risk_level === "MEDIUM" ? "🟡" : "🟢"}
+                  </span>
+                  <p
+                    className="text-2xl font-black uppercase tracking-wider"
+                    style={{
+                      color: scanResultData.risk_level === "CRITICAL" ? "#ff3b3b" : scanResultData.risk_level === "HIGH" ? "#ff9f0a" : scanResultData.risk_level === "MEDIUM" ? "#f59e0b" : "#34d058",
+                    }}
+                  >
+                    {scanResultData.risk_level || "LOW"}
+                  </p>
+                  <p className="text-[10px] text-slate-400 uppercase font-bold tracking-widest">Risk Level</p>
+                  <p className="text-xs font-bold" style={{ color: "#94a3b8" }}>Score: {scanResultData.risk_score || 0}/100</p>
+                </div>
+
+                {/* Block Level */}
+                <div
+                  className="p-4 rounded-xl flex flex-col items-center justify-center gap-1"
+                  style={{
+                    background: scanResultData.block_level === "BLOCKED"
+                      ? "rgba(255,59,59,0.12)"
+                      : scanResultData.block_level === "ALERTED"
+                      ? "rgba(255,159,10,0.12)"
+                      : "rgba(52,208,88,0.08)",
+                    border: `1px solid ${
+                      scanResultData.block_level === "BLOCKED" ? "rgba(255,59,59,0.4)"
+                      : scanResultData.block_level === "ALERTED" ? "rgba(255,159,10,0.4)"
+                      : "rgba(52,208,88,0.3)"
+                    }`,
+                  }}
+                >
+                  <span className="text-2xl">
+                    {scanResultData.block_level === "BLOCKED" ? "🚫" : scanResultData.block_level === "ALERTED" ? "⚠️" : "✅"}
+                  </span>
+                  <p
+                    className="text-2xl font-black uppercase tracking-wider"
+                    style={{
+                      color: scanResultData.block_level === "BLOCKED" ? "#ff3b3b" : scanResultData.block_level === "ALERTED" ? "#ff9f0a" : "#34d058",
+                    }}
+                  >
+                    {scanResultData.block_level || "ALLOWED"}
+                  </p>
+                  <p className="text-[10px] text-slate-400 uppercase font-bold tracking-widest">Block Level</p>
+                  <p className="text-xs font-bold" style={{ color: "#94a3b8" }}>Enforcement Status</p>
+                </div>
+              </div>
+
+              {/* ── SECONDARY METRICS: Sensitive Files / Blocked Transfers / Critical Incidents ── */}
+              <div className="grid grid-cols-3 gap-3">
+                <div
+                  className="p-3 rounded-xl text-center"
+                  style={{ background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.25)" }}
+                >
+                  <p className="text-2xl font-black" style={{ color: (scanResultData.sensitive_files || 0) > 0 ? "#f59e0b" : "#34d058" }}>
+                    {scanResultData.sensitive_files || 0}
+                  </p>
+                  <p className="text-[10px] text-slate-400 uppercase font-bold mt-0.5 tracking-wide">Sensitive Files</p>
+                </div>
+                <div
+                  className="p-3 rounded-xl text-center"
+                  style={{ background: "rgba(255,59,59,0.08)", border: "1px solid rgba(255,59,59,0.25)" }}
+                >
+                  <p className="text-2xl font-black" style={{ color: (scanResultData.blocked_transfers || 0) > 0 ? "#ff3b3b" : "#34d058" }}>
+                    {scanResultData.blocked_transfers || 0}
+                  </p>
+                  <p className="text-[10px] text-slate-400 uppercase font-bold mt-0.5 tracking-wide">Blocked Transfers</p>
+                </div>
+                <div
+                  className="p-3 rounded-xl text-center"
+                  style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)" }}
+                >
+                  <p className="text-2xl font-black" style={{ color: (scanResultData.critical_incidents || 0) > 0 ? "#ef4444" : "#34d058" }}>
+                    {scanResultData.critical_incidents || 0}
+                  </p>
+                  <p className="text-[10px] text-slate-400 uppercase font-bold mt-0.5 tracking-wide">Critical Incidents</p>
+                </div>
+              </div>
+
+              {/* ── USER INFORMATION & AI MODEL SHARING stats ── */}
+              <div className="grid grid-cols-2 gap-3">
+                <div
+                  className="p-3 rounded-xl"
+                  style={{ background: "rgba(139,92,246,0.08)", border: "1px solid rgba(139,92,246,0.25)" }}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-base">👤</span>
+                    <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wide">User Information Detected</p>
+                  </div>
+                  <p className="text-xl font-black" style={{ color: (scanResultData.user_information_count || 0) > 0 ? "#a78bfa" : "#34d058" }}>
+                    {scanResultData.user_information_count || 0}
+                    <span className="text-xs font-normal text-slate-500 ml-1">findings</span>
+                  </p>
+                  <p className="text-[10px] text-slate-500 mt-0.5">PII · Credentials · Financial · Corporate</p>
+                </div>
+                <div
+                  className="p-3 rounded-xl"
+                  style={{ background: "rgba(6,182,212,0.08)", border: "1px solid rgba(6,182,212,0.25)" }}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-base">🤖</span>
+                    <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wide">AI Model Sharing Detected</p>
+                  </div>
+                  <p className="text-xl font-black" style={{ color: (scanResultData.ai_model_sharing_count || 0) > 0 ? "#06b6d4" : "#34d058" }}>
+                    {scanResultData.ai_model_sharing_count || 0}
+                    <span className="text-xs font-normal text-slate-500 ml-1">findings</span>
+                  </p>
+                  <p className="text-[10px] text-slate-500 mt-0.5">OpenAI · Anthropic · HuggingFace · LLM</p>
+                </div>
+              </div>
+
+              {/* ── Files count row ── */}
+
+              <div className="grid grid-cols-3 gap-3">
                 <div className="p-3 rounded-xl text-center" style={{ background: "rgba(15,23,41,0.7)", border: "1px solid #1a2744" }}>
                   <p className="text-xl font-bold text-cyan-400">{scanResultData.scanned_files_count || 0}</p>
                   <p className="text-[10px] text-slate-400 uppercase mt-0.5">Files Scanned</p>
                 </div>
                 <div className="p-3 rounded-xl text-center" style={{ background: "rgba(15,23,41,0.7)", border: "1px solid #1a2744" }}>
-                  <p className="text-xl font-bold" style={{ color: scanResultData.threats_detected > 0 ? "#ff3b3b" : "#34d058" }}>
+                  <p className="text-xl font-bold" style={{ color: (scanResultData.threats_detected || 0) > 0 ? "#ff3b3b" : "#34d058" }}>
                     {scanResultData.threats_detected || 0}
                   </p>
                   <p className="text-[10px] text-slate-400 uppercase mt-0.5">Threats Detected</p>
-                </div>
-                <div className="p-3 rounded-xl text-center" style={{ background: "rgba(15,23,41,0.7)", border: "1px solid #1a2744" }}>
-                  <p className="text-xl font-bold" style={{ color: (scanResultData.high_risk_count || 0) > 0 ? "#ff3b3b" : "#34d058" }}>
-                    {scanResultData.high_risk_count || 0}
-                  </p>
-                  <p className="text-[10px] text-slate-400 uppercase mt-0.5">High Risk</p>
-                </div>
-                <div className="p-3 rounded-xl text-center" style={{ background: "rgba(15,23,41,0.7)", border: "1px solid #1a2744" }}>
-                  <p className="text-xl font-bold text-amber-400">
-                    {scanResultData.scan_results?.reduce((acc: number, r: any) => acc + (r.findings?.length || 0), 0) || 0}
-                  </p>
-                  <p className="text-[10px] text-slate-400 uppercase mt-0.5">DLP Findings</p>
                 </div>
                 <div className="p-3 rounded-xl text-center" style={{ background: "rgba(15,23,41,0.7)", border: "1px solid #1a2744" }}>
                   <p className="text-sm font-bold text-violet-400 mt-1">
@@ -1933,9 +2055,49 @@ export default function DevicesPage() {
                         : `${scanResultData.total_bytes_scanned} B`
                       : "—"}
                   </p>
-                  <p className="text-[10px] text-slate-400 uppercase mt-1.5">Data Scanned</p>
+                  <p className="text-[10px] text-slate-400 uppercase mt-1">Data Scanned</p>
                 </div>
               </div>
+
+              {/* ── Incidents generated this scan ── */}
+              {(() => {
+                const incidentFiles = (scanResultData.scan_results || []).filter((r: any) => r.incident_id);
+                return incidentFiles.length > 0 ? (
+                  <div>
+                    <h3 className="text-xs font-bold uppercase tracking-wider mb-3 flex items-center gap-1.5" style={{ color: "#f87171" }}>
+                      <span>⚡</span> Incidents Generated ({incidentFiles.length})
+                    </h3>
+                    <div className="rounded-xl overflow-hidden" style={{ border: "1px solid rgba(248,113,113,0.2)", background: "rgba(248,113,113,0.03)" }}>
+                      <table className="w-full text-left text-[11px]">
+                        <thead>
+                          <tr className="border-b" style={{ borderColor: "rgba(248,113,113,0.15)", background: "rgba(15,23,41,0.8)" }}>
+                            <th className="px-3 py-2 text-slate-400 font-semibold uppercase text-[10px]">Incident ID</th>
+                            <th className="px-3 py-2 text-slate-400 font-semibold uppercase text-[10px]">File</th>
+                            <th className="px-3 py-2 text-slate-400 font-semibold uppercase text-[10px]">Severity</th>
+                            <th className="px-3 py-2 text-slate-400 font-semibold uppercase text-[10px]">Risk</th>
+                            <th className="px-3 py-2 text-slate-400 font-semibold uppercase text-[10px]">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/40">
+                          {incidentFiles.map((r: any, i: number) => (
+                            <tr key={i} className="hover:bg-slate-800/30">
+                              <td className="px-3 py-2 font-mono text-cyan-400">{r.incident_id}</td>
+                              <td className="px-3 py-2 font-mono text-slate-300 max-w-[120px] truncate">{r.filename}</td>
+                              <td className="px-3 py-2 font-bold uppercase" style={{ color: r.severity === "CRITICAL" ? "#ff3b3b" : r.severity === "HIGH" ? "#ff9f0a" : "#f59e0b" }}>
+                                {r.severity}
+                              </td>
+                              <td className="px-3 py-2 font-bold text-slate-200">{r.risk_score}/100</td>
+                              <td className="px-3 py-2 font-bold" style={{ color: r.action_taken === "BLOCKED" ? "#ff3b3b" : r.action_taken === "ALERTED" ? "#ff9f0a" : "#34d058" }}>
+                                {r.action_taken}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ) : null;
+              })()}
 
               {/* Scanned Files & Detailed Information */}
               <div>
@@ -1957,6 +2119,11 @@ export default function DevicesPage() {
                               const isMed = res.risk_score >= 30 && res.risk_score < 70;
                               const badgeBg = isHigh ? "rgba(255,59,59,0.15)" : isMed ? "rgba(245,158,11,0.15)" : "rgba(52,208,88,0.15)";
                               const badgeColor = isHigh ? "#ff3b3b" : isMed ? "#f59e0b" : "#34d058";
+                              const piiFindings = (res.findings || []).filter((f: any) => f.category === "PII");
+                              const credFindings = (res.findings || []).filter((f: any) => f.category === "CREDENTIALS");
+                              const aiFindings = (res.findings || []).filter((f: any) => f.category === "AI_MODELS");
+                              const finFindings = (res.findings || []).filter((f: any) => f.category === "FINANCIAL");
+                              const corpFindings = (res.findings || []).filter((f: any) => f.category === "CORPORATE");
                               return (
                                 <div
                                   key={idx}
@@ -1981,16 +2148,74 @@ export default function DevicesPage() {
                                     {res.file_hash && <span>SHA-256: {res.file_hash.slice(0, 16)}…</span>}
                                     {res.file_size > 0 && <span>Size: {res.file_size > 1024 ? `${(res.file_size / 1024).toFixed(1)} KB` : `${res.file_size} B`}</span>}
                                     {res.severity && <span>Severity: <strong className="uppercase" style={{ color: badgeColor }}>{res.severity}</strong></span>}
-                                    {res.incident_id && <span>Incident: {res.incident_id}</span>}
+                                    {res.incident_id && <span>Incident: <strong className="text-cyan-400">{res.incident_id}</strong></span>}
+                                    {res.destination && <span>Destination: <strong className="text-amber-400 uppercase">{res.destination}</strong></span>}
                                   </div>
                                   {res.findings?.length > 0 && (
-                                    <div className="mt-2 space-y-1">
-                                      <p className="text-[10px] text-slate-400 uppercase font-semibold">Sensitive Data Discovered:</p>
-                                      <div className="flex flex-wrap gap-1.5">
+                                    <div className="mt-2 space-y-1.5">
+                                      {piiFindings.length > 0 && (
+                                        <div>
+                                          <p className="text-[10px] text-violet-400 uppercase font-bold mb-1">👤 User Information (PII)</p>
+                                          <div className="flex flex-wrap gap-1">
+                                            {piiFindings.map((f: any, fIdx: number) => (
+                                              <span key={fIdx} className="text-[11px] px-2 py-0.5 rounded font-mono" style={{ background: "rgba(139,92,246,0.1)", color: "#c4b5fd", border: "1px solid rgba(139,92,246,0.2)" }}>
+                                                {f.rule}: {f.matched_text}
+                                              </span>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      )}
+                                      {aiFindings.length > 0 && (
+                                        <div>
+                                          <p className="text-[10px] text-cyan-400 uppercase font-bold mb-1">🤖 AI Model Sharing</p>
+                                          <div className="flex flex-wrap gap-1">
+                                            {aiFindings.map((f: any, fIdx: number) => (
+                                              <span key={fIdx} className="text-[11px] px-2 py-0.5 rounded font-mono" style={{ background: "rgba(6,182,212,0.1)", color: "#67e8f9", border: "1px solid rgba(6,182,212,0.2)" }}>
+                                                {f.rule}: {f.matched_text}
+                                              </span>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      )}
+                                      {credFindings.length > 0 && (
+                                        <div>
+                                          <p className="text-[10px] text-red-400 uppercase font-bold mb-1">🔑 Credentials / Keys</p>
+                                          <div className="flex flex-wrap gap-1">
+                                            {credFindings.map((f: any, fIdx: number) => (
+                                              <span key={fIdx} className="text-[11px] px-2 py-0.5 rounded font-mono" style={{ background: "rgba(255,59,59,0.1)", color: "#fca5a5", border: "1px solid rgba(255,59,59,0.2)" }}>
+                                                {f.rule}: {f.matched_text}
+                                              </span>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      )}
+                                      {finFindings.length > 0 && (
+                                        <div>
+                                          <p className="text-[10px] text-amber-400 uppercase font-bold mb-1">💳 Financial Data</p>
+                                          <div className="flex flex-wrap gap-1">
+                                            {finFindings.map((f: any, fIdx: number) => (
+                                              <span key={fIdx} className="text-[11px] px-2 py-0.5 rounded font-mono" style={{ background: "rgba(245,158,11,0.1)", color: "#fcd34d", border: "1px solid rgba(245,158,11,0.2)" }}>
+                                                {f.rule}: {f.matched_text}
+                                              </span>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      )}
+                                      {corpFindings.length > 0 && (
+                                        <div>
+                                          <p className="text-[10px] text-emerald-400 uppercase font-bold mb-1">🏢 Corporate Data</p>
+                                          <div className="flex flex-wrap gap-1">
+                                            {corpFindings.map((f: any, fIdx: number) => (
+                                              <span key={fIdx} className="text-[11px] px-2 py-0.5 rounded font-mono" style={{ background: "rgba(52,208,88,0.1)", color: "#86efac", border: "1px solid rgba(52,208,88,0.2)" }}>
+                                                {f.rule}: {f.matched_text}
+                                              </span>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      )}
+                                      <div className="mt-1 space-y-0.5">
                                         {res.findings.map((f: any, fIdx: number) => (
-                                          <span key={fIdx} className="text-[11px] px-2 py-0.5 rounded font-mono" style={{ background: "rgba(255,59,59,0.1)", color: "#fca5a5", border: "1px solid rgba(255,59,59,0.2)" }}>
-                                            {f.rule}: {f.matched_text}
-                                          </span>
+                                          <p key={fIdx} className="text-[10px] text-slate-500">• {f.detail}</p>
                                         ))}
                                       </div>
                                     </div>

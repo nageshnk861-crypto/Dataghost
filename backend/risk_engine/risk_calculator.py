@@ -23,6 +23,10 @@ DESTINATION_SCORES: Dict[str, int] = {
     "CLOUD": 15,
     "USB": 18,
     "EXTERNAL": 20,
+    "AI_MODEL": 20,
+    "AI_SERVICE": 20,
+    "CHATGPT": 20,
+    "LLM": 20,
 }
 
 ACTION_SCORES: Dict[str, int] = {

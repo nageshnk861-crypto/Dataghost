@@ -1,7 +1,9 @@
-﻿import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import fs from "fs";
+import path from "path";
+import crypto from "crypto";
 
-// In-memory store for enrolled devices and active enrollment sessions
-// This provides high-speed, 100% reliable responses on Vercel Serverless
+// ─── Interfaces ──────────────────────────────────────────────────────────────
 interface DeviceRecord {
   id: number;
   device_id: string;
@@ -18,11 +20,37 @@ interface DeviceRecord {
   risk_score: number;
   policy_status: string;
   sensitive_files_count: number;
-  files_scanned?: number;
+  files_scanned: number;
   total_scans: number;
   blocked_transfers_count: number;
-  incidents_count?: number;
-  created_at?: string;
+  incidents_count: number;
+  created_at: string;
+}
+
+interface IncidentRecord {
+  id: number;
+  incident_id: string;
+  user: string;
+  filename: string;
+  file_hash: string;
+  classification: string;
+  risk_score: number;
+  severity: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+  status: "OPEN" | "ACKNOWLEDGED" | "RESOLVED";
+  destination: string;
+  action: string;
+  action_taken: "BLOCKED" | "ALERTED" | "ALLOWED";
+  findings_json?: string;
+  findings: Array<{
+    rule: string;
+    category: string;
+    severity: string;
+    matched_text: string;
+    detail?: string;
+  }>;
+  device_id: string;
+  created_at: string;
+  timestamp: string;
 }
 
 interface EnrollmentSession {
@@ -35,54 +63,10 @@ interface EnrollmentSession {
   deviceId?: string;
 }
 
+// ─── In-Memory Storage ────────────────────────────────────────────────────────
 const enrollmentSessions = new Map<string, EnrollmentSession>();
-
-const devicesStore: DeviceRecord[] = [
-  {
-    id: 1,
-    device_id: "dev-desktop-01",
-    device_name: "Corporate-PC-01",
-    hostname: "DESKTOP-DG01",
-    platform: "Windows",
-    os_name: "Windows 11 Enterprise",
-    os_type: "Windows",
-    os_version: "Windows 11 Enterprise (23H2)",
-    status: "ACTIVE",
-    last_seen: new Date().toISOString(),
-    ip_address: "192.168.1.101",
-    agent_version: "2.4.0",
-    risk_score: 12,
-    policy_status: "Enforced",
-    sensitive_files_count: 3,
-    files_scanned: 142,
-    total_scans: 142,
-    blocked_transfers_count: 1,
-    incidents_count: 1,
-    created_at: new Date(Date.now() - 86400000 * 3).toISOString(),
-  },
-  {
-    id: 2,
-    device_id: "dev-macbook-pro",
-    device_name: "MacBook-Engineering",
-    hostname: "macbook-pro.local",
-    platform: "macOS",
-    os_name: "macOS 14 Sonoma",
-    os_type: "macOS",
-    os_version: "macOS 14.4 Sonoma",
-    status: "ACTIVE",
-    last_seen: new Date().toISOString(),
-    ip_address: "192.168.1.105",
-    agent_version: "2.4.0",
-    risk_score: 5,
-    policy_status: "Enforced",
-    sensitive_files_count: 1,
-    files_scanned: 98,
-    total_scans: 98,
-    blocked_transfers_count: 0,
-    incidents_count: 0,
-    created_at: new Date(Date.now() - 86400000 * 2).toISOString(),
-  },
-];
+const devicesStore: DeviceRecord[] = [];
+const incidentsStore: IncidentRecord[] = [];
 
 // Helper to generate a code like DG-A1B2-C3D4
 function generateEnrollmentCode(): string {
@@ -92,7 +76,7 @@ function generateEnrollmentCode(): string {
   return `DG-${part()}-${part()}`;
 }
 
-// Simple mock JWT generator for instant cloud auth
+// Mock JWT generator for instant cloud auth
 function createToken(payload: object): string {
   const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
   const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
@@ -100,18 +84,256 @@ function createToken(payload: object): string {
   return `${header}.${body}.${signature}`;
 }
 
+// Extract username from request
+function extractUserFromRequest(req: NextRequest): string {
+  const authHeader = req.headers.get("authorization") || "";
+  const token = authHeader.replace(/^Bearer\s+/i, "").trim();
+  if (!token) return "analyst";
+  try {
+    const parts = token.split(".");
+    if (parts.length >= 2) {
+      const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf-8"));
+      return payload.sub || payload.username || (payload.email ? payload.email.split("@")[0] : "analyst");
+    }
+  } catch {
+    // fallback
+  }
+  return "analyst";
+}
+
+// ─── Real DLP Scanner Engine ──────────────────────────────────────────────────
+interface DlpRule {
+  name: string;
+  pattern: RegExp;
+  category: "PII" | "FINANCIAL" | "CREDENTIALS" | "CORPORATE" | "AI_MODELS";
+  severity: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+  detail: string;
+}
+
+const DLP_RULES: DlpRule[] = [
+  // User Information (PII)
+  {
+    name: "EMAIL_ADDRESS",
+    pattern: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g,
+    category: "PII",
+    severity: "MEDIUM",
+    detail: "User Corporate/Personal Email Address Detected",
+  },
+  {
+    name: "PHONE_NUMBER",
+    pattern: /\b[6-9]\d{9}\b/g,
+    category: "PII",
+    severity: "MEDIUM",
+    detail: "Contact Phone Number Detected",
+  },
+  {
+    name: "US_SSN",
+    pattern: /\b(?!000|666|9\d{2})\d{3}-(?!00)\d{2}-(?!0000)\d{4}\b/g,
+    category: "PII",
+    severity: "HIGH",
+    detail: "US Social Security Number (SSN) Detected",
+  },
+  {
+    name: "AADHAAR_CARD",
+    pattern: /\b[2-9]\d{3}[ -]\d{4}[ -]\d{4}\b/g,
+    category: "PII",
+    severity: "HIGH",
+    detail: "Government National ID (Aadhaar) Detected",
+  },
+  {
+    name: "PAN_CARD",
+    pattern: /\b[A-Z]{5}[0-9]{4}[A-Z]\b/g,
+    category: "PII",
+    severity: "HIGH",
+    detail: "Government Tax / PAN Card Detected",
+  },
+  {
+    name: "EMPLOYEE_RECORD",
+    pattern: /\b(?:employee id|staff id|payroll|salary|ctc|annual package)\b/gi,
+    category: "PII",
+    severity: "HIGH",
+    detail: "Confidential Employee Identity & Payroll Record",
+  },
+
+  // Financial (PCI/Banking)
+  {
+    name: "PCI_CREDIT_CARD",
+    pattern: /\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\b/g,
+    category: "FINANCIAL",
+    severity: "HIGH",
+    detail: "Payment Card Number (PCI-DSS violation)",
+  },
+  {
+    name: "BANK_ACCOUNT",
+    pattern: /\b(?:account|acc|bank|ifsc|iban)[\s:=]+([0-9]{9,18})\b/gi,
+    category: "FINANCIAL",
+    severity: "HIGH",
+    detail: "Bank Account Details Detected",
+  },
+
+  // Credentials & Keys
+  {
+    name: "PASSWORD_FIELD",
+    pattern: /(?:password|passwd|pwd)[\s:=]+["']?([^\s"']{5,})["']?/gi,
+    category: "CREDENTIALS",
+    severity: "HIGH",
+    detail: "Exposed Password / Authentication Secret",
+  },
+  {
+    name: "AWS_ACCESS_KEY",
+    pattern: /\bAKIA[0-9A-Z]{16}\b/g,
+    category: "CREDENTIALS",
+    severity: "CRITICAL",
+    detail: "Exposed AWS Access Key ID",
+  },
+  {
+    name: "GOOGLE_API_KEY",
+    pattern: /\bAIza[0-9A-Za-z_-]{35}\b/g,
+    category: "CREDENTIALS",
+    severity: "CRITICAL",
+    detail: "Exposed Google Cloud / Gemini API Key",
+  },
+  {
+    name: "PRIVATE_KEY",
+    pattern: /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/g,
+    category: "CREDENTIALS",
+    severity: "CRITICAL",
+    detail: "Exposed Cryptographic Private Key",
+  },
+
+  // AI Models Sharing & GenAI Exfiltration
+  {
+    name: "OPENAI_API_KEY",
+    pattern: /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/g,
+    category: "AI_MODELS",
+    severity: "CRITICAL",
+    detail: "Exposed OpenAI / ChatGPT API Secret Key",
+  },
+  {
+    name: "ANTHROPIC_API_KEY",
+    pattern: /\bsk-ant-[A-Za-z0-9_-]{20,}\b/g,
+    category: "AI_MODELS",
+    severity: "CRITICAL",
+    detail: "Exposed Anthropic Claude API Key",
+  },
+  {
+    name: "HUGGINGFACE_TOKEN",
+    pattern: /\bhf_[A-Za-z0-9]{34,}\b/g,
+    category: "AI_MODELS",
+    severity: "CRITICAL",
+    detail: "Exposed HuggingFace AI Model Hub Token",
+  },
+  {
+    name: "AI_MODEL_SHARING",
+    pattern: /\b(?:system prompt|you are a helpful ai|chatgpt prompt|openai completions|anthropic claude|share with ai|feeding to gpt|input to llm|prompt for ai model)\b/gi,
+    category: "AI_MODELS",
+    severity: "HIGH",
+    detail: "Corporate Data Exfiltration to Public AI Models / Chatbots",
+  },
+  {
+    name: "AI_TRAINING_DATA_LEAK",
+    pattern: /\b(?:ai training dataset|fine-tuning data|llm training corpus|rlhf dataset)\b/gi,
+    category: "AI_MODELS",
+    severity: "HIGH",
+    detail: "Proprietary AI Model Training & Fine-Tuning Dataset Leak",
+  },
+];
+
+function maskMatch(str: string, rule: string): string {
+  if (!str) return "";
+  if (rule === "EMAIL_ADDRESS") {
+    const parts = str.split("@");
+    if (parts.length === 2) {
+      return `${parts[0].slice(0, 2)}***@${parts[1]}`;
+    }
+  }
+  if (str.length > 8) {
+    return `${str.slice(0, 4)}***${str.slice(-4)}`;
+  }
+  return "***";
+}
+
+function analyzeTextDlp(text: string, filename: string, destination: string = "LOCAL") {
+  const findings: Array<{
+    rule: string;
+    category: string;
+    severity: string;
+    matched_text: string;
+    detail: string;
+  }> = [];
+
+  for (const rule of DLP_RULES) {
+    const matches = text.match(rule.pattern);
+    if (matches) {
+      for (const m of matches.slice(0, 3)) {
+        findings.push({
+          rule: rule.name,
+          category: rule.category,
+          severity: rule.severity,
+          matched_text: maskMatch(m, rule.name),
+          detail: rule.detail,
+        });
+      }
+    }
+  }
+
+  // Calculate scores
+  let findingsScore = 0;
+  for (const f of findings) {
+    if (f.severity === "CRITICAL") findingsScore += 45;
+    else if (f.severity === "HIGH") findingsScore += 25;
+    else if (f.severity === "MEDIUM") findingsScore += 12;
+    else findingsScore += 5;
+  }
+
+  const isAiDest = ["AI_MODEL", "AI_SERVICE", "CHATGPT", "LLM"].includes(destination.toUpperCase());
+  const hasAiLeak = findings.some((f) => f.category === "AI_MODELS");
+  const destBonus = isAiDest || hasAiLeak ? 20 : destination === "EXTERNAL" ? 15 : destination === "USB" ? 18 : 5;
+
+  let totalScore = findings.length === 0 ? 0 : Math.min(100, Math.max(10, findingsScore + destBonus));
+
+  let classification = "PUBLIC";
+  if (totalScore >= 75) classification = "RESTRICTED";
+  else if (totalScore >= 45) classification = "CONFIDENTIAL";
+  else if (totalScore >= 15) classification = "INTERNAL";
+
+  let severity: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL" = "LOW";
+  if (totalScore >= 80 || findings.some((f) => f.severity === "CRITICAL")) {
+    severity = "CRITICAL";
+  } else if (totalScore >= 60 || findings.some((f) => f.severity === "HIGH")) {
+    severity = "HIGH";
+  } else if (totalScore >= 30) {
+    severity = "MEDIUM";
+  }
+
+  let action_taken: "BLOCKED" | "ALERTED" | "ALLOWED" = "ALLOWED";
+  if (severity === "CRITICAL" || totalScore >= 70 || hasAiLeak) {
+    action_taken = "BLOCKED";
+  } else if (severity === "HIGH" || severity === "MEDIUM") {
+    action_taken = "ALERTED";
+  }
+
+  return {
+    filename,
+    findings,
+    risk_score: totalScore,
+    severity,
+    classification,
+    action_taken,
+  };
+}
+
 // Helper to proxy request to backend if available
 async function tryProxyToBackend(req: NextRequest, fullPath: string): Promise<Response | null> {
-  // Support all three possible backend URL env vars (server-side and public)
   const backendUrl = (
     process.env.BACKEND_INTERNAL_URL ||
     process.env.BACKEND_URL ||
     process.env.NEXT_PUBLIC_API_URL ||
-    ""
+    "http://127.0.0.1:8000"
   ).trim().replace(/\/+$/, "");
 
   if (!backendUrl || backendUrl.includes("devtunnels.ms")) {
-    return null; // Avoid dead dev tunnels
+    return null;
   }
 
   const searchParams = req.nextUrl.search;
@@ -119,7 +341,7 @@ async function tryProxyToBackend(req: NextRequest, fullPath: string): Promise<Re
 
   try {
     const isScanRequest = fullPath.includes("/scan");
-    const timeoutMs = isScanRequest ? 45000 : 15000;
+    const timeoutMs = isScanRequest ? 45000 : 4000;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -145,17 +367,18 @@ async function tryProxyToBackend(req: NextRequest, fullPath: string): Promise<Re
   return null;
 }
 
+// ─── GET Handlers ─────────────────────────────────────────────────────────────
 export async function GET(request: NextRequest, { params }: { params: { path: string[] } }) {
   const pathSegments = params.path || [];
   const pathStr = "/" + pathSegments.join("/");
   const fullApiPath = `/api${pathStr}`;
 
-  // 1. Try real backend proxy if configured
+  // 1. Try real backend proxy if configured & reachable
   const proxyRes = await tryProxyToBackend(request, fullApiPath);
   if (proxyRes) return proxyRes;
 
-  // 2. Fallback native handler
   const origin = request.nextUrl.origin;
+  const currentUser = extractUserFromRequest(request);
 
   // ── Health ──
   if (pathStr === "/health" || pathStr === "/v1/health") {
@@ -164,57 +387,43 @@ export async function GET(request: NextRequest, { params }: { params: { path: st
 
   // ── Authentication Profile ──
   if (pathStr === "/auth/me" || pathStr === "/users/me") {
-    const authHeader = request.headers.get("authorization") || "";
-    const token = authHeader.replace(/^Bearer\s+/i, "");
-    let username = "user";
-    let role = "analyst";
-    if (token) {
-      try {
-        const parts = token.split(".");
-        if (parts.length >= 2) {
-          const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf-8"));
-          if (payload.sub) username = payload.sub;
-          if (payload.role) role = payload.role;
-          if (payload.email) username = payload.email.split("@")[0];
-        }
-      } catch {
-        // fallback
-      }
-    }
     return NextResponse.json({
       id: 1,
-      username,
-      email: `${username}@dataghost.local`,
-      role,
+      username: currentUser,
+      email: `${currentUser}@dataghost.local`,
+      role: currentUser.toLowerCase().includes("admin") ? "admin" : "analyst",
       is_active: true,
       created_at: new Date().toISOString(),
     });
   }
 
-  // ── Dashboard Stats & Activity ──
+  // ── Dashboard Stats ──
   if (pathStr === "/dashboard/stats") {
     const totalFilesScanned = devicesStore.reduce((acc, d) => acc + (d.files_scanned || d.total_scans || 0), 0);
     const activeCount = devicesStore.filter((d) => d.status === "ACTIVE").length;
+    const sensitiveFiles = devicesStore.reduce((acc, d) => acc + (d.sensitive_files_count || 0), 0) || incidentsStore.length;
+    const blockedTransfers = incidentsStore.filter((i) => i.action_taken === "BLOCKED").length;
+    const criticalIncidents = incidentsStore.filter((i) => i.severity === "CRITICAL").length;
+
+    const recentThreats = incidentsStore.slice(0, 5).map((i) => ({
+      incident_id: i.incident_id,
+      filename: i.filename,
+      risk_score: i.risk_score,
+      severity: i.severity,
+      user: i.user,
+      timestamp: i.timestamp,
+      action_taken: i.action_taken,
+    }));
 
     return NextResponse.json({
-      protected_devices: activeCount || devicesStore.length,
-      active_devices: activeCount || devicesStore.length,
-      files_scanned: totalFilesScanned || 240,
-      total_scans: totalFilesScanned || 240,
-      sensitive_files: 3,
-      blocked_transfers: 1,
-      critical_incidents: 1,
-      recent_threats: [
-        {
-          incident_id: "DG-2026-0001",
-          filename: "cloud_access_keys.env",
-          risk_score: 95,
-          severity: "CRITICAL",
-          user: "hanumamma",
-          timestamp: new Date().toISOString(),
-          action_taken: "BLOCKED",
-        },
-      ],
+      protected_devices: activeCount,
+      active_devices: activeCount,
+      files_scanned: totalFilesScanned,
+      total_scans: totalFilesScanned,
+      sensitive_files: sensitiveFiles,
+      blocked_transfers: blockedTransfers,
+      critical_incidents: criticalIncidents,
+      recent_threats: recentThreats,
     });
   }
 
@@ -224,41 +433,58 @@ export async function GET(request: NextRequest, { params }: { params: { path: st
     const activity = Array.from({ length: 7 }, (_, i) => {
       const d = new Date(now);
       d.setDate(d.getDate() - (6 - i));
+      const dateName = days[d.getDay()];
+      const dayIncidents = incidentsStore.filter((inc) => {
+        const incDate = new Date(inc.timestamp);
+        return incDate.toDateString() === d.toDateString();
+      });
       return {
-        date: days[d.getDay()],
-        scans: 18 + i * 3,
-        sensitive: (i % 2) + 1,
-        blocked: i === 3 ? 1 : 0,
+        date: dateName,
+        scans: 10 + dayIncidents.length * 4,
+        sensitive: dayIncidents.length,
+        blocked: dayIncidents.filter((inc) => inc.action_taken === "BLOCKED").length,
       };
     });
     return NextResponse.json(activity);
   }
 
-  // ── Incidents ──
+  // ── Incidents (/api/incidents) ──
   if (pathStr === "/incidents") {
+    const search = (request.nextUrl.searchParams.get("search") || "").toLowerCase();
+    const severityFilter = request.nextUrl.searchParams.get("severity");
+    const statusFilter = request.nextUrl.searchParams.get("status");
+    const page = parseInt(request.nextUrl.searchParams.get("page") || "1", 10);
+    const perPage = parseInt(request.nextUrl.searchParams.get("per_page") || "100", 10);
+
+    let filtered = [...incidentsStore];
+    if (severityFilter && severityFilter !== "ALL") {
+      filtered = filtered.filter((i) => i.severity === severityFilter);
+    }
+    if (statusFilter && statusFilter !== "ALL") {
+      filtered = filtered.filter((i) => i.status === statusFilter);
+    }
+    if (search) {
+      filtered = filtered.filter(
+        (i) =>
+          i.filename.toLowerCase().includes(search) ||
+          i.user.toLowerCase().includes(search) ||
+          i.incident_id.toLowerCase().includes(search)
+      );
+    }
+
+    const start = (page - 1) * perPage;
+    const pagedItems = filtered.slice(start, start + perPage);
+
     return NextResponse.json({
-      items: [
-        {
-          id: 1,
-          incident_id: "DG-2026-0001",
-          user: "hanumamma",
-          filename: "financial_records_q3.csv",
-          risk_score: 85,
-          severity: "CRITICAL",
-          status: "OPEN",
-          destination: "EXTERNAL_USB",
-          action: "BLOCK",
-          created_at: new Date().toISOString(),
-        }
-      ],
-      total: 1,
-      page: 1,
-      per_page: 100,
-      total_pages: 1,
+      items: pagedItems,
+      total: filtered.length,
+      page,
+      per_page: perPage,
+      total_pages: Math.max(1, Math.ceil(filtered.length / perPage)),
     });
   }
 
-  // ── Enrollment Status: /devices/enrollment/status/:code ──
+  // ── Enrollment Status (/devices/enrollment/status/:code) ──
   if (pathSegments[0] === "devices" && pathSegments[1] === "enrollment" && pathSegments[2] === "status") {
     const code = decodeURIComponent(pathSegments[3] || "");
     const session = enrollmentSessions.get(code);
@@ -276,10 +502,9 @@ export async function GET(request: NextRequest, { params }: { params: { path: st
       });
     }
 
-    // Default friendly pending session if not found in memory
     return NextResponse.json({
       enrollment_code: code,
-      platform: "Android",
+      platform: "Windows",
       status: "PENDING",
       is_expired: false,
       expires_in_seconds: 540,
@@ -294,78 +519,51 @@ export async function GET(request: NextRequest, { params }: { params: { path: st
     const devId = pathSegments[1];
     const dev = devicesStore.find((d) => d.device_id === devId || String(d.id) === devId);
     if (dev) {
+      const devIncidents = incidentsStore.filter((i) => i.device_id === dev.device_id);
       return NextResponse.json({
         ...dev,
-        last_scan: new Date().toISOString(),
-        policy_status: "Enforced",
-        recent_incidents: [],
+        recent_incidents: devIncidents.slice(0, 10),
       });
     }
-    return NextResponse.json(devicesStore[0] || {
-      id: 1,
-      device_id: devId,
-      device_name: `Endpoint-${devId}`,
-      hostname: `HOST-${devId}`,
-      platform: "Windows",
-      os_name: "Windows 11",
-      os_type: "Windows",
-      os_version: "23H2",
-      status: "ACTIVE",
-      last_seen: new Date().toISOString(),
-      ip_address: "192.168.1.100",
-      agent_version: "2.4.0",
-      risk_score: 0,
-      policy_status: "Enforced",
-      sensitive_files_count: 0,
-      files_scanned: 0,
-      total_scans: 0,
-      blocked_transfers_count: 0,
-      incidents_count: 0,
-    });
+    return NextResponse.json(
+      { message: `Device '${devId}' not found.` },
+      { status: 404 }
+    );
   }
 
-  // ── DLP Rules (/api/dlp-rules) ──
+  // ── DLP Rules ──
   if (pathStr === "/dlp-rules") {
-    return NextResponse.json([
-      { name: "pci_credit_card", display_name: "Credit Card Detection", category: "FINANCIAL", severity: "CRITICAL", action: "BLOCK", risk_threshold: "High", description: "Blocks transfers containing Visa, Mastercard, AMEX numbers", enabled: true },
-      { name: "api_keys", display_name: "API Keys & Secrets", category: "CREDENTIALS", severity: "CRITICAL", action: "BLOCK", risk_threshold: "High", description: "Blocks cloud tokens, OpenAI keys, JWT secrets", enabled: true },
-      { name: "pii_ssn", display_name: "Social Security Numbers", category: "PII", severity: "HIGH", action: "BLOCK", risk_threshold: "Medium", description: "Detects US SSN patterns in outbound files", enabled: true },
-      { name: "internal_docs", display_name: "Confidential Markings", category: "CORPORATE", severity: "MEDIUM", action: "ALERT", risk_threshold: "Low", description: "Alerts on documents tagged Internal or Confidential", enabled: true },
-    ]);
+    return NextResponse.json(
+      DLP_RULES.map((r) => ({
+        name: r.name.toLowerCase(),
+        display_name: r.name.replace(/_/g, " "),
+        category: r.category,
+        severity: r.severity,
+        action: r.severity === "CRITICAL" ? "BLOCK" : "ALERT",
+        description: r.detail,
+        enabled: true,
+      }))
+    );
   }
 
-  // ── Users List (/api/users) ──
+  // ── Users ──
   if (pathStr === "/users") {
     return NextResponse.json([
-      { id: 1, username: "hanumamma", email: "hanumamma@gmail.com", role: "analyst", is_active: true, created_at: new Date().toISOString() },
+      { id: 1, username: currentUser, email: `${currentUser}@dataghost.local`, role: "analyst", is_active: true, created_at: new Date().toISOString() },
       { id: 2, username: "admin", email: "admin@dataghost.local", role: "admin", is_active: true, created_at: new Date().toISOString() },
-    ]);
-  }
-
-  // ── Device Provisioning Records (/api/v1/device-provisioning) ──
-  if (pathStr.startsWith("/v1/device-provisioning")) {
-    return NextResponse.json([
-      { id: "prov-01", platform: "Android", status: "ACTIVE", device_count: 1, created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 86400000 * 7).toISOString() },
-      { id: "prov-02", platform: "Windows", status: "ACTIVE", device_count: 2, created_at: new Date().toISOString(), expires_at: new Date(Date.now() + 86400000 * 7).toISOString() },
-    ]);
-  }
-
-  // ── Enrollment Policies (/api/v1/enrollment-policies) ──
-  if (pathStr.startsWith("/v1/enrollment-policies")) {
-    return NextResponse.json([
-      { id: "pol-01", name: "Strict Zero Trust Policy", platform: "All", organization_id: "org-01", compliance_level: "HIGH", dlp_rules: [{ id: "r1", name: "Block Financial" }, { id: "r2", name: "Block Keys" }], require_attestation: true, created_at: new Date().toISOString(), status: "ACTIVE" },
     ]);
   }
 
   return NextResponse.json({ message: "Not found", path: fullApiPath }, { status: 404 });
 }
 
+// ─── POST Handlers ────────────────────────────────────────────────────────────
 export async function POST(request: NextRequest, { params }: { params: { path: string[] } }) {
   const pathSegments = params.path || [];
   const pathStr = "/" + pathSegments.join("/");
   const fullApiPath = `/api${pathStr}`;
 
-  // 1. Try real backend proxy if configured
+  // 1. Try real backend proxy if configured & reachable
   const proxyRes = await tryProxyToBackend(request, fullApiPath);
   if (proxyRes) return proxyRes;
 
@@ -377,6 +575,7 @@ export async function POST(request: NextRequest, { params }: { params: { path: s
   }
 
   const origin = request.nextUrl.origin;
+  const currentUser = extractUserFromRequest(request);
 
   // ── Authentication / Login ──
   if (pathStr === "/auth/login") {
@@ -416,57 +615,9 @@ export async function POST(request: NextRequest, { params }: { params: { path: s
     });
   }
 
-  if (pathStr === "/users/register") {
-    const username = body.username || "user";
-    return NextResponse.json({
-      id: 1,
-      username,
-      email: body.email || `${username}@dataghost.local`,
-      role: "analyst",
-      is_active: true,
-      created_at: new Date().toISOString(),
-    });
-  }
-
   // ── Standard Enrollment QR (/api/devices/enrollment/create) ──
-  if (pathStr === "/devices/enrollment/create") {
-    const platform = body.platform || "Android";
-    const code = generateEnrollmentCode();
-    const token = "dg_tok_" + Math.random().toString(36).substring(2) + Date.now().toString(36);
-    const expiresAt = Date.now() + 10 * 60 * 1000;
-
-    enrollmentSessions.set(code, {
-      code,
-      token,
-      platform,
-      status: "PENDING",
-      expiresAt,
-    });
-
-    const qrPayload = {
-      version: "1.0",
-      server_url: origin,
-      token: token,
-      code: code,
-      platform: platform,
-      expires_at: new Date(expiresAt).toISOString(),
-    };
-
-    return NextResponse.json({
-      enrollment_code: code,
-      raw_token: token,
-      platform: platform,
-      qr_data: JSON.stringify(qrPayload),
-      server_url: origin,
-      expires_at: new Date(expiresAt).toISOString(),
-      expires_in_seconds: 600,
-      status: "PENDING",
-    });
-  }
-
-  // ── Easy Enrollment QR (/api/devices/enrollment/create-easy) ──
-  if (pathStr === "/devices/enrollment/create-easy") {
-    const platform = body.platform || "Android";
+  if (pathStr === "/devices/enrollment/create" || pathStr === "/devices/enrollment/create-easy" || pathStr === "/devices/enrollment/create-android-enterprise") {
+    const platform = body.platform || "Windows";
     const code = generateEnrollmentCode();
     const token = "dg_tok_" + Math.random().toString(36).substring(2) + Date.now().toString(36);
     const expiresAt = Date.now() + 10 * 60 * 1000;
@@ -480,50 +631,20 @@ export async function POST(request: NextRequest, { params }: { params: { path: s
     });
 
     const qrUrl = `${origin}/enroll/${code}`;
-
-    return NextResponse.json({
-      enrollment_code: code,
-      raw_token: token,
-      platform: platform,
-      qr_data: qrUrl,
+    const qrPayload = {
+      version: "1.0",
       server_url: origin,
-      expires_at: new Date(expiresAt).toISOString(),
-      expires_in_seconds: 600,
-      status: "PENDING",
-    });
-  }
-
-  // ── Android Enterprise Enrollment QR (/api/devices/enrollment/create-android-enterprise) ──
-  if (pathStr === "/devices/enrollment/create-android-enterprise") {
-    const code = generateEnrollmentCode();
-    const token = "dg_tok_" + Math.random().toString(36).substring(2) + Date.now().toString(36);
-    const expiresAt = Date.now() + 10 * 60 * 1000;
-
-    enrollmentSessions.set(code, {
-      code,
       token,
-      platform: "Android",
-      status: "PENDING",
-      expiresAt,
-    });
-
-    const dpcPayload = {
-      "android.app.extra.PROVISIONING_DEVICE_ADMIN_PACKAGE_NAME": "com.dataghost.agent",
-      "android.app.extra.PROVISIONING_DEVICE_ADMIN_PACKAGE_DOWNLOAD_LOCATION": `${origin}/dataghost-agent.apk`,
-      "android.app.extra.PROVISIONING_DEVICE_ADMIN_PACKAGE_CHECKSUM": "oEK0v2z9Hsw3DZ8FzCP1m8XQAx4kymZ-uFSGS9Py7LY",
-      "android.app.extra.PROVISIONING_ADMIN_EXTRAS_BUNDLE": {
-        server_url: origin,
-        token: token,
-        code: code,
-        policy_mode: body.policy_mode || "fully_managed",
-      },
+      code,
+      platform,
+      expires_at: new Date(expiresAt).toISOString(),
     };
 
     return NextResponse.json({
       enrollment_code: code,
       raw_token: token,
-      platform: "Android",
-      qr_data: JSON.stringify(dpcPayload),
+      platform,
+      qr_data: pathStr.includes("create-easy") ? qrUrl : JSON.stringify(qrPayload),
       server_url: origin,
       expires_at: new Date(expiresAt).toISOString(),
       expires_in_seconds: 600,
@@ -531,15 +652,14 @@ export async function POST(request: NextRequest, { params }: { params: { path: s
     });
   }
 
-  // ── Device Enrollment Registration (/api/devices/enrollment/register) ──
+  // ── Device Registration (/api/devices/enrollment/register or /api/devices/register) ──
   if (pathStr === "/devices/enrollment/register" || pathStr === "/devices/register") {
     const code = body.enrollment_code || body.code || "";
-    const deviceName = body.device_name || body.hostname || `Android-Endpoint-${Math.floor(1000 + Math.random() * 9000)}`;
-    const platform = body.platform || "Android";
-    const newDeviceId = `dev-${platform.toLowerCase()}-${Date.now().toString(36)}`;
+    const platform = body.platform || "Windows";
+    const deviceName = body.device_name || body.hostname || `${platform}-Workstation-${Math.floor(1000 + Math.random() * 9000)}`;
+    const newDeviceId = `dg-${platform.toLowerCase().slice(0, 3)}-${Date.now().toString(36)}`;
     const authToken = `dg_auth_${Math.random().toString(36).substring(2)}`;
 
-    // Mark session as USED
     if (code && enrollmentSessions.has(code)) {
       const session = enrollmentSessions.get(code)!;
       session.status = "USED";
@@ -547,25 +667,24 @@ export async function POST(request: NextRequest, { params }: { params: { path: s
       session.deviceId = newDeviceId;
     }
 
-    // Add to devices store
     const newRecord: DeviceRecord = {
       id: devicesStore.length + 1,
       device_id: newDeviceId,
       device_name: deviceName,
       hostname: body.hostname || deviceName,
-      platform: platform,
+      platform,
       os_name: body.os_name || `${platform} Enterprise`,
       os_type: platform,
-      os_version: body.os_version || body.os_name || "Android 14 (HyperOS / OneUI)",
+      os_version: body.os_version || "11 x64",
       status: "ACTIVE",
       last_seen: new Date().toISOString(),
       ip_address: "192.168.1." + Math.floor(50 + Math.random() * 150),
-      agent_version: body.agent_version || "2.4.0",
+      agent_version: "2.4.0",
       risk_score: 0,
       policy_status: "Enforced",
       sensitive_files_count: 0,
-      files_scanned: 1,
-      total_scans: 1,
+      files_scanned: 0,
+      total_scans: 0,
       blocked_transfers_count: 0,
       incidents_count: 0,
       created_at: new Date().toISOString(),
@@ -593,142 +712,158 @@ export async function POST(request: NextRequest, { params }: { params: { path: s
     });
   }
 
-  // -- Device Scan Trigger (/devices/:id/scan) --
+  // ── Real Device DLP Scan Trigger (/devices/:id/scan) ──
   if (pathSegments[0] === "devices" && pathSegments[2] === "scan") {
     const devId = pathSegments[1];
-    const dev = devicesStore.find((d) => d.device_id === devId || String(d.id) === devId) || {
-      id: 1,
-      device_id: devId,
-      device_name: `Endpoint-${devId}`,
-      hostname: `HOST-${devId}`,
-      platform: "Windows",
-      os_name: "Windows 11 Enterprise",
-      os_type: "Windows",
-      os_version: "23H2",
-      status: "ACTIVE",
-      last_seen: new Date().toISOString(),
-      ip_address: "192.168.1.100",
-      agent_version: "2.4.0",
-      risk_score: 0,
-      policy_status: "Enforced",
-      sensitive_files_count: 0,
-      files_scanned: 0,
-      total_scans: 0,
-      blocked_transfers_count: 0,
-      incidents_count: 0,
-    };
+    let dev = devicesStore.find((d) => d.device_id === devId || String(d.id) === devId);
 
-    const isMac = (dev.platform || "").toLowerCase().includes("mac");
-    const isAndroid = (dev.platform || "").toLowerCase().includes("android");
-    const isLinux = (dev.platform || "").toLowerCase().includes("linux");
-
-    // Path builder per platform
-    const fp = (p: string) =>
-      isMac ? `/Users/analyst/${p}` :
-      isAndroid ? `/storage/emulated/0/${p}` :
-      isLinux ? `/home/analyst/${p}` :
-      `C:\\Users\\Analyst\\${p.replace(/\//g, "\\\\")}`;
-
-    // Sensitive findings (always present)
-    const sensitiveFiles = [
-      {
-        filename: fp("Downloads/cloud_access_keys.env"),
-        classification: "CREDENTIALS",
-        risk_score: 95,
-        action_taken: "BLOCKED",
-        file_hash: "8f4e2b19a03c58d2e410b9812739fa825c6123498e721bc6891048bcae912301",
-        file_size: 4096,
-        severity: "CRITICAL",
-        incident_id: `DG-${Date.now().toString(36).toUpperCase()}-01`,
-        findings: [
-          { rule: "AWS_ACCESS_KEY", matched_text: "AKIAIOSFODNN7EXAMPLE", detail: "Exposed AWS Access Key ID" },
-          { rule: "SECRET_KEY", matched_text: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", detail: "Exposed API Secret Key" },
-        ],
-      },
-      {
-        filename: fp("Documents/q3_customer_billing_records.csv"),
-        classification: "PCI_DSS",
-        risk_score: 88,
-        action_taken: "BLOCKED",
-        file_hash: "3b29c019284ea8923dc10928aef0182479213bcfa98012871239120938feca71",
-        file_size: 148200,
-        severity: "HIGH",
-        incident_id: `DG-${Date.now().toString(36).toUpperCase()}-02`,
-        findings: [
-          { rule: "PCI_CREDIT_CARD", matched_text: "4532-XXXX-XXXX-8910", detail: "Detected customer Visa card number" },
-          { rule: "CARDHOLDER_DATA", matched_text: "CVV2 / Expiry Exfiltration", detail: "Cardholder verification data" },
-        ],
-      },
-      {
-        filename: fp("Desktop/staff_directory_pii.xlsx"),
-        classification: "PII",
-        risk_score: 55,
-        action_taken: "ALERT",
-        file_hash: "9182371908234abcef0192384710293847102938471029384710293847102938",
-        file_size: 51200,
-        severity: "MEDIUM",
-        incident_id: `DG-${Date.now().toString(36).toUpperCase()}-03`,
-        findings: [
-          { rule: "US_SSN", matched_text: "XXX-XX-1234", detail: "Employee SSN pattern detected" },
-          { rule: "PII_EMAIL", matched_text: "analyst@organization.com", detail: "Employee corporate email" },
-        ],
-      },
-    ];
-
-    // Generate clean files to fill up to the device total files_scanned count
-    const totalFilesOnDevice = Math.max(dev.files_scanned || 0, sensitiveFiles.length);
-    const cleanCount = Math.max(0, totalFilesOnDevice - sensitiveFiles.length);
-
-    const cleanDirs = isMac
-      ? ["Documents", "Downloads", "Desktop", "Library/Application Support", "Pictures", "Movies", "Music"]
-      : isAndroid
-      ? ["Download", "Documents", "DCIM/Camera", "Pictures", "Music", "Movies"]
-      : isLinux
-      ? ["Documents", "Downloads", "Desktop", "projects", ".config", "logs", "backups"]
-      : ["Documents", "Downloads", "Desktop", "AppData/Local", "AppData/Roaming", "Projects", "Videos"];
-
-    const cleanTemplates = [
-      "README.md", "CHANGELOG.md", "package.json", "tsconfig.json", "webpack.config.js",
-      "report_q3.docx", "meeting_notes.docx", "project_plan.xlsx", "budget_overview.xlsx",
-      "presentation_2026.pptx", "architecture_diagram.pdf", "system_guide.pdf", "audit_log.txt",
-      "backup_config.json", "app.log", "error.log", "access.log", "deploy.sh", "Makefile",
-      "docker-compose.yml", "nginx.conf", "schema.sql", "migrations_v2.sql",
-      "profile_photo.png", "banner.jpg", "logo_final.svg", "icon_set.zip",
-      "test_results.xml", "coverage_report.html", "lint_output.txt", "build_artifact.tar.gz",
-      "feature_flags.yaml", "env.example", "api_docs.html", "swagger.json",
-      "invoice_2026_03.pdf", "invoice_2026_04.pdf", "invoice_2026_05.pdf",
-      "db_schema_v3.png", "erd_diagram.drawio", "sequence_diagram.puml",
-    ];
-
-    const fileSizes = [2048, 4096, 8192, 16384, 32768, 65536, 131072, 204800];
-
-    const cleanFiles = Array.from({ length: cleanCount }, (_, i) => {
-      const dir = cleanDirs[i % cleanDirs.length];
-      const tpl = cleanTemplates[i % cleanTemplates.length];
-      const name = i > 0 && i % cleanTemplates.length === 0 ? tpl.replace(/(\.\w+)$/, `_v${Math.floor(i / cleanTemplates.length)}$1`) : tpl;
-      const fullPath = fp(`${dir}/${name}`);
-      const seed = (i * 1234567891 + 987654321) >>> 0;
-      const hashPrefix = seed.toString(16).padStart(8, "0");
-      return {
-        filename: fullPath,
-        classification: "CLEAN",
+    if (!dev) {
+      dev = {
+        id: devicesStore.length + 1,
+        device_id: devId,
+        device_name: `Endpoint-${devId}`,
+        hostname: `HOST-${devId}`,
+        platform: "Windows",
+        os_name: "Windows 11 Enterprise",
+        os_type: "Windows",
+        os_version: "23H2",
+        status: "ACTIVE",
+        last_seen: new Date().toISOString(),
+        ip_address: "192.168.1.100",
+        agent_version: "2.4.0",
         risk_score: 0,
-        action_taken: "ALLOWED",
-        file_hash: `${hashPrefix}${"0".repeat(56)}`,
-        file_size: fileSizes[i % fileSizes.length],
-        severity: "NONE",
-        incident_id: null,
-        findings: [],
+        policy_status: "Enforced",
+        sensitive_files_count: 0,
+        files_scanned: 0,
+        total_scans: 0,
+        blocked_transfers_count: 0,
+        incidents_count: 0,
+        created_at: new Date().toISOString(),
       };
-    });
+      devicesStore.push(dev);
+    }
 
-    const scanResults = [...sensitiveFiles, ...cleanFiles];
-    const threatsDetected = sensitiveFiles.filter((r) => r.risk_score >= 30).length;
-    const highRiskCount = sensitiveFiles.filter((r) => r.risk_score >= 70).length;
-    const totalBytesScanned = scanResults.reduce((acc, r) => acc + r.file_size, 0);
+    // Real files collection
+    const filesToScan: Array<{ filename: string; content: string; destination: string }> = [];
 
-    // Keep the device telemetry consistent -- do not increment files_scanned on repeat scans
+    // Case 1: Custom files or text sent by client
+    if (body.files && Array.isArray(body.files) && body.files.length > 0) {
+      for (const f of body.files) {
+        filesToScan.push({
+          filename: f.filename || "custom_uploaded_file.txt",
+          content: f.content || "",
+          destination: f.destination || "EXTERNAL",
+        });
+      }
+    } else if (body.custom_content) {
+      filesToScan.push({
+        filename: body.filename || "user_submitted_data.txt",
+        content: body.custom_content,
+        destination: body.destination || "EXTERNAL",
+      });
+    } else {
+      // Case 2: Scan real test documents and user/AI leakage scenarios on the endpoint
+      filesToScan.push(
+        {
+          filename: "customer_pii_identity_records.csv",
+          content: `Employee,User_Email,Phone,Gov_ID,Payment_Card\nJohn Doe,john.doe@company.com,9876543210,123-45-6789,4532-8921-3412-8910\nJane Smith,jane.smith@corporate.net,9123456789,ABCDE1234F,5421-1234-5678-9012`,
+          destination: "LOCAL",
+        },
+        {
+          filename: "ai_chatgpt_prompt_exfiltration.txt",
+          content: `System Prompt for AI Model:\nYou are a helpful AI assistant. Here is our internal proprietary database schema and customer list to share with AI: feeding to GPT:\nsk-proj-91823749281729384719283749182739481729384719\nCustomer API key and password = SuperSecretDBPassword2026!`,
+          destination: "AI_MODEL",
+        },
+        {
+          filename: "claude_anthropic_model_keys.env",
+          content: `ANTHROPIC_API_KEY=sk-ant-api03-abcdef123456789012345678901234567890\nHUGGINGFACE_TOKEN=hf_ABCDEF1234567890123456789012345678\nAI fine-tuning data and LLM training corpus access authorized.`,
+          destination: "AI_MODEL",
+        },
+        {
+          filename: "clean_system_architecture.md",
+          content: `# Architecture Overview\nDataGhost is an agent-based DLP system. It enforces security policies locally on the endpoint without transmitting plaintext files to third parties.\nAll telemetry is processed securely.`,
+          destination: "LOCAL",
+        },
+        {
+          filename: "clean_project_config.json",
+          content: `{\n  "version": "2.4.0",\n  "telemetry": true,\n  "audit_logging": "enabled"\n}`,
+          destination: "LOCAL",
+        }
+      );
+    }
+
+    const scanResults: any[] = [];
+    let sensitiveCount = 0;
+    let blockedCount = 0;
+    let criticalCount = 0;
+    let userInformationCount = 0;
+    let aiModelSharingCount = 0;
+
+    for (const item of filesToScan) {
+      const res = analyzeTextDlp(item.content, item.filename, item.destination);
+      const fileHash = crypto.createHash("sha256").update(item.content).digest("hex");
+      const fileSize = Buffer.byteLength(item.content, "utf-8");
+
+      let incidentId: string | null = null;
+      if (res.risk_score >= 30) {
+        sensitiveCount++;
+        if (res.action_taken === "BLOCKED") blockedCount++;
+        if (res.severity === "CRITICAL") criticalCount++;
+
+        incidentId = `DG-${new Date().getFullYear()}-${String(incidentsStore.length + 1).padStart(4, "0")}`;
+        const newIncident: IncidentRecord = {
+          id: incidentsStore.length + 1,
+          incident_id: incidentId,
+          user: currentUser,
+          filename: item.filename,
+          file_hash: fileHash,
+          classification: res.classification,
+          risk_score: res.risk_score,
+          severity: res.severity,
+          status: "OPEN",
+          destination: item.destination.toUpperCase(),
+          action: "UPLOAD",
+          action_taken: res.action_taken,
+          findings: res.findings,
+          findings_json: JSON.stringify(res.findings),
+          device_id: dev.device_id,
+          created_at: new Date().toISOString(),
+          timestamp: new Date().toISOString(),
+        };
+        incidentsStore.unshift(newIncident);
+      }
+
+      for (const f of res.findings) {
+        if (f.category === "AI_MODELS") aiModelSharingCount++;
+        else userInformationCount++;
+      }
+
+      scanResults.push({
+        filename: item.filename,
+        classification: res.classification,
+        risk_score: res.risk_score,
+        severity: res.severity,
+        action_taken: res.action_taken,
+        file_hash: fileHash,
+        file_size: fileSize,
+        incident_id: incidentId,
+        destination: item.destination,
+        findings: res.findings,
+      });
+    }
+
+    const maxRisk = Math.max(...scanResults.map((r) => r.risk_score), 0);
+    const overallRiskLevel =
+      criticalCount > 0 ? "CRITICAL" : maxRisk >= 60 ? "HIGH" : maxRisk >= 30 ? "MEDIUM" : "LOW";
+    const overallBlockLevel = blockedCount > 0 ? "BLOCKED" : sensitiveCount > 0 ? "ALERTED" : "ALLOWED";
+
+    // Update device state
+    dev.files_scanned = (dev.files_scanned || 0) + filesToScan.length;
     dev.total_scans = (dev.total_scans || 0) + 1;
+    dev.sensitive_files_count = (dev.sensitive_files_count || 0) + sensitiveCount;
+    dev.blocked_transfers_count = (dev.blocked_transfers_count || 0) + blockedCount;
+    dev.incidents_count = (dev.incidents_count || 0) + sensitiveCount;
+    dev.risk_score = Math.max(dev.risk_score || 0, maxRisk);
     dev.last_seen = new Date().toISOString();
 
     return NextResponse.json({
@@ -747,77 +882,79 @@ export async function POST(request: NextRequest, { params }: { params: { path: s
         os_version: dev.os_version,
         hostname: dev.hostname,
         ip_address: dev.ip_address,
+        risk_score: dev.risk_score,
       },
-      scanned_files_count: scanResults.length,
-      threats_detected: threatsDetected,
-      high_risk_count: highRiskCount,
-      total_bytes_scanned: totalBytesScanned,
+      scanned_files_count: filesToScan.length,
+      risk_level: overallRiskLevel,
+      risk_score: maxRisk,
+      block_level: overallBlockLevel,
+      sensitive_files: sensitiveCount,
+      blocked_transfers: blockedCount,
+      critical_incidents: criticalCount,
+      threats_detected: sensitiveCount,
+      high_risk_count: scanResults.filter((r) => r.risk_score >= 70).length,
+      user_information_count: userInformationCount,
+      ai_model_sharing_count: aiModelSharingCount,
+      total_bytes_scanned: scanResults.reduce((acc, r) => acc + r.file_size, 0),
       scan_results: scanResults,
     });
   }
 
   // ── Text & File DLP Scanner (/api/scan/text, /api/scan/file, /api/scan) ──
   if (pathStr === "/scan/text" || pathStr === "/scan" || pathStr === "/scan/file") {
-    const text = body.text || "";
-    const hasEmail = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/.test(text);
-    const hasCard = /\b(?:\d{4}[ -]?){3}\d{4}\b/.test(text);
-    const hasKey = /(?:api[_-]?key|secret|token|password)[\s:=]+["']?[\w-]{12,}["']?/i.test(text);
-    const score = (hasCard ? 50 : 0) + (hasKey ? 45 : 0) + (hasEmail ? 15 : 0);
+    const text = body.text || body.content || "";
+    const filename = body.filename || "scan_artifact.dat";
+    const dest = body.destination || "EXTERNAL";
+    const res = analyzeTextDlp(text, filename, dest);
+
+    let incidentId: string | null = null;
+    if (res.risk_score >= 30) {
+      incidentId = `DG-${new Date().getFullYear()}-${String(incidentsStore.length + 1).padStart(4, "0")}`;
+      incidentsStore.unshift({
+        id: incidentsStore.length + 1,
+        incident_id: incidentId,
+        user: currentUser,
+        filename,
+        file_hash: crypto.createHash("sha256").update(text).digest("hex"),
+        classification: res.classification,
+        risk_score: res.risk_score,
+        severity: res.severity,
+        status: "OPEN",
+        destination: dest.toUpperCase(),
+        action: body.action || "UPLOAD",
+        action_taken: res.action_taken,
+        findings: res.findings,
+        findings_json: JSON.stringify(res.findings),
+        device_id: body.device_id || "WEB-CONSOLE",
+        created_at: new Date().toISOString(),
+        timestamp: new Date().toISOString(),
+      });
+    }
 
     return NextResponse.json({
-      filename: body.filename || "scan_artifact.dat",
-      file_size: 1024,
-      score: Math.min(score, 100),
-      risk_score: Math.min(score, 100),
-      decision_score: Math.min(score, 100),
-      severity: score >= 75 ? "CRITICAL" : score >= 40 ? "HIGH" : score > 0 ? "MEDIUM" : "LOW",
-      classification: hasCard ? "PCI_DSS" : hasKey ? "CREDENTIALS" : hasEmail ? "PII" : "SAFE",
-      action_taken: score >= 50 ? "BLOCKED" : "ALLOWED",
-      findings: [
-        ...(hasCard ? [{ rule_name: "PCI_CREDIT_CARD", category: "FINANCIAL", severity: "HIGH", sample_match: "Credit Card Pattern", detail: "Detected potential payment card number" }] : []),
-        ...(hasKey ? [{ rule_name: "API_KEYS", category: "CREDENTIALS", severity: "CRITICAL", sample_match: "API Key Pattern", detail: "Detected exposed API token or credential" }] : []),
-        ...(hasEmail ? [{ rule_name: "PII_EMAIL", category: "PII", severity: "LOW", sample_match: "Email Pattern", detail: "Detected email address" }] : []),
-      ],
-      incident_id: score >= 50 ? `DG-${Date.now().toString(36).toUpperCase()}` : null,
+      filename,
+      file_size: Buffer.byteLength(text, "utf-8"),
+      score: res.risk_score,
+      risk_score: res.risk_score,
+      decision_score: res.risk_score,
+      severity: res.severity,
+      classification: res.classification,
+      action_taken: res.action_taken,
+      findings: res.findings.map((f) => ({
+        rule_name: f.rule,
+        category: f.category,
+        severity: f.severity,
+        sample_match: f.matched_text,
+        detail: f.detail,
+      })),
+      incident_id: incidentId,
     });
-  }
-
-  // ── Provisioning & Policy Creation Handlers ──
-  if (pathStr.startsWith("/v1/device-provisioning")) {
-    const code = generateEnrollmentCode();
-    return NextResponse.json({
-      enrollment_code: code,
-      raw_token: "dg_tok_" + Math.random().toString(36).substring(2),
-      platform: body.platform || "Android",
-      qr_data: `${origin}/enroll/${code}`,
-      server_url: origin,
-      expires_at: new Date(Date.now() + 7 * 86400000).toISOString(),
-      expires_in_seconds: 7 * 86400,
-      status: "PENDING",
-    });
-  }
-
-  if (pathStr.startsWith("/v1/enrollment-policies")) {
-    return NextResponse.json({
-      id: `pol-${Date.now().toString(36)}`,
-      name: body.name || "Custom Policy",
-      platform: body.platform || "All",
-      organization_id: body.organization_id || "org-01",
-      compliance_level: body.compliance_level || "HIGH",
-      dlp_rules: [{ id: "r1", name: "Strict Enforcement" }],
-      require_attestation: body.require_attestation || false,
-      created_at: new Date().toISOString(),
-      status: "ACTIVE",
-    });
-  }
-
-  if (pathStr.includes("/reset-enrollment")) {
-    return NextResponse.json({ status: "RESET", message: "Enrollment reset successfully" });
   }
 
   return NextResponse.json({ success: true, timestamp: new Date().toISOString() });
 }
 
+// ─── PATCH Handlers ───────────────────────────────────────────────────────────
 export async function PATCH(request: NextRequest, { params }: { params: { path: string[] } }) {
   const pathSegments = params.path || [];
   const fullApiPath = `/api/${pathSegments.join("/")}`;
@@ -832,6 +969,7 @@ export async function PATCH(request: NextRequest, { params }: { params: { path: 
     body = {};
   }
 
+  // Update Device
   if (pathSegments[0] === "devices" && pathSegments.length === 2) {
     const devId = pathSegments[1];
     const dev = devicesStore.find((d) => d.device_id === devId || String(d.id) === devId);
@@ -842,9 +980,20 @@ export async function PATCH(request: NextRequest, { params }: { params: { path: 
     }
   }
 
+  // Update Incident Status (/api/incidents/:id)
+  if (pathSegments[0] === "incidents" && pathSegments.length === 2) {
+    const incId = pathSegments[1];
+    const inc = incidentsStore.find((i) => i.incident_id === incId || String(i.id) === incId);
+    if (inc) {
+      if (body.status) inc.status = body.status;
+      return NextResponse.json(inc);
+    }
+  }
+
   return NextResponse.json({ success: true });
 }
 
+// ─── DELETE Handlers ──────────────────────────────────────────────────────────
 export async function DELETE(request: NextRequest, { params }: { params: { path: string[] } }) {
   const pathSegments = params.path || [];
   const fullApiPath = `/api/${pathSegments.join("/")}`;
@@ -859,6 +1008,15 @@ export async function DELETE(request: NextRequest, { params }: { params: { path:
       devicesStore.splice(idx, 1);
     }
     return NextResponse.json({ success: true, message: "Device removed successfully" });
+  }
+
+  if (pathSegments[0] === "incidents" && pathSegments.length === 2) {
+    const incId = pathSegments[1];
+    const idx = incidentsStore.findIndex((i) => i.incident_id === incId || String(i.id) === incId);
+    if (idx !== -1) {
+      incidentsStore.splice(idx, 1);
+    }
+    return NextResponse.json({ success: true, message: "Incident removed successfully" });
   }
 
   return NextResponse.json({ success: true });

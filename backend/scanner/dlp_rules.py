@@ -144,6 +144,48 @@ DLP_RULES: List[Dict[str, Any]] = [
         "severity": "HIGH",
         "category": "CORPORATE",
     },
+    {
+        "name": "us_ssn",
+        "pattern": _c(r"\b(?!000|666|9\d{2})\d{3}-(?!00)\d{2}-(?!0000)\d{4}\b"),
+        "severity": "HIGH",
+        "category": "PII",
+    },
+    {
+        "name": "openai_api_key",
+        "pattern": _c(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b"),
+        "severity": "CRITICAL",
+        "category": "AI_MODELS",
+    },
+    {
+        "name": "anthropic_api_key",
+        "pattern": _c(r"\bsk-ant-[A-Za-z0-9_-]{20,}\b"),
+        "severity": "CRITICAL",
+        "category": "AI_MODELS",
+    },
+    {
+        "name": "huggingface_token",
+        "pattern": _c(r"\bhf_[A-Za-z0-9]{34,}\b"),
+        "severity": "CRITICAL",
+        "category": "AI_MODELS",
+    },
+    {
+        "name": "ai_prompt_sharing",
+        "pattern": _c(
+            r"\b(?:system prompt|you are a helpful ai|chatgpt prompt|openai completions|anthropic claude|share with ai|ai model training data|copilot prompt|feeding to gpt|input to llm)\b",
+            re.IGNORECASE,
+        ),
+        "severity": "HIGH",
+        "category": "AI_MODELS",
+    },
+    {
+        "name": "ai_training_data_leak",
+        "pattern": _c(
+            r"\b(?:ai training dataset|fine-tuning data|llm training corpus|rlhf dataset)\b",
+            re.IGNORECASE,
+        ),
+        "severity": "HIGH",
+        "category": "AI_MODELS",
+    },
 ]
 
 # ---------------------------------------------------------------------------

@@ -46,12 +46,21 @@ def mask_sensitive_text(text: str, rule_name: str = "") -> str:
             return compact[:visible_start] + ("*" * mask_len) + compact[-visible_end:]
         return text[:2] + "*" * max(1, len(text) - 2)
 
+    elif rule == "us_ssn":
+        digits = text.replace("-", "")
+        if len(digits) >= 9:
+            return f"***-**-{digits[-4:]}"
+        return "***-**-****"
+
     elif rule in (
         "api_key_generic",
         "jwt_token",
         "private_key",
         "aws_access_key",
         "google_api_key",
+        "openai_api_key",
+        "anthropic_api_key",
+        "huggingface_token",
         "password_field",
     ):
         # Credentials: keep short prefix (up to 4 chars) and mask all remaining chars
@@ -61,7 +70,7 @@ def mask_sensitive_text(text: str, rule_name: str = "") -> str:
             return prefix + ("*" * mask_len)
         return "*" * len(text)
 
-    elif rule in ("confidential_marker", "employee_data_marker", "customer_data_marker"):
+    elif rule in ("confidential_marker", "employee_data_marker", "customer_data_marker", "ai_prompt_sharing", "ai_training_data_leak"):
         # Corporate marker labels
         return text
 

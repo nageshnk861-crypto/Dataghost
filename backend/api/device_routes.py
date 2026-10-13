@@ -914,11 +914,14 @@ def trigger_device_scan(
             detail=f"Device '{device_id_or_id}' not found.",
         )
 
-    if current_user.role != "admin" and str(device.user_id) != str(current_user.id):
+    if current_user.role != "admin" and device.user_id is not None and str(device.user_id) != str(current_user.id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access forbidden: You do not have permission to trigger a scan on this device.",
         )
+    if device.user_id is None:
+        device.user_id = current_user.id
+        db.commit()
 
     from api.scan_routes import _process_scan
     import os
@@ -1108,6 +1111,45 @@ def trigger_device_scan(
         )
         results.append(res)
 
+    # Calculate real aggregate risk metrics
+    threat_results = [r for r in results if r.risk_score >= 30]
+    critical_results = [r for r in results if r.severity == "CRITICAL" or r.risk_score >= 80]
+    blocked_results = [r for r in results if r.action_taken == "BLOCKED" or r.risk_score >= 70]
+    max_risk_score = max((r.risk_score for r in results), default=0)
+
+    if any(r.severity == "CRITICAL" or r.risk_score >= 80 for r in results):
+        overall_risk_level = "CRITICAL"
+    elif any(r.severity == "HIGH" or r.risk_score >= 60 for r in results):
+        overall_risk_level = "HIGH"
+    elif any(r.severity == "MEDIUM" or r.risk_score >= 30 for r in results):
+        overall_risk_level = "MEDIUM"
+    else:
+        overall_risk_level = "LOW"
+
+    if blocked_results:
+        overall_block_level = "BLOCKED"
+    elif threat_results:
+        overall_block_level = "ALERTED"
+    else:
+        overall_block_level = "ALLOWED"
+
+    # Count User Information and AI Model Sharing findings
+    user_info_count = 0
+    ai_model_count = 0
+    for r in results:
+        for f in getattr(r, "findings", []):
+            cat = getattr(f, "category", "") or ""
+            rule = getattr(f, "rule", "") or getattr(f, "rule_name", "") or ""
+            if cat == "AI_MODELS" or "openai" in rule.lower() or "anthropic" in rule.lower() or "huggingface" in rule.lower() or "prompt" in rule.lower():
+                ai_model_count += 1
+            elif cat in ("PII", "FINANCIAL", "CREDENTIALS") or "email" in rule.lower() or "phone" in rule.lower() or "aadhaar" in rule.lower() or "pan" in rule.lower() or "card" in rule.lower():
+                user_info_count += 1
+
+    device.files_scanned = (device.files_scanned or 0) + len(results)
+    device.incidents_count = (device.incidents_count or 0) + len(threat_results)
+    device.risk_score = max(device.risk_score or 0, max_risk_score)
+    device.last_seen = _utc_now()
+    db.commit()
     db.refresh(device)
 
     return {
@@ -1126,10 +1168,19 @@ def trigger_device_scan(
             "os_version": device.os_version,
             "hostname": device.hostname,
             "ip_address": device.ip_address,
+            "risk_score": device.risk_score,
         },
         "scanned_files_count": len(results),
-        "threats_detected": sum(1 for r in results if r.risk_score >= 30),
+        "risk_level": overall_risk_level,
+        "risk_score": max_risk_score,
+        "block_level": overall_block_level,
+        "sensitive_files": len(threat_results),
+        "blocked_transfers": len(blocked_results),
+        "critical_incidents": len(critical_results),
+        "threats_detected": len(threat_results),
         "high_risk_count": sum(1 for r in results if r.risk_score >= 70),
+        "user_information_count": user_info_count,
+        "ai_model_sharing_count": ai_model_count,
         "total_bytes_scanned": sum(len(item["content"]) for item in files_to_scan),
         "scan_results": [r.model_dump() for r in results],
     }

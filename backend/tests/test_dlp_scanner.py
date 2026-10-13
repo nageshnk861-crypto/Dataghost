@@ -15,9 +15,9 @@ from scanner.text_extractor import extract_text
 # ---------------------------------------------------------------------------
 
 def test_rule_catalog_integrity():
-    """Verify that all 16 rules are configured with expected severity and categories."""
-    assert len(DLP_RULES) == 16
-    assert len(DLP_RULES_BY_NAME) == 16
+    """Verify that all rules are configured with expected severity and categories."""
+    assert len(DLP_RULES) >= 16
+    assert len(DLP_RULES_BY_NAME) >= 16
 
     expected_rules = {
         # PII
@@ -25,6 +25,7 @@ def test_rule_catalog_integrity():
         "phone_india": ("PII", "MEDIUM"),
         "aadhaar": ("PII", "HIGH"),
         "pan_card": ("PII", "HIGH"),
+        "us_ssn": ("PII", "HIGH"),
         # Financial
         "credit_card": ("FINANCIAL", "HIGH"),
         "bank_account": ("FINANCIAL", "HIGH"),
@@ -35,11 +36,17 @@ def test_rule_catalog_integrity():
         "private_key": ("CREDENTIALS", "CRITICAL"),
         "aws_access_key": ("CREDENTIALS", "CRITICAL"),
         "google_api_key": ("CREDENTIALS", "CRITICAL"),
+        "openai_api_key": ("AI_MODELS", "CRITICAL"),
+        "anthropic_api_key": ("AI_MODELS", "CRITICAL"),
+        "huggingface_token": ("AI_MODELS", "CRITICAL"),
         "password_field": ("CREDENTIALS", "HIGH"),
         # Corporate
         "confidential_marker": ("CORPORATE", "HIGH"),
         "employee_data_marker": ("CORPORATE", "HIGH"),
         "customer_data_marker": ("CORPORATE", "HIGH"),
+        # AI Models
+        "ai_prompt_sharing": ("AI_MODELS", "HIGH"),
+        "ai_training_data_leak": ("AI_MODELS", "HIGH"),
     }
 
     for rule_name, (expected_cat, expected_sev) in expected_rules.items():

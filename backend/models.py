@@ -98,7 +98,7 @@ class Device(Base):
     enrolled_at = Column(DateTime, default=_utc_now)
     registered_at = Column(DateTime, default=_utc_now)
     organization_id = Column(String(64), default="default-org", nullable=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, default=1, index=True)
     device_metadata = Column(Text, nullable=True)                    # JSON string with hardware/client specs
     os_type = Column(String(32), nullable=True)                      # Kept for backward compatibility
     agent_version = Column(String(32), nullable=True)
