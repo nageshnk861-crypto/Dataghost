@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from auth import get_optional_current_user
 from database import get_db
 from models import Incident, ScanLog, Device, User, Finding as FindingModel
-from schemas.schemas import ScanRequest, ScanResponse, ScanFinding, Finding
+from schemas.schemas import ScanRequest, ScanResponse, ScanFinding, FindingSchema
 from services.audit_service import log_audit_event
 from scanner.text_extractor import extract_text
 from scanner.dlp_scanner import scan_text as dlp_scan_text
@@ -88,10 +88,57 @@ def _process_scan(
     """Core scanning and risk calculation pipeline."""
     # 1. SHA-256 Hash
     file_hash = hashlib.sha256(content).hexdigest()
+    effective_size = file_size_override if file_size_override is not None else len(content)
 
     # 2. Extract or decode text
     if text is None:
         text = extract_text(content, filename)
+
+    # Fail-closed check: if file has bytes but text could not be extracted (binary, unsupported, corrupt)
+    if len(content) > 0 and (not text or len(text.strip()) == 0):
+        scan_id = _make_scan_id()
+        if db is not None:
+            try:
+                scan_log = ScanLog(
+                    scan_id=scan_id,
+                    filename=filename,
+                    file_hash=file_hash,
+                    classification="INTERNAL",
+                    risk_score=0,
+                    findings_count=0,
+                    device_id=device_id,
+                    user_id=user_id,
+                    organization_id=organization_id,
+                    status="UNSUPPORTED",
+                    file_size=effective_size,
+                )
+                db.add(scan_log)
+                db.commit()
+            except Exception as _log_err:
+                logger.warning("Could not persist unsupported scan log: %s", _log_err)
+                db.rollback()
+
+        return ScanResponse(
+            scan_id=scan_id,
+            filename=filename,
+            file_hash=file_hash,
+            file_size=effective_size,
+            bytes_inspected=0,
+            scan_status="UNSUPPORTED",
+            error=f"File '{filename}' contains binary or unsupported format where text could not be extracted.",
+            is_simulated=False,
+            findings=[],
+            total_findings=0,
+            classification="INTERNAL",
+            confidence=1.0,
+            risk_score=0,
+            severity="LOW",
+            recommended_action="REVIEW",
+            action_taken="NOT_SCANNED",
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+
+    bytes_inspected = len(text.encode("utf-8", errors="replace"))
 
     # 3a. Phase-3 Secret Detection (new modular detectors)
     #     Run first so higher-confidence findings take precedence.
@@ -374,6 +421,10 @@ def _process_scan(
         filename=filename,
         file_hash=file_hash,
         file_size=effective_size,
+        bytes_inspected=bytes_inspected,
+        scan_status="COMPLETED",
+        error=None,
+        is_simulated=False,
         findings=masked_findings,
         total_findings=len(masked_findings),
         classification=classification,
@@ -403,6 +454,7 @@ def scan_text_endpoint(
     """
     Accepts text and metadata, evaluates DLP rules, calculates risk score,
     and returns structured scan findings with sensitive text masked.
+    Uses authenticated user and verified device info when present.
     """
     if payload.text is None:
         raise HTTPException(
@@ -410,9 +462,24 @@ def scan_text_endpoint(
             detail="Text field is required",
         )
 
-    user_label = current_user.username if current_user else payload.user
+    # Server-enforced identity
+    if current_user:
+        user_label = current_user.username
+        user_id = current_user.id
+        org_id = getattr(current_user, "organization_id", "default-org")
+    else:
+        user_label = payload.user or "anonymous"
+        user_id = None
+        org_id = "default-org"
+
     content = payload.text.encode("utf-8")
-    effective_size = payload.file_size or payload.file_size_bytes or len(content)
+    effective_size = len(content)
+
+    resolved_device_id = "web-console"
+    if payload.device_id and payload.device_id not in ("unknown", "web-console"):
+        dev = db.query(Device).filter(Device.device_id == payload.device_id).first()
+        if dev:
+            resolved_device_id = dev.device_id
 
     return _process_scan(
         content=content,
@@ -422,9 +489,11 @@ def scan_text_endpoint(
         destination=payload.destination,
         action=payload.action,
         file_size_override=effective_size,
-        device_id=payload.device_id,
+        device_id=resolved_device_id,
         user_label=user_label,
         db=db,
+        user_id=user_id,
+        organization_id=org_id,
     )
 
 
@@ -442,6 +511,7 @@ async def scan_file_endpoint(
     """
     Upload and scan a file. Supports TXT, PDF, DOCX, CSV, JSON, code files, etc.
     Validates file size (up to 50MB) and non-empty content.
+    Enforces server-side identity and size calculations.
     """
     content = await file.read()
 
@@ -457,7 +527,22 @@ async def scan_file_endpoint(
             detail="File size exceeds maximum allowed limit (50MB).",
         )
 
-    user_label = current_user.username if current_user else user
+    # Server-enforced identity
+    if current_user:
+        user_label = current_user.username
+        user_id = current_user.id
+        org_id = getattr(current_user, "organization_id", "default-org")
+    else:
+        user_label = user if user != "anonymous" else "anonymous"
+        user_id = None
+        org_id = "default-org"
+
+    resolved_device_id = "web-console"
+    if device_id and device_id not in ("unknown", "web-console"):
+        dev = db.query(Device).filter(Device.device_id == device_id).first()
+        if dev:
+            resolved_device_id = dev.device_id
+
     filename = file.filename or "upload.bin"
 
     return _process_scan(
@@ -467,7 +552,9 @@ async def scan_file_endpoint(
         destination=destination,
         action=action,
         file_size_override=len(content),
-        device_id=device_id,
+        device_id=resolved_device_id,
         user_label=user_label,
         db=db,
+        user_id=user_id,
+        organization_id=org_id,
     )

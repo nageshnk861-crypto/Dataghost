@@ -2,7 +2,7 @@
 DataGhost – Pydantic v2 request/response schemas.
 """
 from datetime import datetime
-from typing import Optional, List, Dict, Any, Union
+from typing import Optional, List, Dict, Any, Union, Literal
 from pydantic import BaseModel, Field
 
 
@@ -32,12 +32,15 @@ class TokenResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Scanner & Findings
 # ---------------------------------------------------------------------------
-class Finding(BaseModel):
+class FindingSchema(BaseModel):
     rule_name: str
     severity: str          # LOW | MEDIUM | HIGH | CRITICAL
     matches_count: int
     sample_match: str      # first match, truncated/masked
     category: str = ""
+
+# Backwards compatibility alias
+Finding = FindingSchema
 
 
 class ScanFinding(BaseModel):
@@ -52,13 +55,13 @@ class ScanFinding(BaseModel):
 class ScanRequest(BaseModel):
     text: str = Field(..., description="Text content to scan")
     filename: str = Field(default="example.txt", description="File name")
-    classification: str = Field(default="INTERNAL", description="PUBLIC | INTERNAL | CONFIDENTIAL | RESTRICTED")
-    destination: str = Field(default="LOCAL", description="LOCAL | INTERNAL | CLOUD | USB | EXTERNAL")
-    action: str = Field(default="READ", description="READ | COPY | SHARE | EMAIL | UPLOAD")
-    file_size: Optional[int] = Field(default=None, description="File size in bytes")
+    classification: Optional[str] = Field(default=None, description="Optional classification hint: PUBLIC | INTERNAL | CONFIDENTIAL | RESTRICTED")
+    destination: Literal["LOCAL", "INTERNAL", "CLOUD", "USB", "EXTERNAL"] = "LOCAL"
+    action: Literal["READ", "COPY", "SHARE", "EMAIL", "UPLOAD"] = "READ"
+    file_size: Optional[int] = Field(default=None, description="File size hint in bytes")
     file_size_bytes: Optional[int] = Field(default=None, description="Alias for file_size")
-    device_id: str = Field(default="unknown", description="Device ID")
-    user: str = Field(default="anonymous", description="User ID or email")
+    device_id: Optional[str] = Field(default=None, description="Device ID hint")
+    user: Optional[str] = Field(default=None, description="User hint")
 
 
 class ScanResponse(BaseModel):
@@ -66,14 +69,18 @@ class ScanResponse(BaseModel):
     filename: str
     file_hash: str = Field(default="", description="SHA-256 hash")
     file_size: Optional[int] = Field(default=0, description="File size in bytes")
+    bytes_inspected: int = 0
+    scan_status: Literal["COMPLETED", "FAILED", "UNSUPPORTED", "TRUNCATED"] = "FAILED"
+    error: Optional[str] = None
+    is_simulated: bool = False
     findings: List[ScanFinding] = Field(default_factory=list)
     total_findings: int = 0
-    classification: str           # PUBLIC | INTERNAL | CONFIDENTIAL | RESTRICTED
+    classification: str = "INTERNAL"          # PUBLIC | INTERNAL | CONFIDENTIAL | RESTRICTED
     confidence: float = 1.0
-    risk_score: int
-    severity: str                 # LOW | MEDIUM | HIGH | CRITICAL
-    recommended_action: str = "ALLOW"   # ALLOW | ALERT | BLOCK
-    action_taken: str = "ALLOWED"       # ALLOWED | ALERTED | BLOCKED
+    risk_score: int = 0
+    severity: str = "LOW"                 # LOW | MEDIUM | HIGH | CRITICAL
+    recommended_action: str = "REVIEW"   # never default to ALLOW
+    action_taken: str = "NOT_SCANNED"       # never default to ALLOWED
     incident_id: Optional[str] = None
     breakdown: Dict[str, Any] = Field(default_factory=dict)
     timestamp: Optional[str] = Field(default=None, description="ISO timestamp of scan")
@@ -97,11 +104,12 @@ class IncidentResponse(BaseModel):
     confidence: Optional[float] = 1.0
     risk_score: int
     severity: str
-    recommended_action: str = "ALLOW"
-    action_taken: str = "ALLOWED"
+    recommended_action: str = "REVIEW"
+    action_taken: str = "NOT_SCANNED"
     destination: str = "INTERNAL"
     action: str = "READ"
     status: str = "OPEN"
+    is_simulated: bool = False
     categories: List[str] = Field(default_factory=list)
     triggered_rules: List[str] = Field(default_factory=list)
     findings_json: Optional[str] = None
@@ -243,12 +251,38 @@ class DeviceUpdateRequest(BaseModel):
 
 
 class DeviceScanTriggerRequest(BaseModel):
-    file_path: Optional[str] = None
-    custom_content: Optional[str] = None
+    custom_content: Optional[str] = Field(None, max_length=1_000_000, description="Optional text content to scan (max 1MB)")
     filename: Optional[str] = None
-    destination: Optional[str] = "EXTERNAL"
-    action: Optional[str] = "UPLOAD"
-    max_files: Optional[int] = Field(default=1000, description="Max files to scan, default 1000")
+    max_files: int = Field(1000, ge=1, le=5000, description="Max files to scan, bounded 1 to 5000")
+    destination: Literal["LOCAL", "INTERNAL", "CLOUD", "USB", "EXTERNAL"] = "EXTERNAL"
+    action: Literal["READ", "COPY", "SHARE", "EMAIL", "UPLOAD"] = "UPLOAD"
+    file_path: Optional[str] = Field(None, description="Admin-only: path on server to scan")
+
+
+class DeviceScanSummaryResponse(BaseModel):
+    status: Literal["no_data", "success", "error"]
+    has_scan_data: bool
+    is_simulated: bool = False
+    message: Optional[str] = None
+    risk_score: Optional[int] = None
+    risk_level: Optional[str] = None
+    block_level: Optional[str] = None
+    sensitive_files: int = 0
+    blocked_transfers: int = 0
+    critical_incidents: int = 0
+    threats_detected: int = 0
+    findings_count: int = 0
+    user_information_count: int = 0
+    ai_model_sharing_count: int = 0
+    scanned_files_count: int = 0
+    total_bytes_scanned: int = 0
+    high_risk_count: int = 0
+    scan_results: List[Dict[str, Any]] = Field(default_factory=list)
+    device: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+    timestamp: Optional[str] = None
+
+    model_config = {"from_attributes": True}
 
 
 class DeviceDetailResponse(DeviceResponse):
@@ -329,6 +363,7 @@ class FindingResponse(BaseModel):
     # Deduplication & Lifecycle
     fingerprint: Optional[str] = None
     status: str = "OPEN"
+    is_simulated: bool = False
     first_seen_at: Optional[datetime] = None
     last_seen_at: Optional[datetime] = None
     occurrence_count: int = 1

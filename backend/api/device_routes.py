@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 from auth import get_current_user, require_admin, require_analyst_or_admin
 from config import settings
 from database import get_db
-from models import Device, EnrollmentToken, Incident, ScanLog, User
+from models import Device, EnrollmentToken, Finding, Incident, ScanLog, User
 from schemas.schemas import (
     DeviceDetailResponse,
     DeviceHeartbeatRequest,
@@ -36,6 +36,7 @@ from schemas.schemas import (
     DeviceResponse,
     DeviceUpdateRequest,
     DeviceScanTriggerRequest,
+    DeviceScanSummaryResponse,
     EnrollmentCreateRequest,
     EnrollmentCreateResponse,
     EnrollmentRegisterRequest,
@@ -669,10 +670,9 @@ def device_heartbeat_by_param(
             device.agent_version = payload.agent_version
         if payload.ip_address:
             device.ip_address = payload.ip_address
-        if payload.files_scanned is not None and payload.files_scanned >= (device.files_scanned or 0):
-            device.files_scanned = payload.files_scanned
-        if payload.incidents_count is not None and payload.incidents_count >= (device.incidents_count or 0):
-            device.incidents_count = payload.incidents_count
+        # NOTE: files_scanned and incidents_count are intentionally NOT updated from
+        # agent-supplied heartbeat values — they are computed server-side from ScanLog
+        # and Incident tables to prevent agent manipulation of displayed metrics.
         if payload.device_metadata:
             device.device_metadata = json.dumps(payload.device_metadata)
 
@@ -892,9 +892,225 @@ def delete_device(
 
 
 # ---------------------------------------------------------------------------
-# 8b. Trigger Device Scan & Retrieve All Information
+# 8a. Device Endpoint Scan Summary Computation (strictly from DB findings)
 # ---------------------------------------------------------------------------
-@router.post("/{device_id_or_id}/scan")
+def compute_device_scan_summary(device: Device, db: Session, is_simulated: bool = False) -> dict:
+    """
+    Compute Endpoint Scan Summary metrics strictly from persisted database records:
+    ScanLog, Finding (with redacted evidence), and Incident.
+    If no scan data exists, returns has_scan_data: False and risk_score: None.
+    """
+    scan_logs = (
+        db.query(ScanLog)
+        .filter(ScanLog.device_id == device.device_id)
+        .order_by(desc(ScanLog.timestamp))
+        .all()
+    )
+    findings = (
+        db.query(Finding)
+        .filter(Finding.device_id == device.device_id)
+        .order_by(desc(Finding.created_at))
+        .all()
+    )
+    incidents = (
+        db.query(Incident)
+        .filter(Incident.device_id == device.device_id)
+        .order_by(desc(Incident.timestamp))
+        .all()
+    )
+
+    device_info = {
+        "device_id": device.device_id,
+        "device_name": device.device_name,
+        "platform": device.platform,
+        "status": device.status,
+        "files_scanned": len(scan_logs) if scan_logs else (device.files_scanned or 0),
+        "incidents_count": len(incidents) if incidents else (device.incidents_count or 0),
+        "last_seen": device.last_seen.isoformat() if device.last_seen else None,
+        "os_name": device.os_name,
+        "os_version": device.os_version,
+        "hostname": device.hostname,
+        "ip_address": device.ip_address,
+        "risk_score": None,
+    }
+
+    # Case 1: No scan data exists for this device
+    if not scan_logs and not findings:
+        return {
+            "status": "no_data",
+            "has_scan_data": False,
+            "message": "No scan data yet",
+            "device": device_info,
+            "risk_score": None,
+            "risk_level": None,
+            "block_level": None,
+            "sensitive_files": 0,
+            "blocked_transfers": 0,
+            "findings_count": 0,
+            "critical_incidents": 0,
+            "threats_detected": 0,
+            "user_information_count": 0,
+            "ai_model_sharing_count": 0,
+            "scanned_files_count": 0,
+            "total_bytes_scanned": 0,
+            "scan_results": [],
+            "is_simulated": is_simulated,
+        }
+
+    # Case 2: Scan data exists in the database
+    max_risk_score = max(
+        [sl.risk_score for sl in scan_logs if sl.risk_score is not None]
+        + [f.risk_score for f in findings if f.risk_score is not None]
+        + [inc.risk_score for inc in incidents if inc.risk_score is not None]
+        + [0]
+    )
+
+    if any(sl.risk_score >= 80 for sl in scan_logs) or any(f.severity == "CRITICAL" for f in findings):
+        overall_risk_level = "CRITICAL"
+    elif any(sl.risk_score >= 60 for sl in scan_logs) or any(f.severity == "HIGH" for f in findings):
+        overall_risk_level = "HIGH"
+    elif any(sl.risk_score >= 30 for sl in scan_logs) or any(f.severity == "MEDIUM" for f in findings):
+        overall_risk_level = "MEDIUM"
+    else:
+        overall_risk_level = "LOW"
+
+    blocked_count = sum(1 for inc in incidents if (inc.action_taken or "").upper() == "BLOCKED")
+    if blocked_count == 0:
+        blocked_count = sum(1 for sl in scan_logs if (sl.risk_score or 0) >= 70)
+
+    threat_scan_logs = [sl for sl in scan_logs if (sl.risk_score or 0) >= 30]
+    critical_incidents_count = sum(1 for inc in incidents if (inc.severity or "").upper() == "CRITICAL")
+    if critical_incidents_count == 0:
+        critical_incidents_count = sum(1 for f in findings if (f.severity or "").upper() == "CRITICAL")
+
+    if blocked_count > 0:
+        overall_block_level = "BLOCKED"
+    elif threat_scan_logs or findings:
+        overall_block_level = "ALERTED"
+    else:
+        overall_block_level = "ALLOWED"
+
+    # Distinct sensitive files
+    sensitive_file_names = set(
+        [sl.filename for sl in threat_scan_logs if sl.filename]
+        + [f.file_name for f in findings if (f.risk_score or 0) >= 30 or (f.severity or "").upper() in ("MEDIUM", "HIGH", "CRITICAL")]
+    )
+    sensitive_files = len(sensitive_file_names)
+
+    # Categories count strictly from findings stored in database
+    user_info_count = 0
+    ai_model_count = 0
+    for f in findings:
+        cat = (f.category or "").upper()
+        rule = (f.rule_id or "").lower()
+        occ = f.occurrence_count or 1
+        if cat == "AI_MODELS" or any(k in rule for k in ("openai", "anthropic", "huggingface", "prompt", "llm", "chatgpt", "claude")):
+            ai_model_count += occ
+        elif cat in ("PII", "FINANCIAL", "CREDENTIALS") or any(k in rule for k in ("email", "phone", "aadhaar", "pan", "card", "password", "jwt", "database", "api_key", "secret", "private_key", "ssn")):
+            user_info_count += occ
+
+    # Build scan_results grouped by scan_log or file
+    incidents_by_hash = {inc.file_hash: inc for inc in incidents if inc.file_hash}
+    incidents_by_name = {inc.filename: inc for inc in incidents if inc.filename}
+
+    findings_by_log: dict[int, list] = {}
+    findings_by_file: dict[str, list] = {}
+    for f in findings:
+        if f.scan_log_id:
+            findings_by_log.setdefault(f.scan_log_id, []).append(f)
+        if f.file_name:
+            findings_by_file.setdefault(f.file_name, []).append(f)
+
+    scan_results = []
+    seen_files = set()
+    for sl in scan_logs:
+        log_findings = findings_by_log.get(sl.id, findings_by_file.get(sl.filename, []))
+        inc = incidents_by_hash.get(sl.file_hash) or incidents_by_name.get(sl.filename)
+        action_taken = inc.action_taken if inc else ("BLOCKED" if (sl.risk_score or 0) >= 70 else "ALERTED" if (sl.risk_score or 0) >= 30 else "ALLOWED")
+        severity = inc.severity if inc else ("CRITICAL" if (sl.risk_score or 0) >= 80 else "HIGH" if (sl.risk_score or 0) >= 60 else "MEDIUM" if (sl.risk_score or 0) >= 30 else "LOW")
+        scan_results.append({
+            "filename": sl.filename,
+            "file_hash": sl.file_hash,
+            "file_size": sl.file_size or 0,
+            "classification": sl.classification or "PUBLIC",
+            "risk_score": sl.risk_score or 0,
+            "severity": severity,
+            "action_taken": action_taken,
+            "incident_id": inc.incident_id if inc else None,
+            "findings": [
+                {
+                    "rule": f.rule_id,
+                    "category": f.category,
+                    "severity": f.severity,
+                    "matched_text": f.evidence_redacted,
+                    "detail": f.description or f"{f.rule_id} detected in {f.file_name}",
+                }
+                for f in log_findings
+            ],
+        })
+        seen_files.add(sl.filename)
+
+    total_bytes = sum(sl.file_size or 0 for sl in scan_logs)
+
+    # Sync device fields
+    device.files_scanned = len(scan_logs)
+    device.incidents_count = len(incidents)
+    device_info["risk_score"] = max_risk_score
+    db.commit()
+
+    return {
+        "status": "success",
+        "has_scan_data": True,
+        "message": f"Scan summary for device '{device.device_name}' computed from persisted findings.",
+        "device": device_info,
+        "scanned_files_count": len(scan_logs),
+        "risk_level": overall_risk_level,
+        "risk_score": max_risk_score,
+        "block_level": overall_block_level,
+        "sensitive_files": sensitive_files,
+        "blocked_transfers": blocked_count,
+        "critical_incidents": critical_incidents_count,
+        "threats_detected": len(findings),
+        "high_risk_count": sum(1 for sl in scan_logs if (sl.risk_score or 0) >= 70),
+        "user_information_count": user_info_count,
+        "ai_model_sharing_count": ai_model_count,
+        "total_bytes_scanned": total_bytes,
+        "scan_results": scan_results,
+        "is_simulated": is_simulated,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 8b. Endpoint Scan Summary GET Route
+# ---------------------------------------------------------------------------
+@router.get("/{device_id_or_id}/scan-summary", response_model=DeviceScanSummaryResponse)
+def get_device_scan_summary(
+    device_id_or_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Retrieve Endpoint Scan Summary computed strictly from findings stored in the database.
+    If no agent or scan data exists, returns has_scan_data: False and risk_score: None.
+    """
+    device = _find_device(device_id_or_id, db)
+    if not device:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Device '{device_id_or_id}' not found.",
+        )
+    if current_user.role != "admin" and device.user_id is not None and str(device.user_id) != str(current_user.id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access forbidden: You do not have permission to view scan summary for this device.",
+        )
+    return compute_device_scan_summary(device, db)
+
+
+# ---------------------------------------------------------------------------
+# 8c. Trigger Device Scan & Retrieve All Information
+# ---------------------------------------------------------------------------
+@router.post("/{device_id_or_id}/scan", response_model=DeviceScanSummaryResponse)
 def trigger_device_scan(
     device_id_or_id: str,
     payload: Optional[DeviceScanTriggerRequest] = None,
@@ -905,7 +1121,8 @@ def trigger_device_scan(
     Trigger a DLP security scan on the specified endpoint device.
     Dynamically scans real files from the host filesystem or custom endpoint payloads,
     evaluates sensitive findings via DLP regex patterns and the ML classifier,
-    generates incidents, updates device telemetry, and returns comprehensive scan information.
+    persists findings to the database with redacted evidence, and returns summary
+    computed strictly from persisted records.
     """
     device = _find_device(device_id_or_id, db)
     if not device:
@@ -928,6 +1145,10 @@ def trigger_device_scan(
 
     files_to_scan = []
     source_type = "live_filesystem"
+    is_simulated = False
+
+    # Check for explicit DEMO flag — server env var only; ignore client-supplied demo hint
+    is_demo = os.environ.get("DEMO_MODE", "").lower() in ("1", "true", "yes")
 
     # Case 1: Custom text/payload provided by the client
     if payload and payload.custom_content:
@@ -962,7 +1183,6 @@ def trigger_device_scan(
     else:
         import pathlib
 
-        # Build a list of directories to scan based on the host OS
         scan_dirs: list[str] = []
         home = pathlib.Path.home()
 
@@ -981,7 +1201,6 @@ def trigger_device_scan(
         scan_dirs.append(workspace_root)
         scan_dirs.append(str(home))
 
-        # Scannable extensions (common document / data / config / source files)
         SCAN_EXTENSIONS = {
             ".txt", ".csv", ".json", ".xml", ".log", ".md",
             ".doc", ".docx", ".xls", ".xlsx", ".pdf",
@@ -990,7 +1209,6 @@ def trigger_device_scan(
             ".pem", ".key", ".crt", ".db", ".bak",
         }
 
-        # Directories to ignore during recursive walk (build caches, node_modules, etc.)
         IGNORED_DIRS = {
             ".git", "node_modules", ".venv", "venv", ".next", "__pycache__",
             "AppData", ".gemini", "dist", "build", "target", ".idea", ".vscode",
@@ -1011,11 +1229,9 @@ def trigger_device_scan(
                 if not base_path.exists():
                     continue
 
-                # Walk directory tree
                 for root, dirs, files in os.walk(str(base_path), topdown=True):
                     if max_files_limit > 0 and len(files_to_scan) >= max_files_limit:
                         break
-                    # Prune ignored subdirectories in-place
                     dirs[:] = [d for d in dirs if d not in IGNORED_DIRS and not d.startswith(".")]
 
                     for fname in sorted(files):
@@ -1058,10 +1274,8 @@ def trigger_device_scan(
             except (PermissionError, OSError) as dir_err:
                 logger.debug("Skipping inaccessible directory %s: %s", scan_dir, dir_err)
 
-    if not files_to_scan:
-        # Fallback: load the built-in sample risk documents that ship with the
-        # backend.  This ensures scans always produce meaningful results on
-        # cloud deployments (e.g. Render) where home subdirectories are absent.
+    # Simulation fallback gated strictly behind explicit DEMO flag
+    if not files_to_scan and is_demo:
         backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         sample_files = [
             ("high_risk.txt", "EXTERNAL", "UPLOAD"),
@@ -1084,21 +1298,17 @@ def trigger_device_scan(
                         })
                 except OSError:
                     pass
+        if files_to_scan:
+            is_simulated = True
 
+    # If no files found and not demo: compute summary from existing persisted records
     if not files_to_scan:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=(
-                "No scannable files discovered. Provide a 'file_path' or "
-                "'custom_content' in the request body, or ensure document "
-                "files (.txt, .csv, .json, .pdf, etc.) exist in the user's "
-                "home, Downloads, Documents, or Desktop directories."
-            ),
-        )
+        existing_summary = compute_device_scan_summary(device, db, is_simulated=False)
+        return existing_summary
 
-    results = []
+    # Run actual scan with database persistence
     for item in files_to_scan:
-        res = _process_scan(
+        _process_scan(
             content=item["content"],
             filename=item["filename"],
             classification_override=item.get("classification"),
@@ -1109,81 +1319,13 @@ def trigger_device_scan(
             user_label=current_user.username or "endpoint_user",
             db=db,
         )
-        results.append(res)
 
-    # Calculate real aggregate risk metrics
-    threat_results = [r for r in results if r.risk_score >= 30]
-    critical_results = [r for r in results if r.severity == "CRITICAL" or r.risk_score >= 80]
-    blocked_results = [r for r in results if r.action_taken == "BLOCKED" or r.risk_score >= 70]
-    max_risk_score = max((r.risk_score for r in results), default=0)
-
-    if any(r.severity == "CRITICAL" or r.risk_score >= 80 for r in results):
-        overall_risk_level = "CRITICAL"
-    elif any(r.severity == "HIGH" or r.risk_score >= 60 for r in results):
-        overall_risk_level = "HIGH"
-    elif any(r.severity == "MEDIUM" or r.risk_score >= 30 for r in results):
-        overall_risk_level = "MEDIUM"
-    else:
-        overall_risk_level = "LOW"
-
-    if blocked_results:
-        overall_block_level = "BLOCKED"
-    elif threat_results:
-        overall_block_level = "ALERTED"
-    else:
-        overall_block_level = "ALLOWED"
-
-    # Count User Information and AI Model Sharing findings
-    user_info_count = 0
-    ai_model_count = 0
-    for r in results:
-        for f in getattr(r, "findings", []):
-            cat = getattr(f, "category", "") or ""
-            rule = getattr(f, "rule", "") or getattr(f, "rule_name", "") or ""
-            if cat == "AI_MODELS" or "openai" in rule.lower() or "anthropic" in rule.lower() or "huggingface" in rule.lower() or "prompt" in rule.lower():
-                ai_model_count += 1
-            elif cat in ("PII", "FINANCIAL", "CREDENTIALS") or "email" in rule.lower() or "phone" in rule.lower() or "aadhaar" in rule.lower() or "pan" in rule.lower() or "card" in rule.lower():
-                user_info_count += 1
-
-    device.files_scanned = (device.files_scanned or 0) + len(results)
-    device.incidents_count = (device.incidents_count or 0) + len(threat_results)
-    device.risk_score = max(device.risk_score or 0, max_risk_score)
     device.last_seen = _utc_now()
     db.commit()
     db.refresh(device)
 
-    return {
-        "status": "success",
-        "message": f"Real-time scan completed successfully for device '{device.device_name}'.",
-        "source": source_type,
-        "device": {
-            "device_id": device.device_id,
-            "device_name": device.device_name,
-            "platform": device.platform,
-            "status": device.status,
-            "files_scanned": device.files_scanned,
-            "incidents_count": device.incidents_count,
-            "last_seen": device.last_seen.isoformat() if device.last_seen else None,
-            "os_name": device.os_name,
-            "os_version": device.os_version,
-            "hostname": device.hostname,
-            "ip_address": device.ip_address,
-            "risk_score": device.risk_score,
-        },
-        "scanned_files_count": len(results),
-        "risk_level": overall_risk_level,
-        "risk_score": max_risk_score,
-        "block_level": overall_block_level,
-        "sensitive_files": len(threat_results),
-        "blocked_transfers": len(blocked_results),
-        "critical_incidents": len(critical_results),
-        "threats_detected": len(threat_results),
-        "high_risk_count": sum(1 for r in results if r.risk_score >= 70),
-        "user_information_count": user_info_count,
-        "ai_model_sharing_count": ai_model_count,
-        "total_bytes_scanned": sum(len(item["content"]) for item in files_to_scan),
-        "scan_results": [r.model_dump() for r in results],
-    }
+    # Return summary computed directly from the persisted database records
+    return compute_device_scan_summary(device, db, is_simulated=is_simulated)
 
 
 # ---------------------------------------------------------------------------
@@ -1193,9 +1335,11 @@ def trigger_device_scan(
 def register_device_legacy(
     payload: DeviceRegisterRequest,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Legacy registration endpoint for backwards compatibility with existing agents.
+    Requires authentication. Only an admin or the owning user may upsert a device record.
     Upserts by device_id.
     """
     device = db.query(Device).filter(Device.device_id == payload.device_id).first()

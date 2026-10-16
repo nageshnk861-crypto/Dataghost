@@ -158,7 +158,7 @@ const DLP_RULES: DlpRule[] = [
   // Financial (PCI/Banking)
   {
     name: "PCI_CREDIT_CARD",
-    pattern: /\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\b/g,
+    pattern: /\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12}|(?:[0-9]{4}[\s\-]){3}[0-9]{4})\b/g,
     category: "FINANCIAL",
     severity: "HIGH",
     detail: "Payment Card Number (PCI-DSS violation)",
@@ -174,10 +174,24 @@ const DLP_RULES: DlpRule[] = [
   // Credentials & Keys
   {
     name: "PASSWORD_FIELD",
-    pattern: /(?:password|passwd|pwd)[\s:=]+["']?([^\s"']{5,})["']?/gi,
+    pattern: /(?:password|passwd|pwd|secret|credential|auth_pass|db_pass)\s*[:=]\s*["']?([^\s"']{4,})["']?/gi,
     category: "CREDENTIALS",
     severity: "HIGH",
     detail: "Exposed Password / Authentication Secret",
+  },
+  {
+    name: "DATABASE_URL",
+    pattern: /(?:postgresql|postgres|mysql(?:\+\w+)?|mariadb|mongodb(?:\+srv)?|redis[s]?|mssql(?:\+\w+)?|sqlserver|oracle|sqlite):\/\/[^\s"'`\[\]{}()<>\\]{4,}/gi,
+    category: "CREDENTIALS",
+    severity: "CRITICAL",
+    detail: "Exposed Database Connection String / Credentials",
+  },
+  {
+    name: "JWT_TOKEN",
+    pattern: /\beyJ[A-Za-z0-9_\-]{4,}\.[A-Za-z0-9_\-]{4,}\.[A-Za-z0-9_\-]{4,}\b/g,
+    category: "CREDENTIALS",
+    severity: "CRITICAL",
+    detail: "Exposed JSON Web Token (JWT)",
   },
   {
     name: "AWS_ACCESS_KEY",
@@ -188,17 +202,38 @@ const DLP_RULES: DlpRule[] = [
   },
   {
     name: "GOOGLE_API_KEY",
-    pattern: /\bAIza[0-9A-Za-z_-]{35}\b/g,
+    pattern: /\bAIza[0-9A-Za-z_\-]{30,}\b/g,
     category: "CREDENTIALS",
     severity: "CRITICAL",
     detail: "Exposed Google Cloud / Gemini API Key",
   },
   {
-    name: "PRIVATE_KEY",
-    pattern: /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/g,
+    name: "STRIPE_KEY",
+    pattern: /\b(?:sk_live_|rk_live_|pk_live_)[A-Za-z0-9]{20,}\b/g,
     category: "CREDENTIALS",
     severity: "CRITICAL",
-    detail: "Exposed Cryptographic Private Key",
+    detail: "Exposed Stripe Live API Key / Secret",
+  },
+  {
+    name: "GITHUB_TOKEN",
+    pattern: /\b(?:gh[pousr]_[A-Za-z0-9_]{36,255}|github_pat_[A-Za-z0-9_]{82,255})\b/g,
+    category: "CREDENTIALS",
+    severity: "CRITICAL",
+    detail: "Exposed GitHub Personal Access Token",
+  },
+  {
+    name: "PRIVATE_KEY",
+    pattern: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----/gi,
+    category: "CREDENTIALS",
+    severity: "CRITICAL",
+    detail: "Exposed Cryptographic Private Key Header",
+  },
+  {
+    name: "IP_ADDRESS",
+    pattern: /\b(?:(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)\b/g,
+    category: "CORPORATE",
+    severity: "MEDIUM",
+    detail: "Hardcoded Network IP Address Detected",
   },
 
   // AI Models Sharing & GenAI Exfiltration
@@ -247,6 +282,17 @@ function maskMatch(str: string, rule: string): string {
       return `${parts[0].slice(0, 2)}***@${parts[1]}`;
     }
   }
+  if (rule === "JWT_TOKEN") {
+    const parts = str.split(".");
+    return `${parts[0].slice(0, 8)}...[REDACTED].[REDACTED]`;
+  }
+  if (rule === "DATABASE_URL") {
+    return str.replace(/:\/\/[^:]+:[^@]+@/, "://<REDACTED>@");
+  }
+  if (rule === "IP_ADDRESS") {
+    const parts = str.split(".");
+    if (parts.length === 4) return `${parts[0]}.${parts[1]}.***.***`;
+  }
   if (str.length > 8) {
     return `${str.slice(0, 4)}***${str.slice(-4)}`;
   }
@@ -260,19 +306,28 @@ function analyzeTextDlp(text: string, filename: string, destination: string = "L
     severity: string;
     matched_text: string;
     detail: string;
+    matches_count?: number;
   }> = [];
 
   for (const rule of DLP_RULES) {
     const matches = text.match(rule.pattern);
-    if (matches) {
-      for (const m of matches.slice(0, 3)) {
-        findings.push({
-          rule: rule.name,
-          category: rule.category,
-          severity: rule.severity,
-          matched_text: maskMatch(m, rule.name),
-          detail: rule.detail,
-        });
+    if (matches && matches.length > 0) {
+      const validMatches = rule.name === "IP_ADDRESS"
+        ? matches.filter((m) => m !== "0.0.0.0" && m !== "255.255.255.255" && !m.startsWith("127."))
+        : matches;
+
+      if (validMatches.length > 0) {
+        const unique = Array.from(new Set(validMatches));
+        for (const m of unique.slice(0, 5)) {
+          findings.push({
+            rule: rule.name,
+            category: rule.category,
+            severity: rule.severity,
+            matched_text: maskMatch(m, rule.name),
+            detail: rule.detail,
+            matches_count: validMatches.filter((x) => x === m).length,
+          });
+        }
       }
     }
   }
@@ -325,11 +380,12 @@ function analyzeTextDlp(text: string, filename: string, destination: string = "L
 
 // Helper to proxy request to backend if available
 async function tryProxyToBackend(req: NextRequest, fullPath: string): Promise<Response | null> {
+  const isVercel = Boolean(process.env.VERCEL || process.env.NEXT_PUBLIC_VERCEL_ENV);
   const backendUrl = (
     process.env.BACKEND_INTERNAL_URL ||
     process.env.BACKEND_URL ||
-    process.env.NEXT_PUBLIC_API_URL ||
-    "http://127.0.0.1:8000"
+    (!isVercel && process.env.NEXT_PUBLIC_API_URL ? process.env.NEXT_PUBLIC_API_URL : "") ||
+    (!isVercel ? "http://127.0.0.1:8000" : "")
   ).trim().replace(/\/+$/, "");
 
   if (!backendUrl || backendUrl.includes("devtunnels.ms")) {
@@ -341,12 +397,13 @@ async function tryProxyToBackend(req: NextRequest, fullPath: string): Promise<Re
 
   try {
     const isScanRequest = fullPath.includes("/scan");
-    const timeoutMs = isScanRequest ? 45000 : 4000;
+    const timeoutMs = isScanRequest ? 15000 : 4000;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
     const headers = new Headers(req.headers);
     headers.delete("host");
+    headers.delete("content-length");
 
     const body = ["GET", "HEAD"].includes(req.method) ? undefined : await req.clone().arrayBuffer();
 
@@ -517,6 +574,52 @@ export async function GET(request: NextRequest, { params }: { params: { path: st
       return NextResponse.json(devicesStore);
     }
     const devId = pathSegments[1];
+    if (pathSegments[2] === "scan-summary") {
+      const dev = devicesStore.find((d) => d.device_id === devId || String(d.id) === devId);
+      if (!dev) {
+        return NextResponse.json({ message: `Device '${devId}' not found.` }, { status: 404 });
+      }
+      const devIncidents = incidentsStore.filter((i) => i.device_id === dev.device_id);
+      if ((dev.files_scanned || 0) === 0 && devIncidents.length === 0) {
+        return NextResponse.json({
+          status: "no_data",
+          has_scan_data: false,
+          message: "No scan data yet",
+          device: dev,
+          risk_score: null,
+          risk_level: null,
+          block_level: null,
+          sensitive_files: 0,
+          blocked_transfers: 0,
+          critical_incidents: 0,
+          threats_detected: 0,
+          user_information_count: 0,
+          ai_model_sharing_count: 0,
+          scanned_files_count: 0,
+          total_bytes_scanned: 0,
+          scan_results: [],
+          is_simulated: false,
+        });
+      }
+      return NextResponse.json({
+        status: "success",
+        has_scan_data: true,
+        device: dev,
+        risk_score: dev.risk_score,
+        risk_level: dev.risk_score >= 80 ? "CRITICAL" : dev.risk_score >= 60 ? "HIGH" : dev.risk_score >= 30 ? "MEDIUM" : "LOW",
+        block_level: dev.blocked_transfers_count > 0 ? "BLOCKED" : devIncidents.length > 0 ? "ALERTED" : "ALLOWED",
+        sensitive_files: dev.sensitive_files_count || 0,
+        blocked_transfers: dev.blocked_transfers_count || 0,
+        critical_incidents: devIncidents.filter((i) => i.severity === "CRITICAL").length,
+        threats_detected: devIncidents.length,
+        user_information_count: devIncidents.length,
+        ai_model_sharing_count: 0,
+        scanned_files_count: dev.files_scanned || 0,
+        total_bytes_scanned: 0,
+        scan_results: [],
+        is_simulated: false,
+      });
+    }
     const dev = devicesStore.find((d) => d.device_id === devId || String(d.id) === devId);
     if (dev) {
       const devIncidents = incidentsStore.filter((i) => i.device_id === dev.device_id);
@@ -568,10 +671,53 @@ export async function POST(request: NextRequest, { params }: { params: { path: s
   if (proxyRes) return proxyRes;
 
   let body: any = {};
-  try {
-    body = await request.json();
-  } catch {
-    body = {};
+  let uploadedFile: { name: string; size: number; text: string; buffer: Buffer } | null = null;
+  let uploadedFiles: Array<{ name: string; size: number; text: string; buffer: Buffer }> = [];
+
+  const contentType = request.headers.get("content-type") || "";
+  if (contentType.includes("multipart/form-data") || contentType.includes("application/x-www-form-urlencoded")) {
+    try {
+      const formData = await request.formData();
+      for (const [key, val] of formData.entries()) {
+        if (typeof val === "string") {
+          body[key] = val;
+        }
+      }
+      const fileEntry = formData.get("file");
+      if (fileEntry && typeof fileEntry === "object" && "arrayBuffer" in fileEntry) {
+        const f = fileEntry as File;
+        const ab = await f.arrayBuffer();
+        const buf = Buffer.from(ab);
+        uploadedFile = {
+          name: f.name || "uploaded_file.txt",
+          size: f.size || buf.byteLength,
+          text: buf.toString("utf-8"),
+          buffer: buf,
+        };
+      }
+      const allFiles = formData.getAll("files");
+      for (const fe of allFiles) {
+        if (fe && typeof fe === "object" && "arrayBuffer" in fe) {
+          const f = fe as File;
+          const ab = await f.arrayBuffer();
+          const buf = Buffer.from(ab);
+          uploadedFiles.push({
+            name: f.name || "uploaded_file.txt",
+            size: f.size || buf.byteLength,
+            text: buf.toString("utf-8"),
+            buffer: buf,
+          });
+        }
+      }
+    } catch (e) {
+      console.warn("Could not parse multipart form data:", e);
+    }
+  } else {
+    try {
+      body = await request.json();
+    } catch {
+      body = {};
+    }
   }
 
   const origin = request.nextUrl.origin;
@@ -715,33 +861,21 @@ export async function POST(request: NextRequest, { params }: { params: { path: s
   // ── Real Device DLP Scan Trigger (/devices/:id/scan) ──
   if (pathSegments[0] === "devices" && pathSegments[2] === "scan") {
     const devId = pathSegments[1];
-    let dev = devicesStore.find((d) => d.device_id === devId || String(d.id) === devId);
+    const dev = devicesStore.find((d) => d.device_id === devId || String(d.id) === devId);
 
     if (!dev) {
-      dev = {
-        id: devicesStore.length + 1,
-        device_id: devId,
-        device_name: `Endpoint-${devId}`,
-        hostname: `HOST-${devId}`,
-        platform: "Windows",
-        os_name: "Windows 11 Enterprise",
-        os_type: "Windows",
-        os_version: "23H2",
-        status: "ACTIVE",
-        last_seen: new Date().toISOString(),
-        ip_address: "192.168.1.100",
-        agent_version: "2.4.0",
-        risk_score: 0,
-        policy_status: "Enforced",
-        sensitive_files_count: 0,
-        files_scanned: 0,
-        total_scans: 0,
-        blocked_transfers_count: 0,
-        incidents_count: 0,
-        created_at: new Date().toISOString(),
-      };
-      devicesStore.push(dev);
+      // Do NOT auto-create ghost devices. Return 404 so the UI shows an error,
+      // never a synthetic "allowed" result for an unknown device.
+      return NextResponse.json(
+        { message: `Device '${devId}' not found.` },
+        { status: 404 }
+      );
     }
+
+    // Check for explicit DEMO flag — server env var ONLY; never trust client-supplied body.demo
+    const isDemo =
+      process.env.DEMO_MODE === "1" ||
+      process.env.DEMO_MODE === "true";
 
     // Real files collection
     const filesToScan: Array<{ filename: string; content: string; destination: string }> = [];
@@ -761,8 +895,8 @@ export async function POST(request: NextRequest, { params }: { params: { path: s
         content: body.custom_content,
         destination: body.destination || "EXTERNAL",
       });
-    } else {
-      // Case 2: Scan real test documents and user/AI leakage scenarios on the endpoint
+    } else if (isDemo) {
+      // Case 2: Explicit DEMO mode only: load simulated test documents
       filesToScan.push(
         {
           filename: "customer_pii_identity_records.csv",
@@ -790,6 +924,43 @@ export async function POST(request: NextRequest, { params }: { params: { path: s
           destination: "LOCAL",
         }
       );
+    }
+
+    // In production without demo, if no files to scan: return empty state without simulated score
+    if (filesToScan.length === 0) {
+      return NextResponse.json({
+        status: "no_data",
+        has_scan_data: false,
+        message: "No scan data yet",
+        device: {
+          device_id: dev.device_id,
+          device_name: dev.device_name,
+          platform: dev.platform,
+          status: dev.status,
+          files_scanned: dev.files_scanned || 0,
+          incidents_count: dev.incidents_count || 0,
+          last_seen: dev.last_seen,
+          os_name: dev.os_name || `${dev.platform} OS`,
+          os_version: dev.os_version,
+          hostname: dev.hostname,
+          ip_address: dev.ip_address,
+          risk_score: null,
+        },
+        risk_score: null,
+        risk_level: null,
+        block_level: null,
+        sensitive_files: 0,
+        blocked_transfers: 0,
+        critical_incidents: 0,
+        threats_detected: 0,
+        high_risk_count: 0,
+        user_information_count: 0,
+        ai_model_sharing_count: 0,
+        scanned_files_count: 0,
+        total_bytes_scanned: 0,
+        scan_results: [],
+        is_simulated: false,
+      });
     }
 
     const scanResults: any[] = [];
@@ -868,8 +1039,10 @@ export async function POST(request: NextRequest, { params }: { params: { path: s
 
     return NextResponse.json({
       status: "success",
+      has_scan_data: true,
       message: `Real-time scan completed successfully for device '${dev.device_name}'.`,
-      source: "live_filesystem",
+      source: isDemo ? "demo_simulation" : "live_filesystem",
+      is_simulated: isDemo,
       device: {
         device_id: dev.device_id,
         device_name: dev.device_name,
@@ -907,6 +1080,10 @@ export async function POST(request: NextRequest, { params }: { params: { path: s
     const dest = body.destination || "EXTERNAL";
     const res = analyzeTextDlp(text, filename, dest);
 
+    const scanId = `scan-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    const fileHash = crypto.createHash("sha256").update(text).digest("hex");
+    const bytesInspected = Buffer.byteLength(text, "utf-8");
+
     let incidentId: string | null = null;
     if (res.risk_score >= 30) {
       incidentId = `DG-${new Date().getFullYear()}-${String(incidentsStore.length + 1).padStart(4, "0")}`;
@@ -915,7 +1092,7 @@ export async function POST(request: NextRequest, { params }: { params: { path: s
         incident_id: incidentId,
         user: currentUser,
         filename,
-        file_hash: crypto.createHash("sha256").update(text).digest("hex"),
+        file_hash: fileHash,
         classification: res.classification,
         risk_score: res.risk_score,
         severity: res.severity,
@@ -931,23 +1108,34 @@ export async function POST(request: NextRequest, { params }: { params: { path: s
       });
     }
 
+    // Shape matches ScanResponse so the Scanner UI can display proper status/findings
     return NextResponse.json({
+      scan_id: scanId,
       filename,
-      file_size: Buffer.byteLength(text, "utf-8"),
+      file_hash: fileHash,
+      file_size: bytesInspected,
+      bytes_inspected: bytesInspected,
+      scan_status: "COMPLETED",
+      is_simulated: false,
       score: res.risk_score,
       risk_score: res.risk_score,
       decision_score: res.risk_score,
       severity: res.severity,
       classification: res.classification,
+      recommended_action: res.action_taken === "BLOCKED" ? "BLOCK" : res.action_taken === "ALERTED" ? "ALERT" : "ALLOW",
       action_taken: res.action_taken,
+      total_findings: res.findings.length,
       findings: res.findings.map((f) => ({
+        rule: f.rule,
         rule_name: f.rule,
         category: f.category,
         severity: f.severity,
+        matched_text: f.matched_text,
         sample_match: f.matched_text,
         detail: f.detail,
       })),
       incident_id: incidentId,
+      timestamp: new Date().toISOString(),
     });
   }
 

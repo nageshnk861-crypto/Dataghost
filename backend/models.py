@@ -254,7 +254,10 @@ class Incident(Base):
     
     # Incident Workflow Status (OPEN | ACKNOWLEDGED | RESOLVED)
     status = Column(String(16), default="OPEN", index=True, nullable=False)
-    
+
+    # Simulated / demo data flag — excluded from real summary metrics
+    is_simulated = Column(Boolean, default=False, nullable=False, server_default="0")
+
     # Masked / Sanitized metadata (NO plaintext secrets stored)
     findings_json = Column(Text, nullable=True)         # JSON-serialised list of masked findings
     categories_json = Column(Text, nullable=True)       # JSON-serialised list of detected categories
@@ -281,6 +284,7 @@ class ScanLog(Base):
     organization_id = Column(String(64), default="default-org", nullable=True)
     status = Column(String(16), default="COMPLETED", nullable=True)  # COMPLETED | FAILED
     file_size = Column(Integer, nullable=True)
+    is_simulated = Column(Boolean, default=False, nullable=False, server_default="0")
 
 
 class Finding(Base):
@@ -326,6 +330,7 @@ class Finding(Base):
 
     # Lifecycle
     status = Column(String(16), default="OPEN", index=True)        # OPEN | ACKNOWLEDGED | RESOLVED | FALSE_POSITIVE
+    is_simulated = Column(Boolean, default=False, nullable=False, server_default="0")
     first_seen_at = Column(DateTime, default=_utc_now)
     last_seen_at = Column(DateTime, default=_utc_now)
     occurrence_count = Column(Integer, default=1)

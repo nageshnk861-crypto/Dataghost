@@ -14,6 +14,7 @@ import {
   updateDevice,
   deleteDevice,
   triggerDeviceScan,
+  fetchDeviceScanSummary,
   scanFile,
 } from "@/lib/api";
 import type {
@@ -414,7 +415,44 @@ export default function DevicesPage() {
       setScanResultData(enrichedData);
       await loadDevices(false);
     } catch (err: unknown) {
-      alert(err instanceof Error ? err.message : "Failed to run scan on device");
+      setScanResultData({
+        status: "error",
+        error: err instanceof Error ? err.message : "Failed to run scan or device unreachable",
+        device: dev,
+        has_scan_data: false,
+        risk_score: null,
+        risk_level: null,
+        block_level: null,
+      });
+    } finally {
+      setScanLoadingDevice(null);
+    }
+  };
+
+  // View persisted Endpoint Scan Summary without triggering a new scan
+  const handleViewScanSummary = async (e: React.MouseEvent, dev: Device) => {
+    e.stopPropagation();
+    const devId = dev.device_id || String(dev.id);
+    setScanLoadingDevice(devId);
+    try {
+      const data = await fetchDeviceScanSummary(devId);
+      setScanResultData({
+        ...data,
+        device: {
+          ...dev,
+          ...(data?.device || {}),
+        },
+      });
+    } catch (err: unknown) {
+      setScanResultData({
+        status: "error",
+        error: err instanceof Error ? err.message : "Failed to fetch scan summary",
+        device: dev,
+        has_scan_data: false,
+        risk_score: null,
+        risk_level: null,
+        block_level: null,
+      });
     } finally {
       setScanLoadingDevice(null);
     }
@@ -891,9 +929,13 @@ export default function DevicesPage() {
 
                     <div className="mt-4 pt-3 grid grid-cols-2 gap-2 border-t" style={{ borderColor: "#1a2744" }}>
                       <div className="text-center">
-                        <p className="text-sm font-bold" style={{ color: "#00d4ff" }}>
-                          {(device.files_scanned || 0).toLocaleString()}
-                        </p>
+                        {(device.files_scanned || 0) === 0 && (device.incidents_count || 0) === 0 ? (
+                          <p className="text-xs font-semibold text-slate-400 italic">No scan data yet</p>
+                        ) : (
+                          <p className="text-sm font-bold" style={{ color: "#00d4ff" }}>
+                            {(device.files_scanned || 0).toLocaleString()}
+                          </p>
+                        )}
                         <p className="text-[10px] text-slate-500 uppercase tracking-wider">Files Scanned</p>
                       </div>
                       <div className="text-center">
@@ -901,7 +943,7 @@ export default function DevicesPage() {
                           className="text-sm font-bold"
                           style={{ color: (device.incidents_count || 0) > 0 ? "#ff9f0a" : "#34d058" }}
                         >
-                          {device.incidents_count || 0}
+                          {(device.files_scanned || 0) === 0 && (device.incidents_count || 0) === 0 ? "—" : (device.incidents_count || 0)}
                         </p>
                         <p className="text-[10px] text-slate-500 uppercase tracking-wider">Incidents</p>
                       </div>
@@ -1789,6 +1831,17 @@ export default function DevicesPage() {
               <div className="flex items-center gap-2">
                 <button
                   type="button"
+                  onClick={(e) => handleViewScanSummary(e, selectedDevice)}
+                  disabled={scanLoadingDevice === (selectedDevice.device_id || String(selectedDevice.id))}
+                  className="px-3.5 py-1.5 rounded-lg text-xs font-semibold text-cyan-300 hover:text-white bg-slate-800 hover:bg-slate-700 border border-slate-700 flex items-center gap-1.5 transition-all disabled:opacity-50"
+                  title="View persisted Endpoint Scan Summary"
+                >
+                  <span>📊</span>
+                  <span>View Scan Summary</span>
+                </button>
+
+                <button
+                  type="button"
                   onClick={(e) => handleQuickScan(e, selectedDevice)}
                   disabled={scanLoadingDevice === (selectedDevice.device_id || String(selectedDevice.id))}
                   className="px-3.5 py-1.5 rounded-lg text-xs font-semibold text-cyan-300 hover:text-white bg-cyan-950/60 hover:bg-cyan-900 border border-cyan-500/40 flex items-center gap-1.5 transition-all disabled:opacity-50"
@@ -1845,19 +1898,69 @@ export default function DevicesPage() {
               <div className="flex items-center gap-3">
                 <div
                   className="w-12 h-12 rounded-xl flex items-center justify-center text-2xl shadow"
-                  style={{ background: "rgba(0,212,255,0.1)", border: "1px solid rgba(0,212,255,0.3)" }}
+                  style={{
+                    background:
+                      scanResultData.status === "error"
+                        ? "rgba(255,59,59,0.1)"
+                        : "rgba(0,212,255,0.1)",
+                    border: `1px solid ${
+                      scanResultData.status === "error"
+                        ? "rgba(255,59,59,0.3)"
+                        : "rgba(0,212,255,0.3)"
+                    }`,
+                  }}
                 >
-                  🔍
+                  {scanResultData.status === "error" ? "⚠️" : "🔍"}
                 </div>
                 <div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <h2 className="text-base font-bold text-white">Endpoint Scan Summary</h2>
-                    <span
-                      className="text-[10px] font-bold px-2 py-0.5 rounded uppercase"
-                      style={{ background: "rgba(52,208,88,0.15)", color: "#34d058", border: "1px solid rgba(52,208,88,0.3)" }}
-                    >
-                      Scan Complete
-                    </span>
+                    {scanResultData.status === "error" ? (
+                      <span
+                        className="text-[10px] font-bold px-2 py-0.5 rounded uppercase"
+                        style={{
+                          background: "rgba(255,59,59,0.15)",
+                          color: "#ff3b3b",
+                          border: "1px solid rgba(255,59,59,0.3)",
+                        }}
+                      >
+                        Scan Failed
+                      </span>
+                    ) : scanResultData.has_scan_data === false || scanResultData.status === "no_data" ? (
+                      <span
+                        className="text-[10px] font-bold px-2 py-0.5 rounded uppercase"
+                        style={{
+                          background: "rgba(100,116,139,0.2)",
+                          color: "#94a3b8",
+                          border: "1px solid rgba(100,116,139,0.3)",
+                        }}
+                      >
+                        No scan data yet
+                      </span>
+                    ) : (
+                      <span
+                        className="text-[10px] font-bold px-2 py-0.5 rounded uppercase"
+                        style={{
+                          background: "rgba(52,208,88,0.15)",
+                          color: "#34d058",
+                          border: "1px solid rgba(52,208,88,0.3)",
+                        }}
+                      >
+                        Scan Complete
+                      </span>
+                    )}
+                    {scanResultData.is_simulated && (
+                      <span
+                        className="text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider"
+                        style={{
+                          background: "rgba(245,158,11,0.2)",
+                          color: "#f59e0b",
+                          border: "1px solid rgba(245,158,11,0.4)",
+                        }}
+                      >
+                        Simulated data
+                      </span>
+                    )}
                   </div>
                   <p className="font-mono text-xs text-slate-400 mt-0.5">
                     Endpoint: <strong className="text-white">{scanResultData.device?.device_name}</strong> ({scanResultData.device?.device_id})
@@ -1897,9 +2000,43 @@ export default function DevicesPage() {
                   {scanResultData.source && (
                     <span className="text-slate-400">Source: <strong className="text-cyan-300 uppercase">{scanResultData.source?.replace(/_/g, " ")}</strong></span>
                   )}
-                  <span className="text-slate-400">Scanned: <strong className="text-cyan-300">{new Date().toLocaleTimeString()}</strong></span>
+                  <span className="text-slate-400">Timestamp: <strong className="text-cyan-300">{new Date().toLocaleTimeString()}</strong></span>
                 </div>
               )}
+
+              {/* ── CASE 1: SCAN FAILED / UNREACHABLE ── */}
+              {scanResultData.status === "error" ? (
+                <div
+                  className="p-6 rounded-xl text-center space-y-3"
+                  style={{ background: "rgba(255,59,59,0.06)", border: "1px solid rgba(255,59,59,0.25)" }}
+                >
+                  <div className="text-3xl">⚠️</div>
+                  <h3 className="text-sm font-bold text-red-400 uppercase tracking-wide">Endpoint Scan Failed</h3>
+                  <p className="text-xs text-slate-300 max-w-md mx-auto">
+                    {scanResultData.error || scanResultData.message || "Endpoint agent is unreachable or scan execution failed."}
+                  </p>
+                  <p className="text-[11px] text-slate-500">
+                    Verify that the endpoint device agent is running, active, and reachable on the network.
+                  </p>
+                </div>
+              ) : scanResultData.has_scan_data === false || scanResultData.status === "no_data" ? (
+                /* ── CASE 2: NO SCAN DATA YET ── */
+                <div
+                  className="p-6 rounded-xl text-center space-y-3"
+                  style={{ background: "rgba(15,23,41,0.7)", border: "1px dashed #1a2744" }}
+                >
+                  <div className="text-3xl">📁</div>
+                  <h3 className="text-sm font-bold text-white uppercase tracking-wide">No scan data yet</h3>
+                  <p className="text-xs text-slate-400 max-w-md mx-auto">
+                    {scanResultData.message || "No DLP scan findings exist for this device yet. Initiate a scan or transfer files to generate telemetry."}
+                  </p>
+                  <p className="text-[11px] text-slate-500">
+                    Security score and threat metrics will only be computed once real findings are stored in the database.
+                  </p>
+                </div>
+              ) : (
+                /* ── CASE 3: SCAN RESULTS & METRICS ── */
+                <>
 
               {/* ── PRIMARY RISK METRICS: Risk Level + Block Level ── */}
               <div className="grid grid-cols-2 gap-3">
@@ -2253,7 +2390,9 @@ export default function DevicesPage() {
                   );
                 })()}
                 </div>
-              </div>
+              </>
+            )}
+            </div>
 
             {/* Modal Footer */}
             <div className="pt-4 border-t border-slate-800 flex items-center justify-between">

@@ -461,6 +461,7 @@ export async function triggerDeviceScan(
     filename?: string;
     destination?: string;
     action?: string;
+    demo?: boolean;
   }
 ): Promise<any> {
   const endpoint = `/api/devices/${encodeURIComponent(deviceId)}/scan`;
@@ -470,6 +471,13 @@ export async function triggerDeviceScan(
   });
   return handleResponse<any>(res, endpoint);
 }
+
+export async function fetchDeviceScanSummary(deviceId: string): Promise<any> {
+  const endpoint = `/api/devices/${encodeURIComponent(deviceId)}/scan-summary`;
+  const res = await apiFetch(endpoint);
+  return handleResponse<any>(res, endpoint);
+}
+
 
 
 // ─── Scanner ─────────────────────────────────────────────────────────────────
