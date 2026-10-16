@@ -216,7 +216,7 @@ class EnrollmentRegisterResponse(BaseModel):
 
 
 class DeviceHeartbeatRequest(BaseModel):
-    device_id: str
+    device_id: Optional[str] = None
     timestamp: Optional[datetime] = None
     agent_version: Optional[str] = None
     status: Optional[str] = "ACTIVE"
@@ -290,3 +290,99 @@ class ActivityDataPoint(BaseModel):
     scans: int
     sensitive: int
     blocked: int
+
+
+# ---------------------------------------------------------------------------
+# Persisted Findings & Audit Logs (Phase 5)
+# ---------------------------------------------------------------------------
+class FindingResponse(BaseModel):
+    id: int
+    scan_log_id: Optional[int] = None
+    scan_id: Optional[str] = None
+    user_id: Optional[int] = None
+    organization_id: Optional[str] = "default-org"
+    device_id: Optional[str] = None
+
+    # File context
+    file_name: Optional[str] = None
+    file_hash: Optional[str] = None
+
+    # Detector identification
+    detector_id: Optional[str] = None
+    rule_id: Optional[str] = None
+    category: Optional[str] = None
+    severity: str = "LOW"
+    confidence: float = 1.0
+    risk_score: int = 0
+
+    # Location in source
+    line_number: int = 0
+    column_number: int = 0
+    char_start: int = 0
+    char_end: int = 0
+
+    # Redacted evidence
+    evidence_redacted: Optional[str] = None
+    description: Optional[str] = None
+    remediation: Optional[str] = None
+
+    # Deduplication & Lifecycle
+    fingerprint: Optional[str] = None
+    status: str = "OPEN"
+    first_seen_at: Optional[datetime] = None
+    last_seen_at: Optional[datetime] = None
+    occurrence_count: int = 1
+
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class FindingListResponse(BaseModel):
+    items: List[FindingResponse]
+    total: int
+    page: int
+    per_page: int
+    pages: int
+
+
+class FindingStatusUpdate(BaseModel):
+    status: str = Field(..., description="OPEN | ACKNOWLEDGED | RESOLVED | FALSE_POSITIVE")
+    comment: Optional[str] = None
+
+
+class FindingStatsResponse(BaseModel):
+    total: int = 0
+    open: int = 0
+    acknowledged: int = 0
+    resolved: int = 0
+    false_positive: int = 0
+    by_severity: Dict[str, int] = Field(default_factory=dict)
+    by_category: Dict[str, int] = Field(default_factory=dict)
+
+
+class AuditLogResponse(BaseModel):
+    id: int
+    actor_user_id: Optional[int] = None
+    actor_username: Optional[str] = None
+    organization_id: Optional[str] = "default-org"
+    action: str
+    resource_type: Optional[str] = None
+    resource_id: Optional[str] = None
+    result: str = "SUCCESS"
+    ip_address: Optional[str] = None
+    request_id: Optional[str] = None
+    metadata_json: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class AuditLogListResponse(BaseModel):
+    items: List[AuditLogResponse]
+    total: int
+    page: int
+    per_page: int
+    pages: int
+

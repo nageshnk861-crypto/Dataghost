@@ -13,6 +13,8 @@ from api.device_routes import router as device_router
 from api.dashboard_routes import router as dashboard_router
 from api.enrollment_routes import router as enrollment_router
 from api.provisioning_routes import router as provisioning_router
+from api.upload_routes import router as upload_router
+from api.findings_routes import router as findings_router
 
 router = APIRouter()
 
@@ -20,8 +22,13 @@ router.include_router(auth_router)
 router.include_router(scan_router)
 router.include_router(incident_router)
 router.include_router(device_router)
+router.include_router(device_router, prefix="/v1")
+router.include_router(findings_router)
+router.include_router(findings_router, prefix="/v1")
 router.include_router(dashboard_router)
 router.include_router(user_router)
 router.include_router(dlp_router)
 router.include_router(enrollment_router, prefix="/v1")
 router.include_router(provisioning_router, prefix="/v1")
+router.include_router(upload_router, prefix="/v1")
+

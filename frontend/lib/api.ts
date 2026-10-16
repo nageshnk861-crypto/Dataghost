@@ -75,6 +75,69 @@ export interface IncidentListResponse {
   pages: number;
 }
 
+export interface FindingRow {
+  id: number;
+  scan_log_id?: number | null;
+  scan_id?: string | null;
+  user_id?: number | null;
+  organization_id?: string;
+  device_id?: string | null;
+  file_name?: string | null;
+  file_hash?: string | null;
+  detector_id?: string | null;
+  rule_id?: string | null;
+  category?: string | null;
+  severity: string;
+  confidence: number;
+  risk_score: number;
+  line_number?: number;
+  column_number?: number;
+  char_start?: number;
+  char_end?: number;
+  evidence_redacted?: string | null;
+  description?: string | null;
+  remediation?: string | null;
+  fingerprint?: string | null;
+  status: string;
+  first_seen_at?: string | null;
+  last_seen_at?: string | null;
+  occurrence_count: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface FindingParams {
+  page?: number;
+  per_page?: number;
+  severity?: string;
+  category?: string;
+  status?: string;
+  search?: string;
+  scan_id?: string;
+  device_id?: string;
+  sort_by?: string;
+  sort_order?: string;
+}
+
+export interface FindingListResponse {
+  items: FindingRow[];
+  total: number;
+  page: number;
+  per_page: number;
+  pages: number;
+}
+
+export interface FindingStats {
+  total: number;
+  open: number;
+  acknowledged: number;
+  resolved: number;
+  false_positive: number;
+  by_severity: Record<string, number>;
+  by_category: Record<string, number>;
+}
+
+
 export interface Device {
   id?: number;
   device_id?: string;
@@ -259,7 +322,53 @@ export async function patchIncidentStatus(
   return handleResponse<IncidentRow>(res, endpoint);
 }
 
+// ─── Findings (Phase 5) ───────────────────────────────────────────────────────
+
+export async function fetchFindings(params: FindingParams = {}): Promise<FindingListResponse> {
+  const q = new URLSearchParams();
+  if (params.page != null) q.set("page", String(params.page));
+  if (params.per_page != null) q.set("per_page", String(params.per_page));
+  if (params.severity && params.severity !== "ALL") q.set("severity", params.severity);
+  if (params.status && params.status !== "ALL") q.set("status", params.status);
+  if (params.category && params.category !== "ALL") q.set("category", params.category);
+  if (params.search) q.set("search", params.search);
+  if (params.scan_id) q.set("scan_id", params.scan_id);
+  if (params.device_id) q.set("device_id", params.device_id);
+  if (params.sort_by) q.set("sort_by", params.sort_by);
+  if (params.sort_order) q.set("sort_order", params.sort_order);
+  const qs = q.toString();
+  const endpoint = `/api/findings${qs ? "?" + qs : ""}`;
+  const res = await apiFetch(endpoint);
+  return handleResponse<FindingListResponse>(res, endpoint);
+}
+
+export async function fetchFindingStats(): Promise<FindingStats> {
+  const endpoint = "/api/findings/stats";
+  const res = await apiFetch(endpoint);
+  return handleResponse<FindingStats>(res, endpoint);
+}
+
+export async function fetchFindingById(findingId: number): Promise<FindingRow> {
+  const endpoint = `/api/findings/${findingId}`;
+  const res = await apiFetch(endpoint);
+  return handleResponse<FindingRow>(res, endpoint);
+}
+
+export async function patchFindingStatus(
+  findingId: number,
+  status: string,
+  comment?: string
+): Promise<FindingRow> {
+  const endpoint = `/api/findings/${findingId}`;
+  const res = await apiFetch(endpoint, {
+    method: "PATCH",
+    body: JSON.stringify({ status, comment }),
+  });
+  return handleResponse<FindingRow>(res, endpoint);
+}
+
 // ─── Devices ─────────────────────────────────────────────────────────────────
+
 
 export async function fetchDevices(): Promise<Device[]> {
   const res = await apiFetch("/api/devices");
@@ -403,6 +512,30 @@ export async function scanText(payload: ScanTextPayload): Promise<ScanResultData
     }),
   });
   return handleResponse<ScanResultData>(res, endpoint);
+}
+
+/**
+ * Upload multiple files to the Phase-2 /api/v1/upload endpoint.
+ * The backend validates each file, extracts archives, and runs the full
+ * DLP scan pipeline. Returns one ScanResultData per uploaded file.
+ */
+export async function scanMultipleFiles(
+  files: File[],
+  opts: { destination?: string; action?: string } = {}
+): Promise<ScanResultData[]> {
+  const form = new FormData();
+  for (const file of files) {
+    form.append("files", file);
+  }
+  if (opts.destination) form.append("destination", opts.destination);
+  if (opts.action) form.append("action", opts.action);
+
+  const endpoint = "/api/v1/upload";
+  const res = await apiFetch(endpoint, {
+    method: "POST",
+    body: form,
+  });
+  return handleResponse<ScanResultData[]>(res, endpoint);
 }
 
 // ─── Admin: Device Provisioning ──────────────────────────────────────────────

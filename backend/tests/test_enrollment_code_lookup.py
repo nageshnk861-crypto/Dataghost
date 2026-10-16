@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from models import User, EnrollmentToken
-from database import Base, engine, get_db
+from database import Base, engine, get_db, SessionLocal
 from main import app
 from auth import get_password_hash
 
@@ -29,12 +29,11 @@ def _utc_now() -> datetime:
 @pytest.fixture
 def db_session():
     """Create a fresh database session for each test."""
-    Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
-    db = next(get_db())
+    db = SessionLocal()
     yield db
     db.close()
-    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
 
 
 @pytest.fixture
@@ -44,22 +43,31 @@ def client(db_session):
         yield db_session
 
     app.dependency_overrides[get_db] = override_get_db
-    return TestClient(app)
+    yield TestClient(app)
+    app.dependency_overrides.clear()
 
 
 @pytest.fixture
 def admin_user(db_session):
     """Create an admin user for authentication."""
-    user = User(
-        username="admin",
-        email="admin@test.local",
-        hashed_password=get_password_hash("admin123"),
-        role="admin",
-        is_active=True,
-    )
-    db_session.add(user)
-    db_session.commit()
-    db_session.refresh(user)
+    user = db_session.query(User).filter(
+        (User.username == "lookup_admin") | (User.email == "lookup_admin@test.local")
+    ).first()
+    if not user:
+        user = User(
+            username="lookup_admin",
+            email="lookup_admin@test.local",
+            hashed_password=get_password_hash("admin123"),
+            role="admin",
+            is_active=True,
+        )
+        db_session.add(user)
+        db_session.commit()
+        db_session.refresh(user)
+    else:
+        user.hashed_password = get_password_hash("admin123")
+        user.role = "admin"
+        db_session.commit()
     return user
 
 
@@ -68,7 +76,7 @@ def auth_token(client, admin_user):
     """Generate authentication token for admin user."""
     response = client.post(
         "/api/auth/login",
-        json={"username": "admin", "password": "admin123"}
+        json={"username": "lookup_admin", "password": "admin123"}
     )
     assert response.status_code == 200
     return response.json()["access_token"]
@@ -262,6 +270,12 @@ class TestEnrollmentCodeLookup:
         This endpoint should be accessible by frontend /enroll/[code] page
         without any authentication token.
         """
+        # Clean previous test record if exists
+        db_session.query(EnrollmentToken).filter(
+            (EnrollmentToken.enrollment_code == "DG-TEST-0001") | (EnrollmentToken.token_hash == "dummy_hash_" + "x" * 50)
+        ).delete()
+        db_session.commit()
+
         # Create enrollment in database directly (simulating a created code)
         token = EnrollmentToken(
             token_hash="dummy_hash_" + "x" * 50,

@@ -1,6 +1,7 @@
 """
 DataGhost – SQLAlchemy ORM models.
-Tables: User, Device, Incident, ScanLog, EnrollmentToken, DeviceProvisioning, DeviceIdentity.
+Tables: User, Device, Incident, ScanLog, Finding, AuditLog,
+        EnrollmentToken, DeviceProvisioning, DeviceIdentity.
 Compatible with SQLite (dev) and PostgreSQL (prod).
 """
 from datetime import datetime, timezone
@@ -268,6 +269,7 @@ class ScanLog(Base):
     __tablename__ = "scan_logs"
 
     id = Column(Integer, primary_key=True, index=True)
+    scan_id = Column(String(64), unique=True, index=True, nullable=True)
     timestamp = Column(DateTime, default=_utc_now, index=True)
     filename = Column(String(512), nullable=True)
     file_hash = Column(String(128), nullable=True)
@@ -275,6 +277,97 @@ class ScanLog(Base):
     risk_score = Column(Integer, default=0)
     findings_count = Column(Integer, default=0)
     device_id = Column(String(64), nullable=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    organization_id = Column(String(64), default="default-org", nullable=True)
+    status = Column(String(16), default="COMPLETED", nullable=True)  # COMPLETED | FAILED
+    file_size = Column(Integer, nullable=True)
+
+
+class Finding(Base):
+    """
+    Individual DLP finding persisted from the scan pipeline.
+    All evidence is redacted before storage – raw secrets are NEVER persisted.
+    Deduplication is handled via the `fingerprint` column.
+    """
+    __tablename__ = "findings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    scan_log_id = Column(Integer, ForeignKey("scan_logs.id"), nullable=True, index=True)
+    scan_id = Column(String(64), nullable=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    organization_id = Column(String(64), default="default-org", nullable=True, index=True)
+    device_id = Column(String(64), nullable=True, index=True)
+
+    # File context
+    file_name = Column(String(512), nullable=True)
+    file_hash = Column(String(128), nullable=True)
+
+    # Detector identification
+    detector_id = Column(String(64), nullable=True)
+    rule_id = Column(String(128), nullable=True)
+    category = Column(String(64), nullable=True, index=True)       # CREDENTIALS | PII | FINANCIAL | CORPORATE
+    severity = Column(String(16), default="LOW", index=True)       # LOW | MEDIUM | HIGH | CRITICAL
+    confidence = Column(Float, default=1.0)
+    risk_score = Column(Integer, default=0)
+
+    # Location in source
+    line_number = Column(Integer, default=0)
+    column_number = Column(Integer, default=0)
+    char_start = Column(Integer, default=0)
+    char_end = Column(Integer, default=0)
+
+    # Redacted evidence (NO raw secrets)
+    evidence_redacted = Column(Text, nullable=True)
+    description = Column(Text, nullable=True)
+    remediation = Column(Text, nullable=True)
+
+    # Deduplication
+    fingerprint = Column(String(64), nullable=True, index=True)
+
+    # Lifecycle
+    status = Column(String(16), default="OPEN", index=True)        # OPEN | ACKNOWLEDGED | RESOLVED | FALSE_POSITIVE
+    first_seen_at = Column(DateTime, default=_utc_now)
+    last_seen_at = Column(DateTime, default=_utc_now)
+    occurrence_count = Column(Integer, default=1)
+
+    created_at = Column(DateTime, default=_utc_now)
+    updated_at = Column(DateTime, default=_utc_now, onupdate=_utc_now)
+
+    __table_args__ = (
+        Index("ix_findings_fingerprint_device", fingerprint, device_id),
+        Index("ix_findings_user_status", user_id, status),
+        Index("ix_findings_severity_status", severity, status),
+    )
+
+
+class AuditLog(Base):
+    """
+    Append-only security audit log.
+    Records scan, finding, incident, and auth events.
+    No deletion or editing endpoints are exposed.
+    Sensitive data (tokens, passwords) is NEVER logged.
+    """
+    __tablename__ = "audit_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    actor_user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    actor_username = Column(String(64), nullable=True)
+    organization_id = Column(String(64), default="default-org", nullable=True)
+
+    action = Column(String(64), nullable=False, index=True)         # SCAN_COMPLETED | FINDING_CREATED | INCIDENT_CREATED | FINDING_STATUS_CHANGED | LOGIN_SUCCESS | LOGIN_FAILURE
+    resource_type = Column(String(32), nullable=True, index=True)   # SCAN | FINDING | INCIDENT | USER | DEVICE
+    resource_id = Column(String(128), nullable=True)
+    result = Column(String(16), default="SUCCESS")                  # SUCCESS | FAILURE | DENIED
+
+    ip_address = Column(String(64), nullable=True)
+    request_id = Column(String(64), nullable=True)
+    metadata_json = Column(Text, nullable=True)                     # JSON string with extra context (no secrets)
+
+    created_at = Column(DateTime, default=_utc_now, index=True)
+
+    __table_args__ = (
+        Index("ix_audit_logs_action_created", action, created_at),
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -346,3 +439,22 @@ def make_user_datetimes_aware(target, context):
         dt = getattr(target, attr, None)
         if dt and isinstance(dt, datetime) and dt.tzinfo is None:
             setattr(target, attr, dt.replace(tzinfo=timezone.utc))
+
+
+@event.listens_for(Finding, "load")
+def make_finding_datetimes_aware(target, context):
+    """Convert naive datetimes to UTC-aware when loading Finding from DB."""
+    for attr in ["first_seen_at", "last_seen_at", "created_at", "updated_at"]:
+        dt = getattr(target, attr, None)
+        if dt and isinstance(dt, datetime) and dt.tzinfo is None:
+            setattr(target, attr, dt.replace(tzinfo=timezone.utc))
+
+
+@event.listens_for(AuditLog, "load")
+def make_auditlog_datetimes_aware(target, context):
+    """Convert naive datetimes to UTC-aware when loading AuditLog from DB."""
+    for attr in ["created_at"]:
+        dt = getattr(target, attr, None)
+        if dt and isinstance(dt, datetime) and dt.tzinfo is None:
+            setattr(target, attr, dt.replace(tzinfo=timezone.utc))
+

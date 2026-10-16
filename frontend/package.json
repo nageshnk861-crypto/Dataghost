@@ -6,7 +6,9 @@
     "dev": "next dev -H 0.0.0.0 -p 3000",
     "build": "next build",
     "start": "next start -p 3000",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test": "vitest --run --config vitest.config.mjs",
+    "test:watch": "vitest --config vitest.config.mjs"
   },
   "dependencies": {
     "@types/node": "20.17.9",
@@ -25,5 +27,15 @@
     "recharts": "2.13.3",
     "tailwindcss": "3.4.16",
     "typescript": "5.7.2"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@vitejs/plugin-react": "^6.1.2",
+    "@vitest/ui": "^5.0.4",
+    "jsdom": "^30.1.2",
+    "vite": "^8.3.4",
+    "vitest": "^5.0.4"
   }
 }

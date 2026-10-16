@@ -75,16 +75,24 @@ export function removeJwt() {
     sessionStorage.removeItem(USER_KEY);
   }
 }
-export function saveUser(u: { username: string; role: string }) {
+export interface StoredUser {
+  id?: number | string;
+  email?: string;
+  username: string;
+  role: string;
+}
+
+export function saveUser(u: StoredUser) {
   if (typeof window !== "undefined")
     localStorage.setItem(USER_KEY, JSON.stringify(u));
 }
-export function getSavedUser(): { username: string; role: string } | null {
+export function getSavedUser(): StoredUser | null {
   if (typeof window === "undefined") return null;
   const raw = localStorage.getItem(USER_KEY);
   if (!raw) return null;
   try { return JSON.parse(raw); } catch { return null; }
 }
+
 
 // â”€â”€ Legacy aliases (keep old callers working) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export const getToken  = getJwt;
@@ -198,9 +206,17 @@ export async function apiFetch(
  * @param token - JWT token to authenticate the request
  * @returns User profile with username and role from the backend, or null on error
  */
+export interface BackendUserProfile {
+  id?: number | string;
+  email?: string;
+  username: string;
+  role: string;
+  isUnauthorized?: boolean;
+}
+
 export async function fetchUserProfileFromBackend(
   token: string
-): Promise<{ username: string; role: string } | null> {
+): Promise<BackendUserProfile | null> {
   if (!token) return null;
 
   const apiBase = getApiBaseUrl();
@@ -209,7 +225,7 @@ export async function fetchUserProfileFromBackend(
 
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 3000);
+    const timer = setTimeout(() => controller.abort(), 4000);
 
     const res = await fetch(targetUrl, {
       method: "GET",
@@ -224,17 +240,28 @@ export async function fetchUserProfileFromBackend(
 
     clearTimeout(timer);
 
+    if (res.status === 401) {
+      return {
+        username: "",
+        role: "",
+        isUnauthorized: true,
+      };
+    }
+
     if (!res.ok) {
       return null;
     }
 
     const data = await res.json();
     return {
+      id: data.id,
+      email: data.email,
       username: data.username || "User",
       role: data.role || "analyst",
+      isUnauthorized: false,
     };
   } catch (err: unknown) {
-    // Silently fail - no fallback to hardcoded admin role
+    // Silently fail - network error or backend offline
     return null;
   }
 }
@@ -253,8 +280,10 @@ export function unregisterAuthFailureHandler() {
   // No-op.
 }
 export function useAuth() {
+  const saved = getSavedUser();
   return {
-    user: getSavedUser(),
+    user: saved,
+    role: saved?.role || null,
     logout: () => {
       removeJwt();
       if (typeof window !== "undefined") {

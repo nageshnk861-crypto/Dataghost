@@ -12,7 +12,8 @@ from fastapi.testclient import TestClient
 
 from main import app
 from database import SessionLocal, init_db
-from models import Incident
+from auth import create_access_token, get_password_hash
+from models import Incident, User
 
 client = TestClient(app)
 
@@ -22,6 +23,27 @@ INCIDENT_ID_PATTERN = re.compile(r"^DG-\d{4}-\d{4,}$")
 @pytest.fixture(autouse=True)
 def ensure_db():
     init_db()
+    db = SessionLocal()
+    try:
+        admin_user = db.query(User).filter(
+            (User.username == "incident_test_admin") | (User.email == "incident_test_admin@test.local")
+        ).first()
+        if not admin_user:
+            admin_user = User(
+                username="incident_test_admin",
+                email="incident_test_admin@test.local",
+                hashed_password=get_password_hash("AdminPass123!"),
+                role="admin",
+            )
+            db.add(admin_user)
+            db.commit()
+            db.refresh(admin_user)
+        token = create_access_token({"sub": admin_user.username, "role": "admin"})
+        client.headers["Authorization"] = f"Bearer {token}"
+    finally:
+        db.close()
+    yield
+    client.headers.pop("Authorization", None)
 
 
 # ---------------------------------------------------------------------------

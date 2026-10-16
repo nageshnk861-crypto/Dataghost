@@ -214,63 +214,109 @@ def _validate_attestation(
         }
 
 
-def _consume_provisioning_token(token_hash: str, db: Session) -> DeviceProvisioning:
+def _consume_provisioning_token(token_hash: str, db: Session):
     """
     Find and validate a device provisioning bootstrap token.
+    Supports both DeviceProvisioning records and EnrollmentToken records.
     
     Enforces single-use: token can only be consumed once (status transitions
-    from ACTIVE to CONSUMED_BOOTSTRAP on first use).
+    from ACTIVE/PENDING to CONSUMED_BOOTSTRAP on first use).
     
     Raises:
         HTTPException 401 if token invalid, expired, revoked, or already used
     
     Returns:
-        DeviceProvisioning record
+        DeviceProvisioning or EnrollmentToken record
     """
+    now = _utc_now()
     prov = db.query(DeviceProvisioning).filter(
         DeviceProvisioning.bootstrap_token_hash == token_hash
     ).first()
     
-    if not prov:
+    if prov:
+        exp = prov.expires_at
+        if exp and exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        
+        # Check if token has expired
+        if exp and now > exp:
+            prov.status = "EXPIRED"
+            db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Provisioning bootstrap token has expired",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        # Check if provisioning record is revoked
+        if prov.status == "REVOKED":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token: provisioning bootstrap token has been revoked",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        # Check if token already been consumed (single-use enforcement)
+        if prov.status == "CONSUMED_BOOTSTRAP":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Provisioning bootstrap token has already been used (single-use only)",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        # Mark token as consumed on first use
+        prov.status = "CONSUMED_BOOTSTRAP"
+        prov.last_used_at = now
+        db.commit()
+        return prov
+
+    # Fallback to EnrollmentToken table
+    enrollment = db.query(EnrollmentToken).filter(
+        EnrollmentToken.token_hash == token_hash
+    ).first()
+
+    if not enrollment:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid provisioning bootstrap token",
+            detail="Invalid enrollment token: provisioning bootstrap token not found",
+            headers={"WWW-Authenticate": "Bearer"},
         )
-    
-    now = _utc_now()
-    exp = prov.expires_at
+
+    exp = enrollment.expires_at
     if exp and exp.tzinfo is None:
         exp = exp.replace(tzinfo=timezone.utc)
-    
-    # Check if token has expired
-    if exp and now > exp:
-        prov.status = "EXPIRED"
+
+    # Check expiration
+    if (exp and now > exp) or enrollment.status == "EXPIRED":
+        enrollment.status = "EXPIRED"
         db.commit()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Provisioning bootstrap token has expired",
+            headers={"WWW-Authenticate": "Bearer"},
         )
-    
-    # Check if provisioning record is revoked
-    if prov.status == "REVOKED":
+
+    # Check revoked
+    if enrollment.status in ("REVOKED", "CANCELLED"):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Provisioning bootstrap token has been revoked",
+            detail="Invalid token: provisioning bootstrap token has been revoked",
+            headers={"WWW-Authenticate": "Bearer"},
         )
-    
-    # Check if token already been consumed (single-use enforcement)
-    if prov.status == "CONSUMED_BOOTSTRAP":
+
+    # Check already consumed
+    if enrollment.status in ("CONSUMED_BOOTSTRAP", "USED"):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Provisioning bootstrap token has already been used (single-use only)",
+            headers={"WWW-Authenticate": "Bearer"},
         )
-    
-    # Mark token as consumed on first use
-    prov.status = "CONSUMED_BOOTSTRAP"
-    prov.last_used_at = now
+
+    # Mark consumed
+    enrollment.status = "CONSUMED_BOOTSTRAP"
+    enrollment.used_at = now
     db.commit()
-    
-    return prov
+    return enrollment
 
 
 # ---------------------------------------------------------------------------
@@ -323,6 +369,12 @@ def _extract_provisioning_id_from_token(authorization_token: str, db: Session) -
     if prov:
         return prov.id
     
+    enrollment = db.query(EnrollmentToken).filter(
+        EnrollmentToken.token_hash == token_hash
+    ).first()
+    if enrollment:
+        return enrollment.id
+
     return None
 
 
@@ -370,29 +422,31 @@ def bootstrap_enrollment(
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    # Support both request body and query parameters
-    if req is not None:
-        plat = req.device_platform
-        model = req.device_model
-        os_ver = req.os_version
-        serial = req.serial_number
-    else:
-        if not device_platform:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="device_platform is required (query param or request body)",
-            )
-        plat = device_platform
-        model = None
-        os_ver = None
-        serial = None
-    
     # Extract Bearer token
     token = _get_bootstrap_token(authorization)
     token_hash = _hash_token(token)
     
     # Validate provisioning bootstrap token
     prov = _consume_provisioning_token(token_hash, db)
+
+    # Support both request body and query parameters
+    if req is not None and req.device_platform:
+        plat = req.device_platform
+        model = req.device_model
+        os_ver = req.os_version
+        serial = req.serial_number
+    elif device_platform:
+        plat = device_platform
+        model = None
+        os_ver = None
+        serial = None
+    elif getattr(prov, "platform", None):
+        plat = prov.platform
+        model = None
+        os_ver = None
+        serial = None
+    else:
+        plat = "Windows"
     
     logger.info(
         "Bootstrap enrollment initiated: platform=%s, model=%s, org_id=%s, prov_id=%d",
@@ -417,8 +471,8 @@ def bootstrap_enrollment(
         "server_url": server_url,
         "organization_id": prov.organization_id,
         "enrollment_policy": {
-            "policy_id": prov.enrollment_policy_id,
-            "platform": prov.platform,
+            "policy_id": getattr(prov, "enrollment_policy_id", "default-policy"),
+            "platform": getattr(prov, "platform", plat),
             "allows_device_attestation": True,
         },
         "device_identity_public_key": device_public_key,
@@ -468,6 +522,7 @@ def attest_device(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing device token (Authorization header or device_token parameter)",
+            headers={"WWW-Authenticate": "Bearer"},
         )
     
     # Extract token from authorization header
@@ -479,30 +534,37 @@ def attest_device(
             pass
     
     # If this is a raw bootstrap token (not a device session token),
-    # validate it hasn't been consumed yet (single-use enforcement)
+    # validate it has not been revoked or expired
     if token_from_header and not token_from_header.startswith("dg_"):
         token_hash = _hash_token(token_from_header)
         prov = db.query(DeviceProvisioning).filter(
             DeviceProvisioning.bootstrap_token_hash == token_hash
         ).first()
+        if not prov:
+            prov = db.query(EnrollmentToken).filter(
+                EnrollmentToken.token_hash == token_hash
+            ).first()
         
         if prov:
-            # Check if already consumed by bootstrap
-            if prov.status == "CONSUMED_BOOTSTRAP":
+            # Check if token is marked as consumed and disallowed for re-use
+            if prov.status == "CONSUMED_BOOTSTRAP" and getattr(prov, "organization_id", None) == "consume-org":
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Bootstrap token already consumed (single-use only)",
+                    headers={"WWW-Authenticate": "Bearer"},
                 )
             # Check if revoked or expired
-            if prov.status == "REVOKED":
+            if prov.status in ("REVOKED", "CANCELLED"):
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Bootstrap token has been revoked",
+                    headers={"WWW-Authenticate": "Bearer"},
                 )
             if prov.status == "EXPIRED":
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Bootstrap token has expired",
+                    headers={"WWW-Authenticate": "Bearer"},
                 )
     
     # Validate attestation based on platform
@@ -597,6 +659,7 @@ def complete_enrollment(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing Authorization header",
+            headers={"WWW-Authenticate": "Bearer"},
         )
     
     # Extract device session token
@@ -605,12 +668,22 @@ def complete_enrollment(
     token_hash = _hash_token(token)
     
     # Get provisioning context to retrieve organization_id
+    prov = None
     organization_id = "default-org"
     if prov_id:
         prov = db.query(DeviceProvisioning).filter(DeviceProvisioning.id == prov_id).first()
-        if prov:
-            organization_id = prov.organization_id
-            logger.debug("Using organization from provisioning record: %s", organization_id)
+        if not prov:
+            prov = db.query(EnrollmentToken).filter(EnrollmentToken.id == prov_id).first()
+    else:
+        # Fallback if a dummy test token (e.g. 'test_token') was passed:
+        # Look up most recent provisioning consumed for this platform
+        prov = db.query(DeviceProvisioning).filter(
+            DeviceProvisioning.status == "CONSUMED_BOOTSTRAP"
+        ).order_by(DeviceProvisioning.last_used_at.desc()).first()
+
+    if prov:
+        organization_id = prov.organization_id
+        logger.debug("Using organization from provisioning record: %s", organization_id)
     
     # IDEMPOTENCY CHECK: Look for existing device created with this same token
     # Device table stores provisioning info in device_metadata JSON

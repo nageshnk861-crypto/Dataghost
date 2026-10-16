@@ -17,12 +17,14 @@ from sqlalchemy.orm import Session
 
 from auth import get_optional_current_user
 from database import get_db
-from models import Incident, ScanLog, Device, User
+from models import Incident, ScanLog, Device, User, Finding as FindingModel
 from schemas.schemas import ScanRequest, ScanResponse, ScanFinding, Finding
+from services.audit_service import log_audit_event
 from scanner.text_extractor import extract_text
 from scanner.dlp_scanner import scan_text as dlp_scan_text
 from scanner.masking import mask_sensitive_text
 from risk_engine.risk_calculator import RiskCalculator
+from detectors.registry import get_registry
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="", tags=["scan"])
@@ -80,6 +82,8 @@ def _process_scan(
     device_id: str = "unknown",
     user_label: str = "anonymous",
     db: Optional[Session] = None,
+    user_id: Optional[int] = None,
+    organization_id: str = "default-org",
 ) -> ScanResponse:
     """Core scanning and risk calculation pipeline."""
     # 1. SHA-256 Hash
@@ -89,13 +93,48 @@ def _process_scan(
     if text is None:
         text = extract_text(content, filename)
 
-    # 3. DLP Scan
+    # 3a. Phase-3 Secret Detection (new modular detectors)
+    #     Run first so higher-confidence findings take precedence.
+    masked_findings = []
+    seen_offsets: set[int] = set()
+    try:
+        registry = get_registry()
+        detector_findings = registry.scan(text or "", filename=filename)
+        for df in detector_findings:
+            masked_findings.append(
+                ScanFinding(
+                    rule=df.rule_name,
+                    category=df.category,
+                    severity=df.severity,
+                    start=df.char_start,
+                    end=df.char_end,
+                    matched_text=df.evidence,  # already redacted by detector
+                )
+            )
+            # Include legacy rule alias so older clients/tests looking for aws_access_key also succeed
+            if df.rule_name == "aws_access_key_id":
+                masked_findings.append(
+                    ScanFinding(
+                        rule="aws_access_key",
+                        category=df.category,
+                        severity=df.severity,
+                        start=df.char_start,
+                        end=df.char_end,
+                        matched_text=df.evidence,
+                    )
+                )
+            seen_offsets.add(df.char_start)
+    except Exception as _det_exc:
+        logger.warning("Detector registry error (non-fatal): %s", _det_exc)
+
+    # 3b. Existing DLP Scan (preserves all legacy rules)
     scan_result = dlp_scan_text(text)
     raw_findings = scan_result["findings"]
 
-    # Build masked ScanFinding list
-    masked_findings = []
+    # Merge: skip DLP findings that overlap with a detector finding (same offset)
     for f in raw_findings:
+        if f["start"] in seen_offsets:
+            continue  # already covered by a higher-confidence detector finding
         masked_match = mask_sensitive_text(f["matched_text"], f["rule"])
         masked_findings.append(
             ScanFinding(
@@ -139,25 +178,81 @@ def _process_scan(
     )
 
     # 7. Database persistence (if DB session provided)
+    scan_id = _make_scan_id()
     incident_id = None
     if db is not None:
         try:
             scan_log = ScanLog(
+                scan_id=scan_id,
                 filename=filename,
                 file_hash=file_hash,
                 classification=classification,
                 risk_score=risk_result.risk_score,
                 findings_count=len(masked_findings),
                 device_id=device_id,
+                user_id=user_id,
+                organization_id=organization_id,
+                status="COMPLETED",
+                file_size=effective_size,
             )
             db.add(scan_log)
+            db.flush()  # get scan_log.id
 
             device = db.query(Device).filter(Device.device_id == device_id).first()
             if device:
                 device.files_scanned = (device.files_scanned or 0) + 1
-                device.last_seen = datetime.utcnow()
+                device.last_seen = datetime.now(timezone.utc)
 
-            # Persist Incident if risk >= 30 (MEDIUM, HIGH, CRITICAL)
+            # ── Phase 5: Persist individual Finding records ──────────────
+            for mf in masked_findings:
+                # Build a finding fingerprint for deduplication
+                fp_raw = f"{mf.rule}:{mf.matched_text}:{mf.start or 0}"
+                fp = hashlib.sha256(fp_raw.encode("utf-8")).hexdigest()[:16]
+
+                # Check for existing active finding with same fingerprint on this device/file
+                existing_finding = (
+                    db.query(FindingModel)
+                    .filter(
+                        FindingModel.fingerprint == fp,
+                        FindingModel.device_id == device_id,
+                        FindingModel.file_hash == file_hash,
+                        FindingModel.status.in_(["OPEN", "ACKNOWLEDGED"]),
+                    )
+                    .first()
+                )
+
+                if existing_finding:
+                    existing_finding.occurrence_count = (existing_finding.occurrence_count or 1) + 1
+                    existing_finding.last_seen_at = datetime.now(timezone.utc)
+                    existing_finding.scan_log_id = scan_log.id
+                    existing_finding.scan_id = scan_id
+                else:
+                    new_finding = FindingModel(
+                        scan_log_id=scan_log.id,
+                        scan_id=scan_id,
+                        user_id=user_id,
+                        organization_id=organization_id,
+                        device_id=device_id,
+                        file_name=filename,
+                        file_hash=file_hash,
+                        detector_id=getattr(mf, 'detector_id', None),
+                        rule_id=mf.rule,
+                        category=mf.category,
+                        severity=mf.severity,
+                        confidence=1.0,
+                        risk_score=risk_result.risk_score,
+                        line_number=0,
+                        column_number=0,
+                        char_start=mf.start or 0,
+                        char_end=mf.end or 0,
+                        evidence_redacted=mf.matched_text,
+                        remediation=None,
+                        fingerprint=fp,
+                        status="OPEN",
+                    )
+                    db.add(new_finding)
+
+            # ── Persist Incident if risk >= 30 (MEDIUM, HIGH, CRITICAL) ──
             if risk_result.risk_score >= 30:
                 findings_dump = [f.model_dump() for f in masked_findings]
                 categories_list = sorted(list(set(f.category for f in masked_findings if f.category)))
@@ -212,6 +307,27 @@ def _process_scan(
                     if device:
                         device.incidents_count = (device.incidents_count or 0) + 1
 
+                    # Audit: incident created
+                    log_audit_event(
+                        db, action="INCIDENT_CREATED", resource_type="INCIDENT",
+                        actor_user_id=user_id, actor_username=user_label,
+                        organization_id=organization_id, resource_id=incident_id,
+                        metadata={"severity": risk_result.severity, "risk_score": risk_result.risk_score},
+                    )
+
+            # ── Audit: scan completed ────────────────────────────────────
+            log_audit_event(
+                db, action="SCAN_COMPLETED", resource_type="SCAN",
+                actor_user_id=user_id, actor_username=user_label,
+                organization_id=organization_id, resource_id=scan_id,
+                metadata={
+                    "filename": filename,
+                    "findings_count": len(masked_findings),
+                    "risk_score": risk_result.risk_score,
+                    "classification": classification,
+                },
+            )
+
             db.commit()
 
             # Sync to Firebase Firestore
@@ -223,7 +339,7 @@ def _process_scan(
                     "classification": classification,
                     "risk_score": risk_result.risk_score,
                     "device_id": device_id,
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                 })
                 if incident_id:
                     sync_incident_to_firestore({
@@ -243,7 +359,7 @@ def _process_scan(
                         "findings": [f.model_dump() for f in masked_findings],
                         "categories": sorted(list(set(f.category for f in masked_findings if f.category))),
                         "device_id": device_id,
-                        "timestamp": datetime.utcnow().isoformat(),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
                     })
             except Exception as fb_sync_err:
                 logger.debug("Firebase Firestore sync deferred: %s", fb_sync_err)
@@ -252,7 +368,6 @@ def _process_scan(
             db.rollback()
 
 
-    scan_id = _make_scan_id()
 
     return ScanResponse(
         scan_id=scan_id,
@@ -269,8 +384,9 @@ def _process_scan(
         action_taken=risk_result.action_taken,
         incident_id=incident_id,
         breakdown=risk_result.breakdown,
-        timestamp=datetime.utcnow().isoformat(),
+        timestamp=datetime.now(timezone.utc).isoformat(),
     )
+
 
 
 # ---------------------------------------------------------------------------

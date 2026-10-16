@@ -171,6 +171,25 @@ def init_db():
             except Exception:
                 pass
 
+            # 5. Migrate scan_logs table – Phase 5 columns
+            try:
+                res_sl = conn.execute(text("PRAGMA table_info(scan_logs)"))
+                sl_cols = {row[1] for row in res_sl.fetchall()}
+                if sl_cols:
+                    if "scan_id" not in sl_cols:
+                        conn.execute(text("ALTER TABLE scan_logs ADD COLUMN scan_id VARCHAR(64)"))
+                    if "user_id" not in sl_cols:
+                        conn.execute(text("ALTER TABLE scan_logs ADD COLUMN user_id INTEGER"))
+                    if "organization_id" not in sl_cols:
+                        conn.execute(text("ALTER TABLE scan_logs ADD COLUMN organization_id VARCHAR(64) DEFAULT 'default-org'"))
+                    if "status" not in sl_cols:
+                        conn.execute(text("ALTER TABLE scan_logs ADD COLUMN status VARCHAR(16) DEFAULT 'COMPLETED'"))
+                    if "file_size" not in sl_cols:
+                        conn.execute(text("ALTER TABLE scan_logs ADD COLUMN file_size INTEGER"))
+                    conn.commit()
+            except Exception:
+                pass
+
 # ---------------------------------------------------------------------------
 # FastAPI dependency
 # ---------------------------------------------------------------------------

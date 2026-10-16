@@ -42,18 +42,20 @@ import {
   fetchUserProfileFromBackend,
 } from "./auth";
 
-// â”€â”€ Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+export type AuthMethod = "jwt" | "firebase" | null;
 
-type AuthMethod = "jwt" | "firebase" | null;
-
-interface AuthUser {
+export interface AuthUser {
+  id?: number | string;
+  email?: string;
   username: string;
   role: string;
 }
 
-interface AuthContextValue {
-  /** Firebase init has completed (or Firebase is not configured). */
+export interface AuthContextValue {
+  /** Firebase/JWT init and role verification has completed */
   authReady: boolean;
+  /** Shorthand for !authReady */
+  isLoading?: boolean;
   /** The current auth method, or null if unauthenticated. */
   authMethod: AuthMethod;
   /** Shorthand: authMethod !== null */
@@ -66,7 +68,7 @@ interface AuthContextValue {
    * Called after a successful DataGhost JWT login.
    * Stores the token and switches authMethod to "jwt".
    */
-  setJwtAuth: (token: string, user: { username: string; role: string }) => void;
+  setJwtAuth: (token: string, user: AuthUser) => void;
   /** Called when a 401 is received and the caller decides auth is invalid. */
   signalAuthFailure: () => void;
   /** Full sign-out. */
@@ -75,7 +77,7 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-// â”€â”€ Provider â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Provider ─────────────────────────────────────────────────────────────────
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [authReady, setAuthReady]       = useState(false);
@@ -88,69 +90,118 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const firebaseUserRef = useRef<FirebaseUser | null>(null);
   firebaseUserRef.current = firebaseUser;
 
-  // â”€â”€ Initialise on mount â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Initialise on mount ──────────────────────────────────────────────────
 
   useEffect(() => {
-    // Check if a DataGhost JWT is already stored (e.g. after page refresh).
+    let isMounted = true;
     const existingJwt = getJwt();
     const savedUser   = getSavedUser();
-    if (existingJwt) {
-      setAuthMethod("jwt");
-      
-      // Verify the role against the backend on startup if reachable.
-      // Do NOT clear session if backend is temporarily offline or starting up;
-      // real API calls handle 401s via signalAuthFailure.
-      fetchUserProfileFromBackend(existingJwt).then((backendProfile) => {
-        if (backendProfile) {
-          setUser(backendProfile);
-          saveUser(backendProfile);
-        } else if (savedUser) {
-          setUser(savedUser);
-        }
-      }).catch(() => {
+
+    async function initAuth() {
+      if (existingJwt) {
+        setAuthMethod("jwt");
         if (savedUser) {
           setUser(savedUser);
         }
-      });
-      
-      if (savedUser) {
-        // Use saved user temporarily while verifying with backend
-        setUser(savedUser);
-      }
-    }
 
-    // Subscribe to Firebase auth state.
-    if (!auth) {
-      // Firebase not configured â€” ready immediately.
-      if (!existingJwt) {
-        setAuthMethod(null);
-        setUser(null);
-      }
-      setAuthReady(true);
-      return;
-    }
+        try {
+          const profile = await fetchUserProfileFromBackend(existingJwt);
+          if (!isMounted) return;
 
-    const unsub = onAuthStateChanged(auth, (fbUser) => {
-      setFirebaseUser(fbUser);
-      setAuthReady(true);
+          if (profile?.isUnauthorized) {
+            // Token is invalid/expired according to backend
+            removeJwt();
+            setUser(null);
+            setAuthMethod(null);
+            setAuthReady(true);
+            if (typeof window !== "undefined") {
+              const currentPath = window.location.pathname;
+              if (currentPath !== "/login" && currentPath !== "/") {
+                window.location.replace(`/login?returnUrl=${encodeURIComponent(currentPath)}`);
+              }
+            }
+            return;
+          }
 
-      // Only switch to firebase authMethod if there is NO DataGhost JWT.
-      // A stored JWT always takes priority.
-      if (!getJwt()) {
-        setAuthMethod(fbUser ? "firebase" : null);
-        if (fbUser) {
-          const saved = getSavedUser();
-          setUser(saved || { username: fbUser.email || "user", role: "analyst" });
-        } else {
-          setUser(null);
+          if (profile && !profile.isUnauthorized) {
+            const updatedUser: AuthUser = {
+              id: profile.id,
+              email: profile.email,
+              username: profile.username,
+              role: profile.role,
+            };
+
+            if (savedUser && savedUser.role !== updatedUser.role) {
+              console.warn(
+                `Role updated from "${savedUser.role}" to "${updatedUser.role}" by backend.`
+              );
+            }
+
+            setUser(updatedUser);
+            saveUser(updatedUser);
+          } else if (savedUser) {
+            // Backend unreachable (offline/local mode) - keep stored session
+            setUser(savedUser);
+          }
+        } catch {
+          if (!isMounted) return;
+          if (savedUser) {
+            setUser(savedUser);
+          }
+        } finally {
+          if (isMounted) {
+            setAuthReady(true);
+          }
         }
       }
-      // If there IS a JWT, we stay on "jwt" regardless of Firebase state.
-    });
 
-    return unsub;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Run once on mount.
+      // If Firebase auth is configured and no JWT
+      if (!auth) {
+        if (!existingJwt && isMounted) {
+          setAuthMethod(null);
+          setUser(null);
+          setAuthReady(true);
+        }
+        return;
+      }
+
+      const unsub = onAuthStateChanged(auth, (fbUser) => {
+        if (!isMounted) return;
+        setFirebaseUser(fbUser);
+
+        // Only switch to firebase authMethod if there is NO DataGhost JWT.
+        // A stored JWT always takes priority.
+        if (!getJwt()) {
+          setAuthMethod(fbUser ? "firebase" : null);
+          if (fbUser) {
+            const saved = getSavedUser();
+            setUser(
+              saved || {
+                id: fbUser.uid,
+                email: fbUser.email || undefined,
+                username: fbUser.email || "user",
+                role: "analyst",
+              }
+            );
+          } else {
+            setUser(null);
+          }
+          setAuthReady(true);
+        }
+      });
+
+      return unsub;
+    }
+
+    const unsubPromise = initAuth();
+
+    return () => {
+      isMounted = false;
+      unsubPromise.then((unsub) => {
+        if (typeof unsub === "function") unsub();
+      });
+    };
+  }, []);
 
   // â”€â”€ Token getter (registered once, never nulled) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -241,6 +292,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     <AuthContext.Provider
       value={{
         authReady,
+        isLoading: !authReady,
         authMethod,
         isAuthenticated,
         user,

@@ -2254,7 +2254,6 @@ export default function DevicesPage() {
                 })()}
                 </div>
               </div>
-            </div>
 
             {/* Modal Footer */}
             <div className="pt-4 border-t border-slate-800 flex items-center justify-between">

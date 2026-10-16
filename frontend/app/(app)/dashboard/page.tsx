@@ -2,9 +2,11 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import TopBar from "../../../components/TopBar";
-import { fetchDashboardStats, fetchDashboardActivity, fetchIncidents } from "@/lib/api";
-import type { DashboardStats, ActivityDataPoint, RiskSegment, IncidentRow } from "@/lib/api";
+import Link from "next/link";
+import { fetchDashboardStats, fetchDashboardActivity, fetchIncidents, fetchFindingStats } from "@/lib/api";
+import type { DashboardStats, ActivityDataPoint, RiskSegment, IncidentRow, FindingStats } from "@/lib/api";
 import { useAuthContext } from "@/lib/AuthContext";
+
 import { AuthError } from "@/lib/auth";
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -75,6 +77,7 @@ export default function DashboardPage() {
   const [stats, setStats]       = useState<DashboardStats | null>(null);
   const [activity, setActivity] = useState<ActivityDataPoint[]>([]);
   const [incidents, setIncidents] = useState<IncidentRow[]>([]);
+  const [findingStats, setFindingStats] = useState<FindingStats | null>(null);
   // initialLoading: true only on the very first load (shows skeletons).
   const [initialLoading, setInitialLoading] = useState(true);
   // dataError: shown inside the dashboard without destroying the shell.
@@ -98,15 +101,18 @@ export default function DashboardPage() {
 
     try {
       setDataError(null);
-      const [statsData, activityData, incidentsData] = await Promise.all([
+      const [statsData, activityData, incidentsData, findingsData] = await Promise.all([
         fetchDashboardStats(),
         fetchDashboardActivity(),
         fetchIncidents({ page: 1, per_page: 100 }),
+        fetchFindingStats().catch(() => null),
       ]);
       setStats(statsData);
       setActivity(activityData);
       setIncidents(incidentsData.items);
+      if (findingsData) setFindingStats(findingsData);
     } catch (err) {
+
       if (err instanceof AuthError) {
         // JWT rejected by backend — clear interval, signal auth failure once.
         authFailedRef.current = true;
@@ -148,6 +154,7 @@ export default function DashboardPage() {
       sub: "Active agents",
       icon: "🖥",
       color: "#06b6d4",
+      href: "/devices",
     },
     {
       label: "Files Scanned",
@@ -155,6 +162,15 @@ export default function DashboardPage() {
       sub: "Total lifetime",
       icon: "📁",
       color: "#3b82f6",
+      href: "/scanner",
+    },
+    {
+      label: "DLP Findings",
+      value: (findingStats?.total ?? 0).toLocaleString(),
+      sub: `${findingStats?.open ?? 0} active`,
+      icon: "🔍",
+      color: "#38bdf8",
+      href: "/findings",
     },
     {
       label: "Sensitive Files",
@@ -162,6 +178,7 @@ export default function DashboardPage() {
       sub: "Risk score ≥ 30",
       icon: "⚠",
       color: "#f59e0b",
+      href: "/incidents",
     },
     {
       label: "Blocked Transfers",
@@ -169,6 +186,7 @@ export default function DashboardPage() {
       sub: "Prevented leaks",
       icon: "🚫",
       color: "#ef4444",
+      href: "/incidents?action_taken=BLOCKED",
     },
     {
       label: "Critical Incidents",
@@ -176,6 +194,7 @@ export default function DashboardPage() {
       sub: "Require review",
       icon: "🔴",
       color: "#a855f7",
+      href: "/incidents?severity=CRITICAL",
     },
   ];
 
@@ -200,8 +219,8 @@ export default function DashboardPage() {
       {initialLoading ? (
         <div className="p-6 space-y-6 animate-fade-up">
           {/* Skeleton stat cards */}
-          <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-            {Array.from({ length: 5 }).map((_, i) => (
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+            {Array.from({ length: 6 }).map((_, i) => (
               <div key={i} className="stat-card">
                 <div className="h-4 w-24 animate-pulse rounded mb-2" style={{ background: "rgba(26,39,68,0.8)" }} />
                 <div className="h-8 w-16 animate-pulse rounded" style={{ background: "rgba(26,39,68,0.8)" }} />
@@ -244,9 +263,13 @@ export default function DashboardPage() {
           )}
 
           {/* ── STAT CARDS ─────────────────────────────────────────────────── */}
-          <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
             {statCards.map((c) => (
-              <div key={c.label} className="stat-card">
+              <Link
+                key={c.label}
+                href={c.href || "#"}
+                className="stat-card block transition-all hover:scale-[1.02] hover:border-cyan-500/30"
+              >
                 <div className="flex items-start justify-between">
                   <div>
                     <p className="text-[11px] font-medium uppercase tracking-wide" style={{ color: "#475569" }}>
@@ -259,9 +282,10 @@ export default function DashboardPage() {
                   </div>
                   <span className="text-xl opacity-60">{c.icon}</span>
                 </div>
-              </div>
+              </Link>
             ))}
           </div>
+
 
           {/* ── CHARTS ROW ─────────────────────────────────────────────────── */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
