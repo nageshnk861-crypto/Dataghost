@@ -444,6 +444,35 @@ def _process_scan(
 # API Endpoints
 # ---------------------------------------------------------------------------
 
+def _resolve_authorized_device_id(
+    requested_device_id: Optional[str],
+    db: Optional[Session],
+    current_user: Optional[User],
+) -> str:
+    """
+    Accept device_id from payload ONLY if that Device exists in the Device table
+    AND the caller is allowed to access it (same as RBAC rules for devices).
+    Otherwise, fall back to 'web-console'.
+    """
+    if not requested_device_id or requested_device_id in ("unknown", "web-console") or db is None:
+        return "web-console"
+
+    dev = db.query(Device).filter(Device.device_id == requested_device_id).first()
+    if not dev:
+        return "web-console"
+
+    if not current_user:
+        return "web-console"
+
+    if getattr(current_user, "role", None) == "admin":
+        return dev.device_id
+
+    if dev.user_id is not None and str(dev.user_id) == str(current_user.id):
+        return dev.device_id
+
+    return "web-console"
+
+
 @router.post("/scan", response_model=ScanResponse, summary="Scan text payload")
 @router.post("/scan/text", response_model=ScanResponse, summary="Scan text payload (alias)")
 def scan_text_endpoint(
@@ -475,11 +504,7 @@ def scan_text_endpoint(
     content = payload.text.encode("utf-8")
     effective_size = len(content)
 
-    resolved_device_id = "web-console"
-    if payload.device_id and payload.device_id not in ("unknown", "web-console"):
-        dev = db.query(Device).filter(Device.device_id == payload.device_id).first()
-        if dev:
-            resolved_device_id = dev.device_id
+    resolved_device_id = _resolve_authorized_device_id(payload.device_id, db, current_user)
 
     return _process_scan(
         content=content,
@@ -537,11 +562,7 @@ async def scan_file_endpoint(
         user_id = None
         org_id = "default-org"
 
-    resolved_device_id = "web-console"
-    if device_id and device_id not in ("unknown", "web-console"):
-        dev = db.query(Device).filter(Device.device_id == device_id).first()
-        if dev:
-            resolved_device_id = dev.device_id
+    resolved_device_id = _resolve_authorized_device_id(device_id, db, current_user)
 
     filename = file.filename or "upload.bin"
 

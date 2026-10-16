@@ -1147,8 +1147,14 @@ def trigger_device_scan(
     source_type = "live_filesystem"
     is_simulated = False
 
-    # Check for explicit DEMO flag — server env var only; ignore client-supplied demo hint
-    is_demo = os.environ.get("DEMO_MODE", "").lower() in ("1", "true", "yes")
+    # Check for explicit DEMO flag:
+    # Honor payload.demo ONLY when current user has admin role.
+    # Non-admin users sending demo=true must be ignored (treated as false).
+    # DEMO_MODE env var still works for everyone.
+    is_admin = getattr(current_user, "role", None) == "admin"
+    demo_from_payload = bool(payload and payload.demo is True and is_admin)
+    demo_from_env = os.environ.get("DEMO_MODE", "").lower() in ("1", "true", "yes")
+    is_demo = demo_from_payload or demo_from_env
 
     # Case 1: Custom text/payload provided by the client
     if payload and payload.custom_content:
@@ -1306,6 +1312,121 @@ def trigger_device_scan(
         existing_summary = compute_device_scan_summary(device, db, is_simulated=False)
         return existing_summary
 
+    if is_simulated:
+        # Simulated demo scan: scan files in memory without saving to database.
+        # Simulated results are clearly marked is_simulated=True and NEVER saved as real Finding rows.
+        sim_results = []
+        for item in files_to_scan:
+            res = _process_scan(
+                content=item["content"],
+                filename=item["filename"],
+                classification_override=item.get("classification"),
+                destination=item["destination"],
+                action=item["action"],
+                file_size_override=len(item["content"]),
+                device_id=device.device_id,
+                user_label=current_user.username or "endpoint_user",
+                db=None,
+            )
+            sim_results.append(res)
+
+        max_risk_score = max((r.risk_score for r in sim_results if r.risk_score is not None), default=0)
+
+        device_info = {
+            "device_id": device.device_id,
+            "device_name": device.device_name,
+            "platform": device.platform,
+            "status": device.status,
+            "files_scanned": device.files_scanned or 0,
+            "incidents_count": device.incidents_count or 0,
+            "last_seen": device.last_seen.isoformat() if device.last_seen else None,
+            "os_name": device.os_name,
+            "os_version": device.os_version,
+            "hostname": device.hostname,
+            "ip_address": device.ip_address,
+            "risk_score": max_risk_score,
+        }
+
+        threat_results = [r for r in sim_results if (r.risk_score or 0) >= 30]
+        critical_results = [r for r in sim_results if (r.severity or "").upper() == "CRITICAL" or (r.risk_score or 0) >= 80]
+        blocked_results = [r for r in sim_results if (r.action_taken or "").upper() == "BLOCKED" or (r.risk_score or 0) >= 70]
+
+        if any((r.severity or "").upper() == "CRITICAL" or (r.risk_score or 0) >= 80 for r in sim_results):
+            overall_risk_level = "CRITICAL"
+        elif any((r.severity or "").upper() == "HIGH" or (r.risk_score or 0) >= 60 for r in sim_results):
+            overall_risk_level = "HIGH"
+        elif any((r.severity or "").upper() == "MEDIUM" or (r.risk_score or 0) >= 30 for r in sim_results):
+            overall_risk_level = "MEDIUM"
+        else:
+            overall_risk_level = "LOW"
+
+        if blocked_results:
+            overall_block_level = "BLOCKED"
+        elif threat_results:
+            overall_block_level = "ALERTED"
+        else:
+            overall_block_level = "ALLOWED"
+
+        user_info_count = 0
+        ai_model_count = 0
+        all_sim_findings = []
+        for r in sim_results:
+            for f in getattr(r, "findings", []):
+                all_sim_findings.append(f)
+                cat = (getattr(f, "category", "") or "").upper()
+                rule = (getattr(f, "rule", "") or "").lower()
+                if cat == "AI_MODELS" or any(k in rule for k in ("openai", "anthropic", "huggingface", "prompt", "llm", "chatgpt", "claude")):
+                    ai_model_count += 1
+                elif cat in ("PII", "FINANCIAL", "CREDENTIALS") or any(k in rule for k in ("email", "phone", "aadhaar", "pan", "card", "password", "jwt", "database", "api_key", "secret", "private_key", "ssn")):
+                    user_info_count += 1
+
+        sensitive_file_names = set(r.filename for r in threat_results if r.filename)
+
+        sim_scan_results = []
+        for r in sim_results:
+            sim_scan_results.append({
+                "filename": r.filename,
+                "file_hash": r.file_hash,
+                "file_size": r.file_size or 0,
+                "classification": r.classification or "PUBLIC",
+                "risk_score": r.risk_score or 0,
+                "severity": r.severity,
+                "action_taken": r.action_taken,
+                "incident_id": None,
+                "findings": [
+                    {
+                        "rule": f.rule,
+                        "category": f.category,
+                        "severity": f.severity,
+                        "matched_text": f.matched_text,
+                        "detail": f"{f.rule} detected in {r.filename}",
+                    }
+                    for f in getattr(r, "findings", [])
+                ],
+            })
+
+        return {
+            "status": "success",
+            "has_scan_data": True,
+            "message": f"Simulation scan completed for device '{device.device_name}' (demo mode).",
+            "device": device_info,
+            "scanned_files_count": len(sim_results),
+            "risk_level": overall_risk_level,
+            "risk_score": max_risk_score,
+            "block_level": overall_block_level,
+            "sensitive_files": len(sensitive_file_names),
+            "blocked_transfers": len(blocked_results),
+            "critical_incidents": len(critical_results),
+            "threats_detected": len(all_sim_findings),
+            "findings_count": len(all_sim_findings),
+            "high_risk_count": sum(1 for r in sim_results if (r.risk_score or 0) >= 70),
+            "user_information_count": user_info_count,
+            "ai_model_sharing_count": ai_model_count,
+            "total_bytes_scanned": sum(len(item["content"]) for item in files_to_scan),
+            "scan_results": sim_scan_results,
+            "is_simulated": True,
+        }
+
     # Run actual scan with database persistence
     for item in files_to_scan:
         _process_scan(
@@ -1325,7 +1446,7 @@ def trigger_device_scan(
     db.refresh(device)
 
     # Return summary computed directly from the persisted database records
-    return compute_device_scan_summary(device, db, is_simulated=is_simulated)
+    return compute_device_scan_summary(device, db, is_simulated=False)
 
 
 # ---------------------------------------------------------------------------
@@ -1386,3 +1507,4 @@ def register_device_legacy(
     db.refresh(device)
     _sync_to_firebase(device)
     return device
+

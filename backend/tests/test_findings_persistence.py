@@ -81,10 +81,32 @@ def _get_other_analyst_headers():
     return {"Authorization": f"Bearer {token}"}
 
 
+def _create_test_device(device_id: str, device_name: str = "Test Endpoint"):
+    db = SessionLocal()
+    try:
+        admin = db.query(User).filter(User.username == "phase5_admin").first()
+        dev = Device(
+            device_id=device_id,
+            device_name=device_name,
+            platform="Windows",
+            status="ACTIVE",
+            user_id=admin.id if admin else None,
+            files_scanned=0,
+            incidents_count=0,
+        )
+        db.add(dev)
+        db.commit()
+        db.refresh(dev)
+        return dev
+    finally:
+        db.close()
+
+
 class TestFindingPersistenceOnScan:
     def test_scan_persists_findings_and_scan_log(self):
         """Scanning text with credentials must create ScanLog and Finding records."""
         dev_id = f"test-device-p5-{uuid.uuid4().hex[:6]}"
+        _create_test_device(dev_id, "Scan Persist Device")
         headers = _get_admin_headers()
         payload = {
             "text": "export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE and SECRET=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
@@ -128,6 +150,7 @@ class TestFindingPersistenceOnScan:
     def test_clean_scan_persists_zero_findings(self):
         """Scanning clean benign text creates a ScanLog but zero Finding records."""
         dev_id = f"test-clean-{uuid.uuid4().hex[:6]}"
+        _create_test_device(dev_id, "Clean Device")
         headers = _get_admin_headers()
         payload = {
             "text": "General team update: All milestones for sprint 4 are on track.",
@@ -155,6 +178,7 @@ class TestFindingPersistenceOnScan:
     def test_finding_deduplication_on_rescan(self):
         """Re-scanning the same content on the same device increments occurrence_count."""
         dev_id = f"test-dedup-{uuid.uuid4().hex[:6]}"
+        _create_test_device(dev_id, "Dedup Device")
         headers = _get_admin_headers()
         payload = {
             "text": "Hardcoded api_key: AIzaSyA1B2C3D4E5F6G7H8I9J0K1L2M3N4O5P6Q for testing",

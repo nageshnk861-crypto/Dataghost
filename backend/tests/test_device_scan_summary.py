@@ -24,7 +24,7 @@ client = TestClient(app)
 
 @pytest.fixture(autouse=True)
 def setup_test_users():
-    """Ensure test admin user exists."""
+    """Ensure test admin and analyst users exist."""
     init_db()
     db = SessionLocal()
     try:
@@ -37,13 +37,29 @@ def setup_test_users():
                 role="admin",
             )
             db.add(admin)
-            db.commit()
+
+        analyst = db.query(User).filter(User.username == "summary_analyst").first()
+        if not analyst:
+            analyst = User(
+                username="summary_analyst",
+                email="summary_analyst@test.local",
+                hashed_password=get_password_hash("AnalystPass123!"),
+                role="analyst",
+            )
+            db.add(analyst)
+
+        db.commit()
     finally:
         db.close()
 
 
 def _get_admin_headers():
     token = create_access_token({"sub": "summary_admin", "role": "admin"})
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _get_analyst_headers():
+    token = create_access_token({"sub": "summary_analyst", "role": "analyst"})
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -57,6 +73,27 @@ def _create_test_device(device_id: str, device_name: str = "Test Endpoint"):
             platform="Windows",
             status="ACTIVE",
             user_id=admin.id if admin else None,
+            files_scanned=0,
+            incidents_count=0,
+        )
+        db.add(dev)
+        db.commit()
+        db.refresh(dev)
+        return dev
+    finally:
+        db.close()
+
+
+def _create_analyst_device(device_id: str, device_name: str = "Analyst Device"):
+    db = SessionLocal()
+    try:
+        analyst = db.query(User).filter(User.username == "summary_analyst").first()
+        dev = Device(
+            device_id=device_id,
+            device_name=device_name,
+            platform="Windows",
+            status="ACTIVE",
+            user_id=analyst.id if analyst else None,
             files_scanned=0,
             incidents_count=0,
         )
@@ -220,6 +257,108 @@ class TestEndpointScanSummary:
                 assert res_demo.status_code == 200
                 data_demo = res_demo.json()
                 assert data_demo["is_simulated"] is True
+
+                # Confirm simulated findings are never saved as real Finding rows
+                db = SessionLocal()
+                try:
+                    dev_findings = db.query(Finding).filter(Finding.device_id == dev_id).all()
+                    assert len(dev_findings) == 0, "Simulated scan must never persist Finding rows"
+                finally:
+                    db.close()
+        finally:
+            if old_env is not None:
+                os.environ["DEMO_MODE"] = old_env
+
+    def test_non_admin_demo_flag_ignored_and_simulation_never_persists_findings(self):
+        """
+        1. Non-admin users sending demo=true must be ignored (treated as false) -> is_simulated=False.
+        2. Admin users sending demo=true get is_simulated=True.
+        3. Simulated results are clearly marked is_simulated=True and are NEVER saved as real Finding rows.
+        4. DEMO_MODE env var still works for everyone (including non-admin).
+        """
+        from unittest.mock import patch
+
+        old_env = os.environ.get("DEMO_MODE")
+        if "DEMO_MODE" in os.environ:
+            del os.environ["DEMO_MODE"]
+
+        try:
+            # 1. Non-admin user sending demo=True on their device
+            analyst_dev_id = f"test-analyst-{uuid.uuid4().hex[:6]}"
+            _create_analyst_device(analyst_dev_id, "Analyst Device")
+            analyst_headers = _get_analyst_headers()
+
+            with patch("os.walk", return_value=[]):
+                res_analyst = client.post(
+                    f"/api/devices/{analyst_dev_id}/scan",
+                    json={"demo": True},
+                    headers=analyst_headers,
+                )
+                assert res_analyst.status_code == 200
+                data_analyst = res_analyst.json()
+                # Non-admin demo=true MUST be ignored and treated as false
+                assert data_analyst["is_simulated"] is False
+                assert data_analyst["has_scan_data"] is False
+                assert data_analyst["risk_score"] is None
+
+            # 2. Admin sending demo=True
+            admin_dev_id = f"test-admin-sim-{uuid.uuid4().hex[:6]}"
+            _create_test_device(admin_dev_id, "Admin Device")
+            admin_headers = _get_admin_headers()
+
+            with patch("os.walk", return_value=[]):
+                res_admin = client.post(
+                    f"/api/devices/{admin_dev_id}/scan",
+                    json={"demo": True},
+                    headers=admin_headers,
+                )
+                assert res_admin.status_code == 200
+                data_admin = res_admin.json()
+                # Simulated results are clearly marked is_simulated=True
+                assert data_admin["is_simulated"] is True
+                assert data_admin["has_scan_data"] is True
+                assert data_admin["risk_score"] is not None
+                assert data_admin["threats_detected"] >= 1
+
+                # 3. Confirm simulated results are NEVER saved as real Finding rows
+                db = SessionLocal()
+                try:
+                    persisted_findings = (
+                        db.query(Finding)
+                        .filter(Finding.device_id == admin_dev_id)
+                        .all()
+                    )
+                    assert len(persisted_findings) == 0, "Simulated results must never be saved as real Finding rows"
+
+                    persisted_scan_logs = (
+                        db.query(ScanLog)
+                        .filter(ScanLog.device_id == admin_dev_id)
+                        .all()
+                    )
+                    assert len(persisted_scan_logs) == 0, "Simulated results must never create ScanLog rows"
+
+                    persisted_incidents = (
+                        db.query(Incident)
+                        .filter(Incident.device_id == admin_dev_id)
+                        .all()
+                    )
+                    assert len(persisted_incidents) == 0, "Simulated results must never create Incident rows"
+                finally:
+                    db.close()
+
+            # 4. DEMO_MODE env var still works for everyone (including non-admin)
+            os.environ["DEMO_MODE"] = "true"
+            try:
+                with patch("os.walk", return_value=[]):
+                    res_env_analyst = client.post(
+                        f"/api/devices/{analyst_dev_id}/scan",
+                        headers=analyst_headers,
+                    )
+                    assert res_env_analyst.status_code == 200
+                    data_env = res_env_analyst.json()
+                    assert data_env["is_simulated"] is True
+            finally:
+                del os.environ["DEMO_MODE"]
         finally:
             if old_env is not None:
                 os.environ["DEMO_MODE"] = old_env

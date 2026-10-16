@@ -257,6 +257,7 @@ class DeviceScanTriggerRequest(BaseModel):
     destination: Literal["LOCAL", "INTERNAL", "CLOUD", "USB", "EXTERNAL"] = "EXTERNAL"
     action: Literal["READ", "COPY", "SHARE", "EMAIL", "UPLOAD"] = "UPLOAD"
     file_path: Optional[str] = Field(None, description="Admin-only: path on server to scan")
+    demo: Optional[bool] = Field(None, description="Enable simulation mode with demo data")
 
 
 class DeviceScanSummaryResponse(BaseModel):
@@ -420,4 +421,5 @@ class AuditLogListResponse(BaseModel):
     page: int
     per_page: int
     pages: int
+
 
