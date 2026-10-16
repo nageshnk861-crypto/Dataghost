@@ -11,6 +11,7 @@ ruff==0.8.4
 firebase-admin>=6.5.0
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
-bcrypt==4.2.1
 python-multipart==0.0.20
 gunicorn==22.0.0
+scikit-learn
+bcrypt==4.0.1
