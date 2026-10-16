@@ -11,7 +11,7 @@
     "test:watch": "vitest --config vitest.config.mjs"
   },
   "dependencies": {
-    "@types/node": "20.17.9",
+    "@types/node": "^20.19.0",
     "@types/qrcode": "^1.5.6",
     "@types/react": "18.3.12",
     "@types/react-dom": "18.3.1",
