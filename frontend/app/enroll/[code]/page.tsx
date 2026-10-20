@@ -183,10 +183,10 @@ export default function EnrollPage() {
       color: "#60a5fa",
       downloadAvailable: false,
       steps: [
-        "On your Windows machine, open PowerShell as Administrator",
-        "Run the DataGhost Agent installer script from your IT team",
-        "Enter the enrollment code below when prompted",
-        "The agent will connect automatically after enrollment",
+        "Dashboard login / management: https://dataghost-five.vercel.app",
+        "Open PowerShell on your Windows workstation",
+        "Run: python dataghost_agent.py --api-url https://dataghost-1.onrender.com --enroll <CODE>",
+        "The agent securely registers and begins background DLP monitoring",
       ],
     },
     Linux: {
@@ -195,10 +195,9 @@ export default function EnrollPage() {
       color: "#ff9f0a",
       downloadAvailable: false,
       steps: [
-        "On your Linux machine, download the DataGhost Agent package",
-        "Install using: sudo dpkg -i dataghost-agent.deb  (or .rpm)",
-        "Run: dataghost-agent --enroll <ENROLLMENT_CODE>",
-        "The agent will register and start monitoring",
+        "Dashboard login / management: https://dataghost-five.vercel.app",
+        "On your Linux terminal, run: python3 dataghost_agent.py --api-url https://dataghost-1.onrender.com --enroll <CODE>",
+        "The agent will register with the backend and start continuous monitoring",
       ],
     },
     macOS: {
@@ -333,35 +332,7 @@ export default function EnrollPage() {
               </div>
             </div>
 
-            {/* 1-Click Auto Enroll Action */}
-            <div className="space-y-2">
-              <button
-                type="button"
-                onClick={autoEnrollDevice}
-                disabled={enrolling}
-                className="w-full py-3.5 px-4 rounded-xl font-bold text-sm text-white flex items-center justify-center gap-2 shadow-lg transition-all hover:brightness-110 active:scale-95 disabled:opacity-60"
-                style={{
-                  background: "linear-gradient(135deg, #0089b2 0%, #00d4ff 100%)",
-                  boxShadow: "0 4px 20px rgba(0, 212, 255, 0.35)",
-                  border: "1px solid rgba(0, 212, 255, 0.5)",
-                }}
-              >
-                {enrolling ? (
-                  <>
-                    <span className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-                    <span>Enrolling Device Automatically…</span>
-                  </>
-                ) : (
-                  <>
-                    <span className="text-base">⚡</span>
-                    <span>Auto-Enroll This Device (1-Click Instant)</span>
-                  </>
-                )}
-              </button>
-              {enrollError && (
-                <p className="text-xs text-red-400 text-center font-medium">{enrollError}</p>
-              )}
-            </div>
+
 
             {/* Enrollment Code */}
             <div className="space-y-1.5">

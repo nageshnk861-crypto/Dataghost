@@ -125,26 +125,83 @@ class TestPIIRules:
 # ---------------------------------------------------------------------------
 
 class TestFinancialRules:
-    def test_credit_card(self):
-        # Visa (16 digits)
-        text_visa = "Payment card: 4111111111111111"
-        res_visa = scan_text(text_visa)
-        assert "credit_card" in res_visa["rules_triggered"]
-        finding = next(f for f in res_visa["findings"] if f["rule"] == "credit_card")
-        assert finding["category"] == "FINANCIAL"
-        assert finding["severity"] == "HIGH"
+    def test_credit_card_visa_spaced_luhn_valid(self):
+        """Visa with spaces (4111 1111 1111 1111) must report credit_card (Luhn valid)."""
+        text = "Payment card: 4111 1111 1111 1111"
+        res = scan_text(text)
+        assert "credit_card" in res["rules_triggered"]
+        cc_finding = next(f for f in res["findings"] if f["rule"] == "credit_card")
+        assert cc_finding["matched_text"] == "4111 1111 1111 1111"
 
-        # Mastercard (16 digits)
-        text_mc = "Card: 5500000000000004"
-        assert "credit_card" in scan_text(text_mc)["rules_triggered"]
+    def test_credit_card_visa_unspaced(self):
+        """Visa without spaces (4111111111111111) must report credit_card."""
+        text = "Visa raw: 4111111111111111"
+        res = scan_text(text)
+        assert "credit_card" in res["rules_triggered"]
 
-        # Amex (15 digits)
+    def test_credit_card_mastercard_spaced(self):
+        """Mastercard with spaces (5500 0000 0000 0004) must report credit_card."""
+        text = "Mastercard spaced: 5500 0000 0000 0004"
+        res = scan_text(text)
+        assert "credit_card" in res["rules_triggered"]
+
+    def test_credit_card_mastercard_unspaced(self):
+        """Mastercard without spaces (5500000000000004) must report credit_card."""
+        text = "Mastercard raw: 5500000000000004"
+        res = scan_text(text)
+        assert "credit_card" in res["rules_triggered"]
+
+    def test_credit_card_invalid_luhn_rejected(self):
+        """Invalid Luhn number (4111 1111 1111 1112) must NOT trigger credit_card."""
+        text = "Invalid card checksum: 4111 1111 1111 1112"
+        res = scan_text(text)
+        assert "credit_card" not in res["rules_triggered"]
+
+    def test_credit_card_never_reported_as_aadhaar(self):
+        """4111 1111 1111 1111 must report credit_card, NEVER aadhaar."""
+        text = "Confidential payment: 4111 1111 1111 1111"
+        res = scan_text(text)
+        assert "credit_card" in res["rules_triggered"]
+        assert "aadhaar" not in res["rules_triggered"]
+
+    def test_credit_card_amex_and_discover(self):
+        """Amex (15 digits) and Discover (16 digits) with valid Luhn checksum."""
         text_amex = "Card: 378282246310005"
         assert "credit_card" in scan_text(text_amex)["rules_triggered"]
 
-        # Discover (16 digits)
-        text_disc = "Card: 6011000000000000"
+        text_disc = "Card: 6011000000000004"
         assert "credit_card" in scan_text(text_disc)["rules_triggered"]
+
+    def test_evidence_safety_and_redaction(self):
+        """
+        Evidence safety test:
+        Asserts that evidence_redacted contains only the masked match plus at most
+        a few characters of context, no surrounding file text, no raw value, and no partial secrets / last-4.
+        """
+        import sys
+        from pathlib import Path
+        backend_dir = Path(__file__).resolve().parent.parent
+        sys.path.insert(0, str(backend_dir.parent / "agent"))
+        from dataghost_agent import _redact_evidence, scan_file_for_findings
+
+        file_content = b"CRITICAL FILE CONTENT\nSECRET KEY IS password=SuperSecretPassword1234\nCARD 4111 1111 1111 1111 END"
+        findings = scan_file_for_findings("confidential_doc.txt", file_content, "dg-test-dev")
+
+        assert len(findings) >= 2
+        for f in findings:
+            ev = f["evidence_redacted"]
+            # Length capped
+            assert len(ev) <= 35, f"Redacted evidence too long: {ev}"
+            # No raw sensitive values
+            assert "SuperSecretPassword1234" not in ev
+            assert "4111 1111 1111 1111" not in ev
+            assert "4111" not in ev
+            assert "1111" not in ev
+            # No surrounding file text
+            assert "CRITICAL FILE CONTENT" not in ev
+            assert "SECRET KEY IS" not in ev
+            # Contains [REDACTED]
+            assert "[REDACTED]" in ev
 
     def test_bank_account_with_context(self):
         """Verify bank_account triggers when context keywords are within 200 chars."""

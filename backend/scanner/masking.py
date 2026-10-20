@@ -37,19 +37,10 @@ def mask_sensitive_text(text: str, rule_name: str = "") -> str:
         return "*" * len(text)
 
     elif rule in ("credit_card", "bank_account", "pan_card", "aadhaar", "ifsc_code"):
-        # Financial & Identity tokens: keep first 2 and last 2/4 characters
-        compact = text.replace(" ", "").replace("-", "")
-        if len(compact) > 6:
-            visible_end = 4 if len(compact) >= 12 else 2
-            visible_start = 2
-            mask_len = len(compact) - visible_start - visible_end
-            return compact[:visible_start] + ("*" * mask_len) + compact[-visible_end:]
-        return text[:2] + "*" * max(1, len(text) - 2)
+        # Financial & Identity tokens: fully mask middle and end; no raw secret or last-4 digits
+        return "****-****-****"
 
     elif rule == "us_ssn":
-        digits = text.replace("-", "")
-        if len(digits) >= 9:
-            return f"***-**-{digits[-4:]}"
         return "***-**-****"
 
     elif rule in (
@@ -63,12 +54,12 @@ def mask_sensitive_text(text: str, rule_name: str = "") -> str:
         "huggingface_token",
         "password_field",
     ):
-        # Credentials: keep short prefix (up to 4 chars) and mask all remaining chars
-        if len(text) > 6:
-            prefix = text[:4]
-            mask_len = min(len(text) - 4, 16)
-            return prefix + ("*" * mask_len)
-        return "*" * len(text)
+        # Credentials: keep short identifier prefix (e.g. AKIA or sk-) and mask everything else with fixed asterisks
+        if text.startswith("AKIA"):
+            return "AKIA****************"
+        if text.startswith("sk-"):
+            return "sk-****************"
+        return "****************"
 
     elif rule in ("confidential_marker", "employee_data_marker", "customer_data_marker", "ai_prompt_sharing", "ai_training_data_leak"):
         # Corporate marker labels

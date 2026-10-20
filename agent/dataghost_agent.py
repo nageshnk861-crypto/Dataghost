@@ -32,9 +32,16 @@ SCANNED_FILES_COUNT = 0
 INCIDENTS_COUNT = 0
 _COUNTERS_LOCK = threading.Lock()
 
-# ---------------------------------------------------------------------------
-# Bootstrap
-# ---------------------------------------------------------------------------
+# Ensure UTF-8 output on Windows consoles to prevent UnicodeEncodeError
+if sys.platform == "win32":
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 colorama_init(autoreset=True)
 logging.basicConfig(
     level=logging.INFO,
@@ -65,7 +72,17 @@ def load_config() -> Dict[str, Any]:
     if "DATAGHOST_WATCH_DIRS" in os.environ:
         cfg["watch_dirs"] = [p.strip() for p in os.environ["DATAGHOST_WATCH_DIRS"].split(",") if p.strip()]
 
-    # Expand ~ in watch_dirs
+    # Default to standard user personal directories: Documents, Desktop, Downloads
+    if not cfg.get("watch_dirs"):
+        home = Path.home()
+        defaults = [
+            str(home / "Documents"),
+            str(home / "Desktop"),
+            str(home / "Downloads"),
+        ]
+        cfg["watch_dirs"] = [d for d in defaults if os.path.exists(d)]
+
+    # Expand ~ in watch_dirs and resolve paths
     cfg["watch_dirs"] = [
         str(Path(d).expanduser().resolve()) for d in cfg.get("watch_dirs", [])
     ]
@@ -80,12 +97,40 @@ def _c(pattern: str, flags: int = 0) -> re.Pattern:
     return re.compile(pattern, flags | re.MULTILINE)
 
 
+def luhn_checksum_valid(number_str: str) -> bool:
+    """Validate numeric string using Luhn algorithm (Mod 10)."""
+    digits = [int(c) for c in number_str if c.isdigit()]
+    if len(digits) < 13 or len(digits) > 19:
+        return False
+    total = 0
+    for i, d in enumerate(reversed(digits)):
+        if i % 2 == 1:
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+    return total % 10 == 0
+
+
 DLP_RULES: List[Dict[str, Any]] = [
+    {
+        "name": "credit_card",
+        "pattern": _c(
+            r"\b(?:4[0-9]{3}[-\s]?[0-9]{4}[-\s]?[0-9]{4}[-\s]?[0-9]{1,4}"
+            r"|5[1-5][0-9]{2}[-\s]?[0-9]{4}[-\s]?[0-9]{4}[-\s]?[0-9]{4}"
+            r"|3[47][0-9]{2}[-\s]?[0-9]{6}[-\s]?[0-9]{5}"
+            r"|6(?:011|5[0-9]{2})[-\s]?[0-9]{4}[-\s]?[0-9]{4}[-\s]?[0-9]{4}"
+            r"|4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}"
+            r"|6(?:011|5[0-9]{2})[0-9]{12})\b"
+        ),
+        "severity": "HIGH",
+        "category": "FINANCIAL",
+        "validator": luhn_checksum_valid,
+    },
     {"name": "email_address",        "pattern": _c(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}"),              "severity": "MEDIUM",   "category": "PII"},
     {"name": "phone_india",          "pattern": _c(r"\b[6-9]\d{9}\b"),                                                  "severity": "MEDIUM",   "category": "PII"},
-    {"name": "aadhaar",              "pattern": _c(r"\b[2-9]\d{3}\s\d{4}\s\d{4}\b|\b[2-9]\d{3}-\d{4}-\d{4}\b"),       "severity": "HIGH",     "category": "PII"},
+    {"name": "aadhaar",              "pattern": _c(r"(?<!\d)[2-9]\d{3}[\s-]\d{4}[\s-]\d{4}(?!\d|[\s-]\d)"),            "severity": "HIGH",     "category": "PII"},
     {"name": "pan_card",             "pattern": _c(r"\b[A-Z]{5}[0-9]{4}[A-Z]\b"),                                      "severity": "HIGH",     "category": "PII"},
-    {"name": "credit_card",          "pattern": _c(r"\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\b"), "severity": "HIGH", "category": "FINANCIAL"},
     {"name": "api_key_generic",      "pattern": _c(r'(?:api[_\-]?key|apikey)\s*[=:\s]+\s*[\'"]?([A-Za-z0-9_\-]{32,})[\'"]?', re.IGNORECASE), "severity": "CRITICAL", "category": "CREDENTIALS"},
     {"name": "jwt_token",            "pattern": _c(r"eyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"), "severity": "CRITICAL", "category": "CREDENTIALS"},
     {"name": "private_key",          "pattern": _c(r"-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----"),                "severity": "CRITICAL", "category": "CREDENTIALS"},
@@ -167,7 +212,10 @@ def scan_text(text: str) -> List[Dict[str, Any]]:
     """Run DLP rules and return list of finding dicts."""
     findings = []
     for rule in DLP_RULES:
+        validator = rule.get("validator")
         matches = list(rule["pattern"].finditer(text))
+        if validator:
+            matches = [m for m in matches if validator(m.group(0))]
         if not matches:
             continue
         findings.append({
@@ -248,18 +296,18 @@ def print_critical_banner(filename: str, risk_score: int, severity: str) -> None
     fn = filename[:36].ljust(36)
     sv = severity.ljust(28)
     rs = str(risk_score).ljust(3)
-    print(Fore.RED + Style.BRIGHT + "╔══════════════════════════════════════╗")
-    print(Fore.RED + Style.BRIGHT + "║  🚨 DATA EXFILTRATION DETECTED  🚨  ║")
-    print(Fore.RED + Style.BRIGHT + "╠══════════════════════════════════════╣")
-    print(Fore.RED + Style.BRIGHT + f"║  File: {fn} ║")
-    print(Fore.RED + Style.BRIGHT + f"║  Risk: {rs}/100 {sv} ║")
-    print(Fore.RED + Style.BRIGHT + "║  Action: BLOCKED                     ║")
-    print(Fore.RED + Style.BRIGHT + "╚══════════════════════════════════════╝")
+    print(Fore.RED + Style.BRIGHT + "+--------------------------------------+")
+    print(Fore.RED + Style.BRIGHT + "|  [!] DATA EXFILTRATION DETECTED [!]  |")
+    print(Fore.RED + Style.BRIGHT + "+--------------------------------------+")
+    print(Fore.RED + Style.BRIGHT + f"|  File: {fn}  |")
+    print(Fore.RED + Style.BRIGHT + f"|  Risk: {rs}/100 {sv}|")
+    print(Fore.RED + Style.BRIGHT + "|  Action: BLOCKED                     |")
+    print(Fore.RED + Style.BRIGHT + "+--------------------------------------+")
 
 
 def print_high_warning(filepath: str, risk_score: int, findings: List[Dict[str, Any]]) -> None:
     cats = ", ".join({f["category"] for f in findings})
-    print(Fore.YELLOW + Style.BRIGHT + f"⚠️  SENSITIVE DATA DETECTED")
+    print(Fore.YELLOW + Style.BRIGHT + f"[!] SENSITIVE DATA DETECTED")
     print(Fore.YELLOW + f"   File     : {filepath}")
     print(Fore.YELLOW + f"   Risk     : {risk_score}/100  [HIGH]")
     print(Fore.YELLOW + f"   Data     : {cats}")
@@ -268,105 +316,368 @@ def print_high_warning(filepath: str, risk_score: int, findings: List[Dict[str, 
 
 def print_info(filepath: str, classification: str, risk_score: int, severity: str) -> None:
     color = Fore.GREEN if severity == "LOW" else Fore.CYAN
-    print(color + f"✔  {os.path.basename(filepath)}  |  {classification}  |  Risk {risk_score}/100  [{severity}]")
+    print(color + f"[OK]  {os.path.basename(filepath)}  |  {classification}  |  Risk {risk_score}/100  [{severity}]")
 
 
 # ---------------------------------------------------------------------------
 # Backend client & enrollment
 # ---------------------------------------------------------------------------
+
+def save_config(cfg: Dict[str, Any]) -> None:
+    """Persist config back to config.json."""
+    try:
+        with open(_CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+    except Exception as e:
+        logger.warning("Could not save config.json: %s", e)
+
+
 def enroll_device(api_url: str, enrollment_code_or_token: str) -> Optional[str]:
     """Enroll device with backend using an enrollment code or raw token."""
-    try:
-        sys_plat = "Windows" if sys.platform == "win32" else ("macOS" if sys.platform == "darwin" else "Linux")
-        payload = {
-            "token": enrollment_code_or_token,
-            "enrollment_code": enrollment_code_or_token,
-            "device_name": socket.gethostname(),
-            "platform": sys_plat,
-            "os_name": platform.system(),
-            "os_version": platform.version(),
-            "architecture": platform.machine(),
-            "hostname": socket.gethostname(),
-            "ip_address": socket.gethostbyname(socket.gethostname()),
-            "agent_version": "1.0.0",
-        }
-        resp = requests.post(
-            f"{api_url}/api/devices/enrollment/register",
-            json=payload,
-            timeout=10,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            assigned_id = data.get("device_id")
-            print(Fore.GREEN + Style.BRIGHT + "\n  ✔  Device Enrolled Successfully!")
-            print(Fore.GREEN + f"      Assigned Device ID : {assigned_id}")
-            print(Fore.GREEN + f"      Platform           : {data.get('platform')}")
-            print(Fore.GREEN + f"      Status             : {data.get('status')}\n")
+    sys_plat = "Windows" if sys.platform == "win32" else ("macOS" if sys.platform == "darwin" else "Linux")
+    payload = {
+        "token": enrollment_code_or_token,
+        "enrollment_code": enrollment_code_or_token,
+        "device_name": socket.gethostname(),
+        "platform": sys_plat,
+        "os_name": platform.system(),
+        "os_version": platform.version(),
+        "architecture": platform.machine(),
+        "hostname": socket.gethostname(),
+        "ip_address": socket.gethostbyname(socket.gethostname()),
+        "agent_version": "2.0.0",
+    }
+    max_attempts = 10
+    base_delay = 3
+    max_delay = 60
 
-            # Persist assigned device_id into config.json
-            cfg = load_config()
-            cfg["device_id"] = assigned_id
-            try:
-                with open(_CONFIG_PATH, "w", encoding="utf-8") as f:
-                    json.dump(cfg, f, indent=2)
-                logger.info("Saved assigned device_id '%s' to config.json", assigned_id)
-            except Exception as e:
-                logger.warning("Could not save device_id to config.json: %s", e)
-            return assigned_id
-        else:
-            detail = resp.json().get("detail", resp.text) if "application/json" in resp.headers.get("content-type", "") else resp.text
-            print(Fore.RED + f"\n  ✗  Enrollment failed ({resp.status_code}): {detail}\n")
+    for attempt in range(1, max_attempts + 1):
+        try:
+            resp = requests.post(
+                f"{api_url}/api/devices/enrollment/register",
+                json=payload,
+                timeout=15,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                assigned_id = data.get("device_id")
+                auth_token = data.get("auth_token", "")
+                print(Fore.GREEN + Style.BRIGHT + "\n  [+] Device Enrolled Successfully!")
+                print(Fore.GREEN + f"      Assigned Device ID : {assigned_id}")
+                print(Fore.GREEN + f"      Platform           : {data.get('platform')}")
+                print(Fore.GREEN + f"      Status             : {data.get('status')}\n")
+
+                # Persist assigned device_id, api_url, and auth_token into config.json
+                cfg = load_config()
+                cfg["device_id"] = assigned_id
+                cfg["api_url"] = api_url
+                if auth_token:
+                    cfg["auth_token"] = auth_token
+                save_config(cfg)
+                logger.info("Saved device_id '%s', api_url, and auth_token to config.json", assigned_id)
+                return assigned_id
+            elif resp.status_code in (502, 503, 504):
+                sleep_sec = min(base_delay * (2 ** (attempt - 1)), max_delay)
+                print(Fore.YELLOW + f"  [*] Backend waking up ({resp.status_code}), retrying in {sleep_sec}s (attempt {attempt}/{max_attempts})...")
+                time.sleep(sleep_sec)
+                continue
+            else:
+                detail = resp.json().get("detail", resp.text) if "application/json" in resp.headers.get("content-type", "") else resp.text
+                print(Fore.RED + f"\n  [-] Enrollment failed ({resp.status_code}): {detail}\n")
+                return None
+        except (requests.ConnectionError, requests.Timeout) as net_err:
+            if attempt < max_attempts:
+                sleep_sec = min(base_delay * (2 ** (attempt - 1)), max_delay)
+                print(Fore.YELLOW + f"  [*] Connecting to backend failed ({net_err.__class__.__name__}), retrying in {sleep_sec}s (attempt {attempt}/{max_attempts})...")
+                time.sleep(sleep_sec)
+            else:
+                print(Fore.RED + f"\n  [-] Connection failed after {max_attempts} attempts: {net_err}\n")
+                return None
+        except Exception as exc:
+            print(Fore.RED + f"\n  ✗  Enrollment request error: {exc}\n")
             return None
-    except Exception as exc:
-        print(Fore.RED + f"\n  ✗  Enrollment request error: {exc}\n")
-        return None
+    return None
 
 
-def register_device(api_url: str, device_id: str, user: str, token: Optional[str]) -> None:
-    try:
-        headers = {"Authorization": f"Bearer {token}"} if token else {}
-        sys_plat = "Windows" if sys.platform == "win32" else ("macOS" if sys.platform == "darwin" else "Linux")
-        payload = {
-            "device_name": socket.gethostname(),
-            "device_id": device_id,
-            "ip_address": socket.gethostbyname(socket.gethostname()),
-            "os_type": sys.platform,
-            "platform": sys_plat,
-            "os_name": platform.system(),
-            "os_version": platform.version(),
-            "architecture": platform.machine(),
-            "hostname": socket.gethostname(),
-            "agent_version": "1.0.0",
-        }
-        resp = requests.post(
-            f"{api_url}/api/devices/register",
-            json=payload,
-            headers=headers,
-            timeout=5,
+def _redact_evidence(text: str, match_start: int, match_end: int) -> str:
+    """
+    Return a strictly redacted snippet:
+    - Masked match placeholder [REDACTED]
+    - At most a few characters (up to 4) of surrounding context
+    - No surrounding file text, no partial secrets or raw values
+    - Strictly capped at <= 30 characters
+    """
+    context_chars = 3
+    prefix_start = max(0, match_start - context_chars)
+    suffix_end = min(len(text), match_end + context_chars)
+    prefix = text[prefix_start:match_start].strip().replace("\n", " ")
+    suffix = text[match_end:suffix_end].strip().replace("\n", " ")
+    # Keep only punctuation or short delimiter if any
+    prefix = prefix[-2:] if len(prefix) > 2 else prefix
+    suffix = suffix[:2] if len(suffix) > 2 else suffix
+    res = f"{prefix}[REDACTED]{suffix}".strip()
+    return res[:30]
+
+
+def scan_file_for_findings(
+    filepath: str,
+    file_content: bytes,
+    device_id: str,
+) -> List[Dict[str, Any]]:
+    """
+    Run DLP rules locally on file_content.
+    Returns list of finding dicts with redacted evidence — NO raw secrets.
+    """
+    sha256 = hashlib.sha256(file_content).hexdigest()
+    basename = os.path.basename(filepath)
+    text = extract_text(file_content, basename)
+    if not text:
+        return []
+
+    results = []
+    for rule in DLP_RULES:
+        validator = rule.get("validator")
+        for m in rule["pattern"].finditer(text):
+            if validator and not validator(m.group(0)):
+                continue
+            redacted = _redact_evidence(text, m.start(), m.end())
+            line_num = text[:m.start()].count("\n") + 1
+            results.append({
+                "file_name": basename,
+                "file_path": filepath,
+                "file_hash": sha256,
+                "file_size": len(file_content),
+                "rule_id": rule["name"],
+                "category": rule["category"],
+                "severity": rule["severity"],
+                "confidence": 1.0,
+                "line_number": line_num,
+                "column_number": 0,
+                "char_start": m.start(),
+                "char_end": m.end(),
+                "evidence_redacted": redacted,
+                "description": f"{rule['name']} detected in {basename}",
+                "remediation": "Review, sanitize, or move sensitive credentials.",
+            })
+    return results
+
+
+def upload_findings(
+    api_url: str,
+    device_id: str,
+    auth_token: Optional[str],
+    findings: List[Dict[str, Any]],
+    scanned_files_count: int,
+    total_bytes: int,
+) -> bool:
+    """Upload redacted finding metadata to POST /api/devices/{device_id}/findings in manageable batches."""
+    headers = {"Authorization": f"Bearer {auth_token}"} if auth_token else {}
+    if not findings:
+        try:
+            payload = {
+                "scanned_files_count": scanned_files_count,
+                "total_bytes_scanned": total_bytes,
+                "findings": [],
+            }
+            resp = requests.post(
+                f"{api_url}/api/devices/{device_id}/findings",
+                json=payload,
+                headers=headers,
+                timeout=30,
+            )
+            return resp.status_code == 200
+        except Exception as exc:
+            logger.warning("Findings upload error: %s", exc)
+            return False
+
+    batch_size = 150
+    success = True
+    total_persisted = 0
+    total_incidents = 0
+    latest_score = None
+    latest_level = None
+
+    for i in range(0, len(findings), batch_size):
+        chunk = findings[i : i + batch_size]
+        is_first_chunk = (i == 0)
+        chunk_success = False
+        for attempt in range(1, 6):
+            try:
+                payload = {
+                    "scanned_files_count": scanned_files_count if is_first_chunk else 0,
+                    "total_bytes_scanned": total_bytes if is_first_chunk else 0,
+                    "findings": chunk,
+                }
+                resp = requests.post(
+                    f"{api_url}/api/devices/{device_id}/findings",
+                    json=payload,
+                    headers=headers,
+                    timeout=45,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    total_persisted += data.get("persisted_findings_count", 0)
+                    total_incidents += data.get("incidents_created_count", 0)
+                    latest_score = data.get("risk_score")
+                    latest_level = data.get("risk_level")
+                    chunk_success = True
+                    break
+                elif resp.status_code in (502, 503, 504):
+                    sleep_sec = min(3 * (2 ** (attempt - 1)), 60)
+                    logger.warning("Backend waking up (%s), retrying findings upload in %ds...", resp.status_code, sleep_sec)
+                    time.sleep(sleep_sec)
+                else:
+                    logger.warning("Findings batch upload failed (%s): %s", resp.status_code, resp.text[:200])
+                    break
+            except Exception as exc:
+                sleep_sec = min(3 * (2 ** (attempt - 1)), 60)
+                logger.warning("Findings batch upload error (%s), retrying in %ds...", exc, sleep_sec)
+                time.sleep(sleep_sec)
+
+        if not chunk_success:
+            success = False
+
+    if latest_score is not None:
+        logger.info(
+            "Uploaded %d findings in batches -> backend: %d persisted, %d incidents, risk=%s %s",
+            len(findings), total_persisted, total_incidents, latest_score, latest_level
         )
-        if resp.status_code in (200, 201):
-            logger.info("Device registered: %s", device_id)
-        else:
-            logger.warning("Device registration returned %s", resp.status_code)
-    except Exception as exc:
-        logger.warning("Could not register device: %s", exc)
+    return success
 
 
-def start_heartbeat_loop(cfg: Dict[str, Any], token: Optional[str]) -> None:
-    """Start background thread sending periodic heartbeats to backend."""
-    def _heartbeat_worker():
+def run_full_scan(cfg: Dict[str, Any], auth_token: Optional[str]) -> None:
+    """
+    Perform a full local DLP scan of watch_dirs.
+    Uploads ONLY redacted finding metadata. Raw file bytes never leave this device.
+    """
+    device_id = cfg.get("device_id", "unknown")
+    api_url = cfg["api_url"]
+    watch_dirs = cfg.get("watch_dirs", [])
+    excluded = set(cfg.get("excluded_extensions", []))
+    max_mb = cfg.get("max_file_size_mb", 50)
+    max_size = max_mb * 1024 * 1024
+
+    IGNORED_DIRS = {
+        ".git", "node_modules", ".venv", "venv", ".next", "__pycache__",
+        "AppData", ".gemini", "dist", "build", "target", ".idea", ".vscode",
+    }
+
+    print(Fore.CYAN + Style.BRIGHT + f"\n  [*] Starting full DLP scan of {len(watch_dirs)} director{'ies' if len(watch_dirs) != 1 else 'y'}...")
+
+    all_findings: List[Dict[str, Any]] = []
+    scanned_count = 0
+    total_bytes = 0
+
+    for watch_dir in watch_dirs:
+        if not os.path.isdir(watch_dir):
+            continue
+        for root, dirs, files in os.walk(watch_dir, topdown=True):
+            dirs[:] = [d for d in dirs if d not in IGNORED_DIRS and not d.startswith(".")]
+            for fname in files:
+                fpath = os.path.join(root, fname)
+                ext = _ext(fname)
+                if ext in excluded:
+                    continue
+                if fname.startswith(".") or fname.startswith("~"):
+                    continue
+                try:
+                    size = os.path.getsize(fpath)
+                    if size == 0 or size > max_size:
+                        continue
+                    with open(fpath, "rb") as fh:
+                        content = fh.read()
+                    findings = scan_file_for_findings(fpath, content, device_id)
+                    scanned_count += 1
+                    total_bytes += size
+                    if findings:
+                        all_findings.extend(findings)
+                        sev = max((f["severity"] for f in findings),
+                                  key=lambda s: {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}.get(s, 0))
+                        color = Fore.RED if sev == "CRITICAL" else (Fore.YELLOW if sev == "HIGH" else Fore.CYAN)
+                        print(color + f"  [!] {fname}: {len(findings)} finding(s) [{sev}]")
+                    else:
+                        print(Fore.GREEN + f"  [OK] {fname}: clean")
+                except (PermissionError, OSError) as e:
+                    logger.debug("Skip %s: %s", fpath, e)
+
+    print(Fore.CYAN + f"\n  Scan complete: {scanned_count} files, {len(all_findings)} findings")
+
+    # Upload redacted findings to backend
+    if all_findings or scanned_count > 0:
+        upload_findings(api_url, device_id, auth_token, all_findings, scanned_count, total_bytes)
+
+    global SCANNED_FILES_COUNT, INCIDENTS_COUNT
+    with _COUNTERS_LOCK:
+        SCANNED_FILES_COUNT += scanned_count
+        INCIDENTS_COUNT += sum(1 for f in all_findings if f["severity"] in ("HIGH", "CRITICAL"))
+
+
+def process_file_event(filepath: str, cfg: Dict[str, Any], auth_token: Optional[str]) -> None:
+    """Handle a single file event: scan locally and upload redacted findings."""
+    device_id = cfg.get("device_id", "unknown")
+    api_url = cfg["api_url"]
+    excluded = set(cfg.get("excluded_extensions", []))
+    max_mb = cfg.get("max_file_size_mb", 50)
+    max_size = max_mb * 1024 * 1024
+
+    basename = os.path.basename(filepath)
+    ext = _ext(basename)
+    if ext in excluded or basename.startswith(".") or basename.startswith("~"):
+        return
+
+    try:
+        size = os.path.getsize(filepath)
+    except OSError:
+        return
+
+    if size == 0 or size > max_size:
+        return
+
+    time.sleep(0.5)  # brief wait in case file is still being written
+
+    try:
+        with open(filepath, "rb") as fh:
+            content = fh.read()
+    except (PermissionError, FileNotFoundError) as exc:
+        logger.debug("Skipping %s: %s", filepath, exc)
+        return
+
+    findings = scan_file_for_findings(filepath, content, device_id)
+
+    global SCANNED_FILES_COUNT, INCIDENTS_COUNT
+    with _COUNTERS_LOCK:
+        SCANNED_FILES_COUNT += 1
+        if any(f["severity"] in ("HIGH", "CRITICAL") for f in findings):
+            INCIDENTS_COUNT += 1
+
+    if findings:
+        sev = max(findings, key=lambda f: {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}.get(f["severity"], 0))["severity"]
+        if sev == "CRITICAL":
+            print_critical_banner(basename, 90, sev)
+        elif sev == "HIGH":
+            print_high_warning(filepath, 70, findings)
+        upload_findings(api_url, device_id, auth_token, findings, 1, size)
+    else:
+        risk = calculate_risk([], "PUBLIC", file_size_bytes=size)
+        print_info(filepath, "PUBLIC", risk["score"], risk["severity"])
+
+
+def start_heartbeat_loop(cfg: Dict[str, Any], auth_token: Optional[str]) -> None:
+    """Background thread sending periodic heartbeats; triggers on-demand scans."""
+    def _worker():
         api_url = cfg["api_url"]
-        headers = {"Authorization": f"Bearer {token}"} if token else {}
         while True:
             try:
-                device_id = cfg.get("device_id", "agent-001")
+                device_id = cfg.get("device_id", "unknown")
+                current_token = cfg.get("auth_token") or auth_token
+                headers = {"Authorization": f"Bearer {current_token}"} if current_token else {}
                 with _COUNTERS_LOCK:
                     scanned = SCANNED_FILES_COUNT
                     incidents = INCIDENTS_COUNT
 
                 payload = {
                     "device_id": device_id,
-                    "agent_version": "1.0.0",
+                    "agent_version": "2.0.0",
                     "status": "ACTIVE",
                     "ip_address": socket.gethostbyname(socket.gethostname()),
                     "files_scanned": scanned,
@@ -379,171 +690,59 @@ def start_heartbeat_loop(cfg: Dict[str, Any], token: Optional[str]) -> None:
                     timeout=5,
                 )
                 if resp.status_code == 200:
-                    logger.debug("Heartbeat acknowledged for %s", device_id)
+                    data = resp.json()
+                    logger.debug("Heartbeat OK for %s", device_id)
+                    # Check if dashboard requested a scan
+                    if data.get("scan_requested"):
+                        logger.info("Dashboard requested scan -- starting full scan...")
+                        print(Fore.CYAN + Style.BRIGHT + "\n  [*] On-demand scan requested by dashboard. Scanning now...")
+                        run_full_scan(cfg, current_token)
                 else:
-                    logger.debug("Heartbeat returned status %s", resp.status_code)
+                    logger.debug("Heartbeat returned %s", resp.status_code)
             except Exception as exc:
-                logger.debug("Heartbeat failed: %s", exc)
-
+                logger.debug("Heartbeat error: %s", exc)
             time.sleep(25)
 
-    t = threading.Thread(target=_heartbeat_worker, daemon=True)
+    t = threading.Thread(target=_worker, daemon=True)
     t.start()
-
-
-def post_scan(
-    api_url: str,
-    token: Optional[str],
-    filepath: str,
-    file_content: bytes,
-    destination: str,
-    action: str,
-    device_id: str,
-    user: str,
-) -> Optional[Dict[str, Any]]:
-    """POST file to /api/scan/file and return the JSON response."""
-    try:
-        headers = {"Authorization": f"Bearer {token}"} if token else {}
-        files = {"file": (os.path.basename(filepath), io.BytesIO(file_content), "application/octet-stream")}
-        data = {
-            "destination": destination,
-            "action": action,
-            "device_id": device_id,
-            "user": user,
-        }
-        resp = requests.post(
-            f"{api_url}/api/scan/file",
-            files=files,
-            data=data,
-            headers=headers,
-            timeout=15,
-        )
-        resp.raise_for_status()
-        return resp.json()
-    except Exception as exc:
-        logger.warning("Backend scan POST failed: %s", exc)
-        return None
-
-
-# ---------------------------------------------------------------------------
-# Core scan logic (runs locally AND optionally sends to backend)
-# ---------------------------------------------------------------------------
-def process_file(filepath: str, cfg: Dict[str, Any], token: Optional[str]) -> None:
-    api_url   = cfg["api_url"]
-    device_id = cfg["device_id"]
-    user      = cfg["user"]
-    excluded  = set(cfg.get("excluded_extensions", []))
-    max_mb    = cfg.get("max_file_size_mb", 50)
-
-    # --- Skip checks --------------------------------------------------------
-    basename = os.path.basename(filepath)
-    ext = _ext(basename)
-
-    if ext in excluded:
-        return
-    if basename.startswith(".") or basename.startswith("~"):
-        return
-
-    try:
-        size = os.path.getsize(filepath)
-    except OSError:
-        return
-
-    if size > max_mb * 1024 * 1024:
-        logger.info("Skipping large file: %s (%d MB)", filepath, size // (1024 * 1024))
-        return
-
-    # Wait briefly — file may still be writing
-    time.sleep(0.5)
-
-    # --- Read file ----------------------------------------------------------
-    try:
-        with open(filepath, "rb") as fh:
-            file_content = fh.read()
-    except (PermissionError, FileNotFoundError) as exc:
-        logger.debug("Skipping %s: %s", filepath, exc)
-        return
-
-    # --- Hash ---------------------------------------------------------------
-    sha256 = hashlib.sha256(file_content).hexdigest()
-
-    # --- Extract text -------------------------------------------------------
-    text = extract_text(file_content, basename)
-
-    # --- Scan ---------------------------------------------------------------
-    findings = scan_text(text)
-
-    # --- Classify (local keyword-based) ------------------------------------
-    classification = classify_findings(findings)
-
-    # --- Risk score ---------------------------------------------------------
-    risk = calculate_risk(findings, classification, file_size_bytes=len(file_content))
-    risk_score = risk["score"]
-    severity   = risk["severity"]
-
-    # --- Send to backend (best-effort) -------------------------------------
-    backend_result = post_scan(api_url, token, filepath, file_content, "INTERNAL", "READ", device_id, user)
-    if backend_result:
-        # Prefer backend's authoritative score if available
-        risk_score   = backend_result.get("risk_score", risk_score)
-        severity     = backend_result.get("severity", severity)
-        classification = backend_result.get("classification", classification)
-
-    # --- Print output -------------------------------------------------------
-    global SCANNED_FILES_COUNT, INCIDENTS_COUNT
-    with _COUNTERS_LOCK:
-        SCANNED_FILES_COUNT += 1
-        if severity in ("HIGH", "CRITICAL"):
-            INCIDENTS_COUNT += 1
-
-    if severity == "CRITICAL":
-        print_critical_banner(basename, risk_score, severity)
-    elif severity == "HIGH":
-        print_high_warning(filepath, risk_score, findings)
-    else:
-        print_info(filepath, classification, risk_score, severity)
-
-    logger.info(
-        "Scanned: %s | sha256=%s | class=%s | risk=%d | severity=%s",
-        filepath, sha256[:12], classification, risk_score, severity,
-    )
 
 
 # ---------------------------------------------------------------------------
 # Watchdog event handler
 # ---------------------------------------------------------------------------
 class DataGhostHandler(FileSystemEventHandler):
-    def __init__(self, cfg: Dict[str, Any], token: Optional[str]) -> None:
+    def __init__(self, cfg: Dict[str, Any], auth_token: Optional[str]) -> None:
         super().__init__()
-        self._cfg   = cfg
-        self._token = token
+        self._cfg = cfg
+        self._auth_token = auth_token
 
     def on_created(self, event):
         if not event.is_directory:
-            process_file(event.src_path, self._cfg, self._token)
+            process_file_event(event.src_path, self._cfg, self._auth_token)
 
     def on_modified(self, event):
         if not event.is_directory and self._cfg.get("scan_on_modify", True):
-            process_file(event.src_path, self._cfg, self._token)
+            process_file_event(event.src_path, self._cfg, self._auth_token)
 
 
 # ---------------------------------------------------------------------------
 # Startup banner
 # ---------------------------------------------------------------------------
 def print_startup_banner(watch_dirs: List[str]) -> None:
-    print(Fore.CYAN + Style.BRIGHT + """
-  ██████╗  █████╗ ████████╗ █████╗  ██████╗ ██╗  ██╗ ██████╗ ███████╗████████╗
-  ██╔══██╗██╔══██╗╚══██╔══╝██╔══██╗██╔════╝ ██║  ██║██╔═══██╗██╔════╝╚══██╔══╝
-  ██║  ██║███████║   ██║   ███████║██║  ███╗███████║██║   ██║███████╗   ██║
-  ██║  ██║██╔══██║   ██║   ██╔══██║██║   ██║██╔══██║██║   ██║╚════██║   ██║
-  ██████╔╝██║  ██║   ██║   ██║  ██║╚██████╔╝██║  ██║╚██████╔╝███████║   ██║
-  ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝   ╚═╝
+    print(Fore.CYAN + Style.BRIGHT + r"""
+  ==============================================================
+    ____        __        ________               __ 
+   / __ \____ _/ /_____ _/ ____/ /_  ____  _____/ /_
+  / / / / __ `/ __/ __ `/ / __/ __ \/ __ \/ ___/ __/
+ / /_/ / /_/ / /_/ /_/ / /_/ / / / / /_/ (__  ) /_  
+/_____/\__,_/\__/\__,_/\____/_/ /_/\____/____/\__/  
+  ==============================================================
 """)
-    print(Fore.WHITE + Style.BRIGHT + "  DataGhost Agent v1.0.0 — AI-Powered Data Leakage Detection")
+    print(Fore.WHITE + Style.BRIGHT + "  DataGhost Agent v2.0.0 -- AI-Powered Data Leakage Detection")
     print(Fore.WHITE + "  Watching directories:")
     for d in watch_dirs:
         exists = os.path.isdir(d)
-        status = Fore.GREEN + "✔" if exists else Fore.RED + "✗ (not found)"
+        status = (Fore.GREEN + "[OK]") if exists else (Fore.RED + "[MISSING]")
         print(f"    {status}{Fore.WHITE}  {d}")
     print()
 
@@ -571,6 +770,11 @@ def main() -> None:
         default=None,
         help="Enrollment code or token (e.g. DG-XXXX-XXXX) to onboard this device",
     )
+    parser.add_argument(
+        "--scan-now",
+        action="store_true",
+        help="Run a one-shot full scan immediately after startup then exit",
+    )
     args = parser.parse_args()
 
     # Load config
@@ -582,58 +786,52 @@ def main() -> None:
 
     # Handle enrollment flag if specified
     if args.enroll:
-        print_startup_banner(cfg["watch_dirs"])
+        print_startup_banner(cfg.get("watch_dirs", []))
         assigned_id = enroll_device(api_url, args.enroll.strip())
         if not assigned_id:
             sys.exit(1)
-        # Reload updated config with assigned device_id
+        # Reload updated config with assigned device_id and auth_token
         cfg = load_config()
+        if args.api_url:
+            cfg["api_url"] = args.api_url
 
-    watch_dirs = cfg["watch_dirs"]
+    watch_dirs = cfg.get("watch_dirs", [])
     print_startup_banner(watch_dirs)
 
-    # Attempt to authenticate with backend for a JWT token
-    token: Optional[str] = None
-    dg_user = os.environ.get("DATAGHOST_USER", "admin")
-    dg_pass = os.environ.get("DATAGHOST_PASS", "dataghost123")
-    try:
-        resp = requests.post(
-            f"{api_url}/api/auth/login",
-            json={"username": dg_user, "password": dg_pass},
-            timeout=5,
-        )
-        if resp.status_code == 200:
-            token = resp.json().get("access_token")
-            print(Fore.GREEN + f"  ✔  Authenticated with backend as '{dg_user}'")
-        else:
-            print(Fore.YELLOW + f"  ⚠  Backend auth failed ({resp.status_code}) — running in local-only mode")
-    except Exception as exc:
-        print(Fore.YELLOW + f"  ⚠  Backend unreachable ({exc}) — running in local-only mode")
+    # Use device auth_token if available, otherwise no token (unauthenticated local testing only)
+    auth_token: Optional[str] = cfg.get("auth_token")
+    if auth_token:
+        print(Fore.GREEN + f"  [+] Using device auth token for backend communication")
+    else:
+        print(Fore.YELLOW + "  [!] No device auth_token in config -- run with --enroll first for secure mode")
     print()
 
-    # Register device and start heartbeat loop
-    register_device(api_url, cfg["device_id"], cfg["user"], token)
-    start_heartbeat_loop(cfg, token)
+    # Start heartbeat loop (checks scan_requested flag every ~25 seconds)
+    start_heartbeat_loop(cfg, auth_token)
 
-    # Start observers
-    handler  = DataGhostHandler(cfg, token)
+    if args.scan_now:
+        run_full_scan(cfg, auth_token)
+        return
+
+    # Start watchdog observers
+    handler  = DataGhostHandler(cfg, auth_token)
     observer = Observer()
 
     started_any = False
     for watch_dir in watch_dirs:
         if os.path.isdir(watch_dir):
             observer.schedule(handler, watch_dir, recursive=True)
-            print(Fore.GREEN + f"  ✔  Watching: {watch_dir}")
+            print(Fore.GREEN + f"  [+] Watching: {watch_dir}")
             started_any = True
         else:
-            print(Fore.YELLOW + f"  ⚠  Skipping (not found): {watch_dir}")
+            print(Fore.YELLOW + f"  [!] Skipping (not found): {watch_dir}")
 
     if not started_any:
-        print(Fore.RED + "\n  ✗  No valid watch directories found. Exiting.")
+        print(Fore.RED + "\n  [-] No valid watch directories found. Exiting.")
         sys.exit(1)
 
     observer.start()
-    print(Fore.WHITE + Style.BRIGHT + f"\n  DataGhost Agent [{cfg['device_id']}] is active. Press Ctrl+C to stop.\n")
+    print(Fore.WHITE + Style.BRIGHT + f"\n  DataGhost Agent [{cfg.get('device_id', 'unknown')}] is active. Press Ctrl+C to stop.\n")
 
     try:
         while True:

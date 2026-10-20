@@ -19,8 +19,15 @@ except ImportError:
     db_url = settings.database_url
 
 config = context.config
-config.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
 target_metadata = Base.metadata
+
+# If sqlalchemy.url is set on config (e.g. from run_migrations or cli), use it; otherwise fallback to settings
+custom_url = config.get_main_option("sqlalchemy.url")
+if not custom_url:
+    custom_url = db_url
+    config.set_main_option("sqlalchemy.url", custom_url.replace("%", "%%"))
+else:
+    db_url = custom_url
 
 
 def run_migrations_offline() -> None:

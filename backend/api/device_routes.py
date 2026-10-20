@@ -43,6 +43,9 @@ from schemas.schemas import (
     EnrollmentRegisterResponse,
     EnrollmentStatusResponse,
     IncidentResponse,
+    AgentFindingItem,
+    AgentFindingsUploadRequest,
+    AgentFindingsUploadResponse,
 )
 
 logger = logging.getLogger("dataghost.devices")
@@ -67,6 +70,42 @@ def _compute_device_status(device: Device, timeout_seconds: int) -> str:
     if (now - last).total_seconds() > timeout_seconds:
         return "OFFLINE"
     return "ACTIVE"
+
+
+def calculate_findings_risk(findings_list: list) -> tuple[int, str]:
+    """
+    Unified deterministic risk score & level function for findings.
+    Used by both finding upload and scan summary to guarantee agreement.
+    CRITICAL -> 90 CRITICAL
+    HIGH     -> 70 HIGH
+    MEDIUM   -> 40 MEDIUM
+    LOW      -> 15 LOW
+    Empty    -> 0 LOW
+    """
+    if not findings_list:
+        return 0, "LOW"
+    severity_map = {
+        "CRITICAL": (90, "CRITICAL"),
+        "HIGH": (70, "HIGH"),
+        "MEDIUM": (40, "MEDIUM"),
+        "LOW": (15, "LOW"),
+    }
+    max_score = 0
+    max_level = "LOW"
+    level_rank = {"LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
+
+    for f in findings_list:
+        sev = getattr(f, "severity", None)
+        if sev is None and isinstance(f, dict):
+            sev = f.get("severity")
+        sev_str = (sev or "LOW").upper()
+        score, level = severity_map.get(sev_str, (15, "LOW"))
+        if score > max_score:
+            max_score = score
+        if level_rank.get(level, 1) > level_rank.get(max_level, 1):
+            max_level = level
+
+    return max_score, max_level
 
 
 def _normalize_platform(raw: Optional[str]) -> str:
@@ -131,7 +170,7 @@ def list_devices(
 
     RBAC:
       admin   → all devices in the system.
-      analyst → only devices belonging to 'default-org'.
+      analyst → only devices where Device.user_id == current_user.id.
     """
     timeout = getattr(settings, "DEVICE_HEARTBEAT_TIMEOUT_SECONDS", 120)
 
@@ -278,6 +317,7 @@ def create_easy_enrollment(
         platform=norm_platform,
         organization_id=payload.organization_id or "default-org",
         created_by=current_user.username,
+        user_id=current_user.id,
         expires_at=expires_at,
         status="PENDING",
     )
@@ -624,10 +664,12 @@ def register_with_enrollment(
     db.commit()
     db.refresh(device)
 
-    _sync_to_firebase(device)
-
-    # Issue device auth token for future authenticated heartbeat/scanning
+    # Issue device auth token, return once, store only its SHA-256 hash
     device_token = f"dg_dev_{secrets.token_urlsafe(32)}"
+    token_hash = hashlib.sha256(device_token.encode("utf-8")).hexdigest()
+    device.device_token_hash = token_hash
+    device.auth_token = None
+    db.commit()
 
     logger.info("Successfully enrolled device: %s (%s, %s)", new_device_id, device_name, platform)
 
@@ -646,9 +688,28 @@ def register_with_enrollment(
 # ---------------------------------------------------------------------------
 # 5. Device Heartbeat
 # ---------------------------------------------------------------------------
+def _authenticate_device_request(device: Device, request: Request) -> bool:
+    """Verify that request Authorization header Bearer token matches the device's token hash or token."""
+    auth_header = request.headers.get("Authorization", "")
+    token = auth_header.replace("Bearer ", "").strip() if auth_header.startswith("Bearer ") else ""
+    if not token:
+        # If device has neither device_token_hash nor auth_token, allow legacy unauthenticated requests
+        if not device.device_token_hash and not device.auth_token:
+            return True
+        return False
+
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    if device.device_token_hash and token_hash == device.device_token_hash:
+        return True
+    if device.auth_token and (token == device.auth_token or token_hash == device.auth_token):
+        return True
+    return False
+
+
 @router.post("/{device_id_or_id}/heartbeat", response_model=DeviceHeartbeatResponse)
 def device_heartbeat_by_param(
     device_id_or_id: str,
+    request: Request,
     payload: Optional[DeviceHeartbeatRequest] = None,
     db: Session = Depends(get_db),
 ):
@@ -658,6 +719,13 @@ def device_heartbeat_by_param(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Device '{device_id_or_id}' not found.",
+        )
+
+    # Check device token authentication if configured on this device
+    if (device.device_token_hash or device.auth_token) and not _authenticate_device_request(device, request):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing device authentication token for this device.",
         )
 
     now = _utc_now()
@@ -686,16 +754,18 @@ def device_heartbeat_by_param(
         last_seen=device.last_seen,
         policy_version="1.0",
         ack_timestamp=now,
+        scan_requested=bool(getattr(device, "scan_requested", False)),
     )
 
 
 @router.post("/heartbeat", response_model=DeviceHeartbeatResponse)
 def device_heartbeat_body(
+    request: Request,
     payload: DeviceHeartbeatRequest,
     db: Session = Depends(get_db),
 ):
     """Handle periodic heartbeat with device_id in request body."""
-    return device_heartbeat_by_param(payload.device_id, payload, db)
+    return device_heartbeat_by_param(payload.device_id, request, payload, db)
 
 
 # ---------------------------------------------------------------------------
@@ -958,18 +1028,21 @@ def compute_device_scan_summary(device: Device, db: Session, is_simulated: bool 
         }
 
     # Case 2: Scan data exists in the database
-    max_risk_score = max(
-        [sl.risk_score for sl in scan_logs if sl.risk_score is not None]
-        + [f.risk_score for f in findings if f.risk_score is not None]
-        + [inc.risk_score for inc in incidents if inc.risk_score is not None]
-        + [0]
-    )
+    findings_risk_score, findings_risk_level = calculate_findings_risk(findings)
+    log_scores = [sl.risk_score for sl in scan_logs if sl.risk_score is not None]
+    inc_scores = [inc.risk_score for inc in incidents if inc.risk_score is not None]
+    if log_scores:
+        max_risk_score = max(log_scores)
+    elif inc_scores:
+        max_risk_score = max(inc_scores)
+    else:
+        max_risk_score = findings_risk_score
 
-    if any(sl.risk_score >= 80 for sl in scan_logs) or any(f.severity == "CRITICAL" for f in findings):
+    if max_risk_score >= 80 or findings_risk_level == "CRITICAL":
         overall_risk_level = "CRITICAL"
-    elif any(sl.risk_score >= 60 for sl in scan_logs) or any(f.severity == "HIGH" for f in findings):
+    elif max_risk_score >= 60 or findings_risk_level == "HIGH":
         overall_risk_level = "HIGH"
-    elif any(sl.risk_score >= 30 for sl in scan_logs) or any(f.severity == "MEDIUM" for f in findings):
+    elif max_risk_score >= 30 or findings_risk_level == "MEDIUM":
         overall_risk_level = "MEDIUM"
     else:
         overall_risk_level = "LOW"
@@ -1170,6 +1243,22 @@ def trigger_device_scan(
     elif payload and payload.file_path:
         source_type = "live_filesystem"
         target_path = os.path.abspath(payload.file_path)
+        SCAN_EXTENSIONS = {
+            ".txt", ".csv", ".json", ".xml", ".log", ".md",
+            ".doc", ".docx", ".xls", ".xlsx", ".pdf",
+            ".html", ".htm", ".env", ".ini", ".cfg", ".conf",
+            ".yaml", ".yml", ".toml", ".sql", ".py", ".js", ".ts",
+            ".pem", ".key", ".crt", ".db", ".bak",
+        }
+        IGNORED_DIRS = {
+            ".git", "node_modules", ".venv", "venv", ".next", "__pycache__",
+            "AppData", ".gemini", "dist", "build", "target", ".idea", ".vscode",
+        }
+        MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB per file cap
+        max_files_limit = payload.max_files if (payload and payload.max_files is not None) else 1000
+        if max_files_limit <= 0:
+            max_files_limit = 10000
+
         if os.path.isfile(target_path):
             with open(target_path, "rb") as fh:
                 raw_bytes = fh.read()
@@ -1180,13 +1269,37 @@ def trigger_device_scan(
                 "action": (payload.action or "UPLOAD").upper(),
                 "classification": None,
             })
+        elif os.path.isdir(target_path):
+            for root, dirs, filenames in os.walk(target_path):
+                dirs[:] = [d for d in dirs if d not in IGNORED_DIRS]
+                for fn in filenames:
+                    ext = os.path.splitext(fn)[1].lower()
+                    if ext in SCAN_EXTENSIONS:
+                        fp = os.path.join(root, fn)
+                        try:
+                            if os.path.getsize(fp) <= MAX_FILE_SIZE:
+                                with open(fp, "rb") as fh:
+                                    files_to_scan.append({
+                                        "filename": fn,
+                                        "content": fh.read(),
+                                        "destination": (payload.destination or "EXTERNAL").upper(),
+                                        "action": (payload.action or "UPLOAD").upper(),
+                                        "classification": None,
+                                    })
+                        except OSError:
+                            pass
+                        if len(files_to_scan) >= max_files_limit:
+                            break
+                if len(files_to_scan) >= max_files_limit:
+                    break
         else:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Requested file path '{payload.file_path}' does not exist on disk.",
             )
     # Case 3: Dynamic filesystem discovery — scan all real files from the host OS
-    else:
+    # Only for local non-agent devices; enrolled agents scan their own files via daemon
+    elif not (device.device_token_hash or device.auth_token):
         import pathlib
 
         scan_dirs: list[str] = []
@@ -1204,8 +1317,10 @@ def trigger_device_scan(
 
         # Workspace root (project directory)
         workspace_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-        scan_dirs.append(workspace_root)
-        scan_dirs.append(str(home))
+        # Only add test/sample directories if they exist
+        sample_dir = os.path.join(workspace_root, "backend", "sample_files")
+        if os.path.isdir(sample_dir):
+            scan_dirs.append(sample_dir)
 
         SCAN_EXTENSIONS = {
             ".txt", ".csv", ".json", ".xml", ".log", ".md",
@@ -1288,28 +1403,43 @@ def trigger_device_scan(
             ("medium_risk.txt", "LOCAL", "READ"),
             ("low_risk.txt", "INTERNAL", "COPY"),
         ]
-        for sample_name, dest, act in sample_files:
-            sample_path = os.path.join(backend_dir, sample_name)
-            if os.path.isfile(sample_path):
-                try:
-                    with open(sample_path, "rb") as fh:
-                        raw = fh.read()
-                    if raw:
-                        files_to_scan.append({
-                            "filename": sample_name,
-                            "content": raw,
-                            "destination": dest,
-                            "action": act,
-                            "classification": None,
-                        })
-                except OSError:
-                    pass
+        # If files don't exist on disk, use synthetic demo content so demo mode is always self-contained
+        if not files_to_scan:
+            files_to_scan.extend([
+                {
+                    "filename": "sample_high_risk_credentials.txt",
+                    "content": b"AWS_KEY=AKIAIOSFODNN7EXAMPLE\nCARD=4111 1111 1111 1111\nPASSWORD=Test@1234\n",
+                    "destination": "EXTERNAL",
+                    "action": "UPLOAD",
+                    "classification": None,
+                },
+                {
+                    "filename": "sample_medium_risk_pii.txt",
+                    "content": b"Customer email: alice@company.com\nInternal IP: 192.168.1.100\n",
+                    "destination": "LOCAL",
+                    "action": "READ",
+                    "classification": None,
+                },
+            ])
         if files_to_scan:
             is_simulated = True
 
-    # If no files found and not demo: compute summary from existing persisted records
+    # If no files found:
+    # - If demo was explicitly False (or custom_content/file_path was set but failed),
+    #   fall back to computing summary from existing persisted records.
+    # - Otherwise (plain dashboard "Scan" with no explicit demo=False), set scan_requested
+    #   so the endpoint agent picks it up on its next heartbeat.
     if not files_to_scan:
+        demo_explicitly_false = (payload is not None and payload.demo is False)
+        had_custom_input = (payload is not None and (payload.custom_content or payload.file_path))
+        if demo_explicitly_false or had_custom_input:
+            # Return current DB state — don't request an agent scan
+            return compute_device_scan_summary(device, db, is_simulated=False)
+        # No files and no explicit override — forward to endpoint agent
+        device.scan_requested = True
+        db.commit()
         existing_summary = compute_device_scan_summary(device, db, is_simulated=False)
+        existing_summary["message"] = f"Scan queued for device '{device.device_name}'. Waiting for endpoint agent to report findings."
         return existing_summary
 
     if is_simulated:
@@ -1447,6 +1577,197 @@ def trigger_device_scan(
 
     # Return summary computed directly from the persisted database records
     return compute_device_scan_summary(device, db, is_simulated=False)
+
+
+# ---------------------------------------------------------------------------
+# 8d. Agent Findings Ingestion (Local scan report from Windows/Endpoint Agent)
+# ---------------------------------------------------------------------------
+@router.post("/{device_id_or_id}/findings", response_model=AgentFindingsUploadResponse)
+def upload_device_findings(
+    device_id_or_id: str,
+    payload: AgentFindingsUploadRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """
+    Ingest scan results uploaded directly by an enrolled DataGhost Endpoint Agent.
+    
+    Security & Privacy:
+      - Authenticated via device.auth_token in Authorization: Bearer <token> or valid JWT.
+      - Never accepts raw file contents or unredacted secrets.
+      - Deduplicates findings via SHA-256 fingerprint.
+      - Creates high/critical incidents and updates device risk scores dynamically.
+    """
+    device = _find_device(device_id_or_id, db)
+    if not device:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Device '{device_id_or_id}' not found.",
+        )
+
+    # Validate authentication: Bearer device_auth_token or valid JWT
+    is_authenticated = _authenticate_device_request(device, request)
+    if not is_authenticated:
+        # Check JWT bearer token fallback
+        auth_header = request.headers.get("Authorization", "")
+        token = auth_header.replace("Bearer ", "").strip() if auth_header.startswith("Bearer ") else ""
+        if token:
+            try:
+                from auth import verify_access_token
+                token_data = verify_access_token(token)
+                if token_data:
+                    is_authenticated = True
+            except Exception:
+                pass
+
+    if not is_authenticated and (device.device_token_hash or device.auth_token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing device authentication token for this device.",
+        )
+
+    now = _utc_now()
+    device.last_seen = now
+    device.scan_requested = False
+    if device.status != "DISABLED":
+        device.status = "ACTIVE"
+
+    # Compute deterministic risk score and severity using backend/risk_engine
+    from risk_engine.risk_calculator import RiskCalculator
+    # Compute unified deterministic risk score and severity for findings
+    max_risk, risk_level = calculate_findings_risk(payload.findings)
+    classification = "RESTRICTED" if risk_level == "CRITICAL" else "CONFIDENTIAL" if payload.findings else "PUBLIC"
+
+    # Create a ScanLog entry for this agent scan run
+    scan_id = f"agent-scan-{secrets.token_hex(8)}"
+    scan_log = ScanLog(
+        scan_id=scan_id,
+        timestamp=now,
+        filename=f"agent_batch_{len(payload.findings)}_findings",
+        classification=classification,
+        risk_score=max_risk,
+        findings_count=len(payload.findings),
+        device_id=device.device_id,
+        user_id=device.user_id,
+        organization_id=device.organization_id or "default-org",
+        status="COMPLETED",
+        file_size=payload.total_bytes_scanned,
+        is_simulated=False,
+    )
+    db.add(scan_log)
+    db.flush()
+
+    persisted_count = 0
+    incidents_created = 0
+
+    severity_risk_map = {
+        "CRITICAL": 90,
+        "HIGH": 70,
+        "MEDIUM": 40,
+        "LOW": 15,
+    }
+
+    for item in payload.findings:
+        sev = (item.severity or "LOW").upper()
+        item_risk = severity_risk_map.get(sev, 15)
+
+        # Deterministic fingerprint: sha256(device_id:rule_id:file_name:line:redacted)
+        fp_raw = f"{device.device_id}:{item.rule_id}:{item.file_name}:{item.line_number}:{item.evidence_redacted}"
+        fingerprint = hashlib.sha256(fp_raw.encode("utf-8")).hexdigest()
+
+        # Check existing finding for deduplication
+        existing_finding = (
+            db.query(Finding)
+            .filter(Finding.fingerprint == fingerprint, Finding.device_id == device.device_id)
+            .first()
+        )
+
+        if existing_finding:
+            existing_finding.occurrence_count = (existing_finding.occurrence_count or 1) + 1
+            existing_finding.last_seen_at = now
+            existing_finding.scan_log_id = scan_log.id
+            persisted_count += 1
+        else:
+            finding = Finding(
+                scan_log_id=scan_log.id,
+                scan_id=scan_id,
+                user_id=device.user_id,
+                organization_id=device.organization_id or "default-org",
+                device_id=device.device_id,
+                file_name=item.file_name,
+                file_hash=item.file_hash,
+                detector_id=item.rule_id,
+                rule_id=item.rule_id,
+                category=item.category,
+                severity=sev,
+                confidence=item.confidence,
+                risk_score=item_risk,
+                line_number=item.line_number,
+                column_number=item.column_number,
+                char_start=item.char_start,
+                char_end=item.char_end,
+                evidence_redacted=item.evidence_redacted,
+                description=item.description or f"Sensitive data ({item.rule_id}) found in {item.file_name}",
+                remediation=item.remediation or "Review, sanitize, or move sensitive credentials.",
+                fingerprint=fingerprint,
+                status="OPEN",
+                is_simulated=False,
+                first_seen_at=now,
+                last_seen_at=now,
+                occurrence_count=1,
+            )
+            db.add(finding)
+            persisted_count += 1
+
+        # Create Incident for HIGH and CRITICAL findings
+        if sev in ("HIGH", "CRITICAL"):
+            inc_id = f"INC-{secrets.token_hex(4).upper()}"
+            incident = Incident(
+                incident_id=inc_id,
+                timestamp=now,
+                user=device.device_name,
+                filename=item.file_name,
+                file_hash=item.file_hash,
+                classification="RESTRICTED" if sev == "CRITICAL" else "CONFIDENTIAL",
+                confidence=item.confidence,
+                risk_score=item_risk,
+                severity=sev,
+                recommended_action="BLOCK" if sev == "CRITICAL" else "ALERT",
+                action_taken="BLOCKED" if sev == "CRITICAL" else "ALERTED",
+                destination="LOCAL",
+                action="SCAN",
+                status="OPEN",
+                is_simulated=False,
+                findings_json=json.dumps([{
+                    "rule": item.rule_id,
+                    "category": item.category,
+                    "severity": sev,
+                    "matched_text": item.evidence_redacted,
+                }]),
+                categories_json=json.dumps([item.category]),
+                triggered_rules_json=json.dumps([item.rule_id]),
+                device_id=device.device_id,
+            )
+            db.add(incident)
+            incidents_created += 1
+
+    scan_log.risk_score = max_risk
+    # Update device stats
+    device.files_scanned = (device.files_scanned or 0) + max(payload.scanned_files_count, 1 if payload.findings else 0)
+    device.incidents_count = (device.incidents_count or 0) + incidents_created
+    db.commit()
+    db.refresh(device)
+    _sync_to_firebase(device)
+
+    return AgentFindingsUploadResponse(
+        status="success",
+        device_id=device.device_id,
+        persisted_findings_count=persisted_count,
+        incidents_created_count=incidents_created,
+        risk_score=max_risk,
+        risk_level=risk_level,
+        message=f"Successfully ingested {persisted_count} findings from {device.device_name}.",
+    )
 
 
 # ---------------------------------------------------------------------------

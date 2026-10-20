@@ -168,7 +168,7 @@ def dashboard_stats(
         sensitive_files=sensitive_files,
         blocked_transfers=blocked_transfers,
         critical_incidents=critical_incidents,
-        scope="all" if is_admin else "default-org",
+        scope="all" if is_admin else f"user:{current_user.id}",
         recent_threats=recent_threats,
     )
 

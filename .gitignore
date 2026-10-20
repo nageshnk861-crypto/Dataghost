@@ -64,6 +64,22 @@ devtunnel.exe
 *.tsbuildinfo
 *.lock
 .gradle/
+mobile/android/.gradle/
 backend/patch_db.py
-*risk.txt
+# Agent artifacts & logs
+agent/config.json
+agent/*.log
+agent/dist/
+agent/build/
+*.spec
+
+# Test runner scratch and e2e verification scripts
+test_e2e_secrets_folder/
+test_endpoint_dir/
+*test_guard*.py
+*e2e_verification*.py
+*test_migrations_runner*.py
+*run_agent_live_test*.py
+*check_offline*.py
+*.dump
 

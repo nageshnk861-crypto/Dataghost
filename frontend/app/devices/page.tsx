@@ -206,6 +206,7 @@ export default function DevicesPage() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [scanLoadingDevice, setScanLoadingDevice] = useState<string | null>(null);
+  const [scanStatusMessage, setScanStatusMessage] = useState<string>("Scanning…");
   const [scanResultData, setScanResultData] = useState<any | null>(null);
 
   // Ref for polling timer cleanup
@@ -403,13 +404,37 @@ export default function DevicesPage() {
     e.stopPropagation();
     const devId = dev.device_id || String(dev.id);
     setScanLoadingDevice(devId);
+    setScanStatusMessage("Scan requested…");
     try {
       const data = await triggerDeviceScan(devId);
+      
+      // If scan was queued for the endpoint agent, poll scan-summary until findings arrive or timeout
+      let latestSummary = data;
+      const initialScanned = data?.scanned_files_count || 0;
+      const isQueued = data?.message && data.message.includes("Scan queued");
+
+      if (isQueued) {
+        setScanStatusMessage("Waiting for agent to report findings…");
+        const maxPollAttempts = 36; // 36 * 5s = 180s (3 minutes)
+        for (let attempt = 0; attempt < maxPollAttempts; attempt++) {
+          await new Promise((resolve) => setTimeout(resolve, 5000));
+          try {
+            const pollData = await fetchDeviceScanSummary(devId);
+            if (pollData && (pollData.scanned_files_count > initialScanned || pollData.threats_detected > 0 || (pollData.scan_results && pollData.scan_results.length > 0))) {
+              latestSummary = pollData;
+              break;
+            }
+          } catch {
+            // Keep polling on transient errors
+          }
+        }
+      }
+
       const enrichedData = {
-        ...data,
+        ...latestSummary,
         device: {
           ...dev,
-          ...(data?.device || {}),
+          ...(latestSummary?.device || {}),
         },
       };
       setScanResultData(enrichedData);
@@ -426,6 +451,7 @@ export default function DevicesPage() {
       });
     } finally {
       setScanLoadingDevice(null);
+      setScanStatusMessage("Scanning…");
     }
   };
 
@@ -624,28 +650,7 @@ export default function DevicesPage() {
               <span className="text-sm font-bold">+</span> Add Device
             </button>
 
-            <button
-              type="button"
-              onClick={handleAutoEnrollThisDevice}
-              disabled={batchEnrolling}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-cyan-300 transition-all hover:bg-cyan-500/10 active:scale-95 disabled:opacity-50"
-              style={{
-                background: "rgba(0,212,255,0.06)",
-                border: "1px solid rgba(0,212,255,0.3)",
-              }}
-              title="Automatically detects this machine and enrolls it as an endpoint"
-            >
-              {batchEnrolling ? (
-                <>
-                  <span className="w-3 h-3 border-2 border-cyan-400/20 border-t-cyan-400 rounded-full animate-spin" />
-                  <span>Enrolling…</span>
-                </>
-              ) : (
-                <>
-                  <span>⚡</span> Auto-Enroll This Device
-                </>
-              )}
-            </button>
+
 
             <button
               onClick={() => loadDevices(true)}
@@ -830,9 +835,14 @@ export default function DevicesPage() {
               {devices.map((device) => {
                 const devId = device.device_id || String(device.id);
                 const isSelected = isDeviceSelected(devId);
-                const isActive = device.status === "ACTIVE";
-                const isOffline = device.status === "OFFLINE";
                 const isDisabled = device.status === "DISABLED";
+                
+                // Offline if status is OFFLINE or last_seen is older than 120 seconds (2 minutes)
+                const lastSeenMs = device.last_seen ? new Date(device.last_seen).getTime() : 0;
+                const isOlderThan120s = !lastSeenMs || (Date.now() - lastSeenMs > 120 * 1000);
+                const isOffline = !isDisabled && (device.status === "OFFLINE" || isOlderThan120s);
+                const isActive = !isDisabled && !isOffline && (device.status === "ACTIVE" || !isOlderThan120s);
+                const displayStatus = isDisabled ? "DISABLED" : isOffline ? "OFFLINE" : "ACTIVE";
                 const plat = device.platform || device.os_type || "Windows";
 
                 let statusColor = "#34d058";
@@ -892,7 +902,7 @@ export default function DevicesPage() {
                           }}
                         />
                         <span className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: statusColor }}>
-                          {device.status}
+                          {displayStatus}
                         </span>
                       </div>
                     </div>
@@ -962,7 +972,7 @@ export default function DevicesPage() {
                         {scanLoadingDevice === (device.device_id || String(device.id)) ? (
                           <>
                             <span className="w-3 h-3 border-2 border-cyan-400/20 border-t-cyan-400 rounded-full animate-spin" />
-                            <span>Scanning…</span>
+                            <span>{scanStatusMessage}</span>
                           </>
                         ) : (
                           <>
@@ -1503,28 +1513,6 @@ export default function DevicesPage() {
                         </span>
                       </div>
 
-                      <button
-                        type="button"
-                        onClick={handleAutoEnrollCurrentModal}
-                        disabled={modalAutoEnrolling}
-                        className="mt-3 w-full py-2 px-3 rounded-xl text-xs font-semibold text-white flex items-center justify-center gap-1.5 transition-all shadow-md hover:brightness-110 active:scale-95 disabled:opacity-50"
-                        style={{
-                          background: "linear-gradient(135deg, #0089b2, #00d4ff)",
-                          border: "1px solid rgba(0,212,255,0.4)",
-                        }}
-                      >
-                        {modalAutoEnrolling ? (
-                          <>
-                            <span className="w-3 h-3 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-                            <span>Auto-Enrolling Device…</span>
-                          </>
-                        ) : (
-                          <>
-                            <span>⚡</span>
-                            <span>Auto-Enroll This Device (1-Click)</span>
-                          </>
-                        )}
-                      </button>
                     </div>
                   )}
 
@@ -1549,6 +1537,37 @@ export default function DevicesPage() {
                       </button>
                     </div>
                   </div>
+
+                  {/* Terminal CLI Enrollment Command for Endpoint Agents */}
+                  {enrollmentStatus === "PENDING" && (
+                    <div className="w-full space-y-1.5 text-left">
+                      <p className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">
+                        Agent CLI Setup ({enrollmentData.platform})
+                      </p>
+                      <div
+                        className="p-3 rounded-xl text-[11px] font-mono leading-relaxed space-y-1.5"
+                        style={{ background: "#060b14", border: "1px solid #1a2744" }}
+                      >
+                        <p className="text-slate-400"># 1. Access web portal for dashboard / login:</p>
+                        <p className="text-cyan-300">
+                          {typeof window !== "undefined" ? window.location.origin : "https://dataghost-five.vercel.app"}
+                        </p>
+                        <p className="text-slate-400 mt-1"># 2. Run agent on endpoint device (connects to Render backend):</p>
+                        <div className="flex items-center justify-between bg-slate-900/80 p-2 rounded border border-slate-800 text-green-400">
+                          <span className="truncate">
+                            python dataghost_agent.py --api-url https://dataghost-1.onrender.com --enroll {enrollmentData.enrollment_code}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleCopyCode(`python dataghost_agent.py --api-url https://dataghost-1.onrender.com --enroll ${enrollmentData.enrollment_code}`)}
+                            className="text-[10px] text-slate-300 hover:text-white ml-2 px-1.5 py-0.5 rounded bg-slate-800 flex-shrink-0"
+                          >
+                            Copy Command
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Universal Web Link */}
                   {enrollmentStatus === "PENDING" && (

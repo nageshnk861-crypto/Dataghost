@@ -153,7 +153,7 @@ def test_dashboard_stats_analyst_returns_scoped_data(client: TestClient, analyst
     res = client.get("/api/dashboard/stats", headers={"Authorization": f"Bearer {analyst_token}"})
     assert res.status_code == 200
     data = res.json()
-    assert data["scope"] == "default-org"
+    assert data["scope"].startswith("user:")
     # Scoped to default-org devices
     assert data["protected_devices"] >= 1
 

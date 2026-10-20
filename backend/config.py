@@ -62,7 +62,6 @@ class Settings(BaseSettings):
         "http://localhost:8000",
         "http://127.0.0.1:8000",
         "https://inc1.devtunnels.ms",
-        "https://dataghost.vercel.app",
         "https://dataghost-five.vercel.app",
         "https://dataghost-git-main-nagesh17.vercel.app",
     ]

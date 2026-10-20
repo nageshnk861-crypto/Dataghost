@@ -99,7 +99,7 @@ class Device(Base):
     enrolled_at = Column(DateTime, default=_utc_now)
     registered_at = Column(DateTime, default=_utc_now)
     organization_id = Column(String(64), default="default-org", nullable=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, default=1, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, server_default="1", index=True)
     device_metadata = Column(Text, nullable=True)                    # JSON string with hardware/client specs
     os_type = Column(String(32), nullable=True)                      # Kept for backward compatibility
     agent_version = Column(String(32), nullable=True)
@@ -112,6 +112,11 @@ class Device(Base):
     identity_provided_by = Column(String(32), nullable=True)         # TPM | KEYSTORE | KEYCHAIN | MANUAL
     crypto_algorithm = Column(String(32), default="RSA-2048")        # RSA-2048 | RSA-4096 | EC-P256
     
+    # Device security and remote command coordination
+    device_token_hash = Column(String(64), nullable=True, index=True) # SHA-256 hash of device auth token
+    auth_token = Column(String(128), nullable=True, index=True)      # Legacy/compat token field
+    scan_requested = Column(Boolean, default=False, nullable=False, server_default="0") # Flag set by dashboard to trigger agent scan
+
     created_at = Column(DateTime, default=_utc_now)
     updated_at = Column(DateTime, default=_utc_now, onupdate=_utc_now)
 

@@ -25,15 +25,24 @@ from auth import get_password_hash, get_current_user
 
 @pytest.fixture
 def db_session():
-    """Create a fresh database session for each test."""
-    # Drop all tables first to ensure clean state
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
+    """Create a fresh database session for each test without dropping tables."""
     db = next(get_db())
+    # Delete test data rather than dropping entire schema
+    for table in reversed(Base.metadata.sorted_tables):
+        try:
+            db.execute(table.delete())
+        except Exception:
+            pass
+    db.commit()
     yield db
+    db.rollback()
+    for table in reversed(Base.metadata.sorted_tables):
+        try:
+            db.execute(table.delete())
+        except Exception:
+            pass
+    db.commit()
     db.close()
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
 
 
 @pytest.fixture

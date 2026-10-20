@@ -54,6 +54,10 @@ def scan_text(text: str) -> Dict[str, Any]:
 
         for match in pattern.finditer(text):
 
+            validator = rule.get("validator")
+            if validator and not validator(match.group(0)):
+                continue
+
             # Rules with context requirements only trigger
             # when the appropriate keyword is nearby.
             if context_keywords:

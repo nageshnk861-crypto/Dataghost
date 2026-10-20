@@ -19,10 +19,39 @@ def _c(pattern: str, flags: int = 0) -> re.Pattern:
     return re.compile(pattern, flags | re.MULTILINE)
 
 
+def luhn_checksum_valid(number_str: str) -> bool:
+    """Validate numeric string using Luhn algorithm (Mod 10)."""
+    digits = [int(c) for c in number_str if c.isdigit()]
+    if len(digits) < 13 or len(digits) > 19:
+        return False
+    total = 0
+    for i, d in enumerate(reversed(digits)):
+        if i % 2 == 1:
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+    return total % 10 == 0
+
+
 # ---------------------------------------------------------------------------
 # Rule list
 # ---------------------------------------------------------------------------
 DLP_RULES: List[Dict[str, Any]] = [
+    {
+        "name": "credit_card",
+        "pattern": _c(
+            r"\b(?:4[0-9]{3}[-\s]?[0-9]{4}[-\s]?[0-9]{4}[-\s]?[0-9]{1,4}"
+            r"|5[1-5][0-9]{2}[-\s]?[0-9]{4}[-\s]?[0-9]{4}[-\s]?[0-9]{4}"
+            r"|3[47][0-9]{2}[-\s]?[0-9]{6}[-\s]?[0-9]{5}"
+            r"|6(?:011|5[0-9]{2})[-\s]?[0-9]{4}[-\s]?[0-9]{4}[-\s]?[0-9]{4}"
+            r"|4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}"
+            r"|6(?:011|5[0-9]{2})[0-9]{12})\b"
+        ),
+        "severity": "HIGH",
+        "category": "FINANCIAL",
+        "validator": luhn_checksum_valid,
+    },
     {
         "name": "email_address",
         "pattern": _c(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}"),
@@ -38,7 +67,7 @@ DLP_RULES: List[Dict[str, Any]] = [
     {
         "name": "aadhaar",
         "pattern": _c(
-            r"\b[2-9]\d{3}\s\d{4}\s\d{4}\b|\b[2-9]\d{3}-\d{4}-\d{4}\b"
+            r"(?<!\d)[2-9]\d{3}[\s-]\d{4}[\s-]\d{4}(?!\d|[\s-]\d)"
         ),
         "severity": "HIGH",
         "category": "PII",
@@ -48,15 +77,6 @@ DLP_RULES: List[Dict[str, Any]] = [
         "pattern": _c(r"\b[A-Z]{5}[0-9]{4}[A-Z]\b"),
         "severity": "HIGH",
         "category": "PII",
-    },
-    {
-        "name": "credit_card",
-        "pattern": _c(
-            r"\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}"
-            r"|6(?:011|5[0-9]{2})[0-9]{12})\b"
-        ),
-        "severity": "HIGH",
-        "category": "FINANCIAL",
     },
     {
         # bank_account: only fire when financial context keywords are nearby

@@ -55,7 +55,11 @@ def init_db():
     # Import models so Base has all table metadata registered
     import models  # noqa: F401
     Base.metadata.create_all(bind=engine)
-    if settings.DATABASE_URL.startswith("sqlite"):
+    # Schema catch-ups are strictly executed on SQLite dev instances;
+    # PostgreSQL relies on Alembic migrations.
+    is_sqlite = engine.dialect.name == "sqlite" or str(settings.DATABASE_URL).startswith("sqlite")
+    if is_sqlite:
+        bool_false_default = "0"
         with engine.connect() as conn:
             # 1. Migrate incidents table if needed
             try:
@@ -78,6 +82,8 @@ def init_db():
                         conn.execute(text("ALTER TABLE incidents ADD COLUMN created_at DATETIME"))
                     if "updated_at" not in existing_cols:
                         conn.execute(text("ALTER TABLE incidents ADD COLUMN updated_at DATETIME"))
+                    if "is_simulated" not in existing_cols:
+                        conn.execute(text("ALTER TABLE incidents ADD COLUMN is_simulated BOOLEAN DEFAULT 0"))
                     conn.commit()
             except Exception:
                 pass
@@ -119,6 +125,12 @@ def init_db():
                         conn.execute(text("ALTER TABLE devices ADD COLUMN identity_provided_by VARCHAR(32)"))
                     if "crypto_algorithm" not in dev_cols:
                         conn.execute(text("ALTER TABLE devices ADD COLUMN crypto_algorithm VARCHAR(32) DEFAULT 'RSA-2048'"))
+                    if "device_token_hash" not in dev_cols:
+                        conn.execute(text("ALTER TABLE devices ADD COLUMN device_token_hash VARCHAR(64)"))
+                    if "auth_token" not in dev_cols:
+                        conn.execute(text("ALTER TABLE devices ADD COLUMN auth_token VARCHAR(128)"))
+                    if "scan_requested" not in dev_cols:
+                        conn.execute(text("ALTER TABLE devices ADD COLUMN scan_requested BOOLEAN DEFAULT 0"))
 
                     # Backfill platform for existing devices
                     conn.execute(text("""
@@ -186,6 +198,47 @@ def init_db():
                         conn.execute(text("ALTER TABLE scan_logs ADD COLUMN status VARCHAR(16) DEFAULT 'COMPLETED'"))
                     if "file_size" not in sl_cols:
                         conn.execute(text("ALTER TABLE scan_logs ADD COLUMN file_size INTEGER"))
+                    if "is_simulated" not in sl_cols:
+                        conn.execute(text("ALTER TABLE scan_logs ADD COLUMN is_simulated BOOLEAN DEFAULT 0"))
+                    conn.commit()
+            except Exception:
+                pass
+
+            # 6. Migrate findings table – new columns added in agent support phase
+            try:
+                res_f = conn.execute(text("PRAGMA table_info(findings)"))
+                f_cols = {row[1] for row in res_f.fetchall()}
+                if f_cols:
+                    if "scan_id" not in f_cols:
+                        conn.execute(text("ALTER TABLE findings ADD COLUMN scan_id VARCHAR(64)"))
+                    if "organization_id" not in f_cols:
+                        conn.execute(text("ALTER TABLE findings ADD COLUMN organization_id VARCHAR(64) DEFAULT 'default-org'"))
+                    if "device_id" not in f_cols:
+                        conn.execute(text("ALTER TABLE findings ADD COLUMN device_id VARCHAR(64)"))
+                    if "detector_id" not in f_cols:
+                        conn.execute(text("ALTER TABLE findings ADD COLUMN detector_id VARCHAR(64)"))
+                    if "rule_id" not in f_cols:
+                        conn.execute(text("ALTER TABLE findings ADD COLUMN rule_id VARCHAR(128)"))
+                    if "column_number" not in f_cols:
+                        conn.execute(text("ALTER TABLE findings ADD COLUMN column_number INTEGER DEFAULT 0"))
+                    if "char_start" not in f_cols:
+                        conn.execute(text("ALTER TABLE findings ADD COLUMN char_start INTEGER DEFAULT 0"))
+                    if "char_end" not in f_cols:
+                        conn.execute(text("ALTER TABLE findings ADD COLUMN char_end INTEGER DEFAULT 0"))
+                    if "remediation" not in f_cols:
+                        conn.execute(text("ALTER TABLE findings ADD COLUMN remediation TEXT"))
+                    if "fingerprint" not in f_cols:
+                        conn.execute(text("ALTER TABLE findings ADD COLUMN fingerprint VARCHAR(64)"))
+                    if "is_simulated" not in f_cols:
+                        conn.execute(text("ALTER TABLE findings ADD COLUMN is_simulated BOOLEAN DEFAULT 0"))
+                    if "first_seen_at" not in f_cols:
+                        conn.execute(text("ALTER TABLE findings ADD COLUMN first_seen_at DATETIME"))
+                    if "last_seen_at" not in f_cols:
+                        conn.execute(text("ALTER TABLE findings ADD COLUMN last_seen_at DATETIME"))
+                    if "occurrence_count" not in f_cols:
+                        conn.execute(text("ALTER TABLE findings ADD COLUMN occurrence_count INTEGER DEFAULT 1"))
+                    if "updated_at" not in f_cols:
+                        conn.execute(text("ALTER TABLE findings ADD COLUMN updated_at DATETIME"))
                     conn.commit()
             except Exception:
                 pass

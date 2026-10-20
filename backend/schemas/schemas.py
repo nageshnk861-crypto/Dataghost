@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 class HealthResponse(BaseModel):
     status: str = "ok"
     version: str = "1.0.0"
+    
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +166,7 @@ class DeviceResponse(BaseModel):
     agent_version: Optional[str] = None
     files_scanned: Optional[int] = 0
     incidents_count: Optional[int] = 0
+    scan_requested: Optional[bool] = False
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -242,6 +244,42 @@ class DeviceHeartbeatResponse(BaseModel):
     last_seen: Optional[datetime] = None
     policy_version: str = "1.0"
     ack_timestamp: datetime
+    scan_requested: bool = False
+
+
+# ─── Agent Findings Ingestion Schemas ──────────────────────────────────────────
+class AgentFindingItem(BaseModel):
+    file_name: str
+    file_path: Optional[str] = None
+    file_hash: Optional[str] = None
+    file_size: Optional[int] = 0
+    rule_id: str
+    category: str = "CREDENTIALS"
+    severity: Literal["LOW", "MEDIUM", "HIGH", "CRITICAL"] = "LOW"
+    confidence: float = 1.0
+    line_number: int = 0
+    column_number: int = 0
+    char_start: int = 0
+    char_end: int = 0
+    evidence_redacted: str
+    description: Optional[str] = None
+    remediation: Optional[str] = None
+
+
+class AgentFindingsUploadRequest(BaseModel):
+    scanned_files_count: int = 0
+    total_bytes_scanned: int = 0
+    findings: List[AgentFindingItem] = Field(default_factory=list)
+
+
+class AgentFindingsUploadResponse(BaseModel):
+    status: str = "success"
+    device_id: str
+    persisted_findings_count: int
+    incidents_created_count: int
+    risk_score: int
+    risk_level: str
+    message: str
 
 
 class DeviceUpdateRequest(BaseModel):

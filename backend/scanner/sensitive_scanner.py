@@ -43,6 +43,12 @@ class SensitiveScanner:
             if not matches:
                 continue
 
+            validator = rule.get("validator")
+            if validator:
+                matches = [m for m in matches if validator(m.group(0))]
+                if not matches:
+                    continue
+
             # Special logic for bank_account: only count matches that have a
             # financial keyword within ±200 characters.
             if name == "bank_account" and context_kw:
