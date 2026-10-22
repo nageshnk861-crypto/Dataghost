@@ -1,9 +1,9 @@
 """
 DataGhost – SQLAlchemy ORM models.
 Tables: User, Device, Incident, ScanLog, Finding, AuditLog,
-        EnrollmentToken, DeviceProvisioning, DeviceIdentity.
-Compatible with SQLite (dev) and PostgreSQL (prod).
-"""
+        EnrollmentToken, DeviceProvisioning, DeviceIdentity,
+        ScanSession.
+Compatible with SQLite (dev) and PostgreSQL (prod)."""
 from datetime import datetime, timezone
 from enum import Enum
 from sqlalchemy import (
@@ -468,3 +468,70 @@ def make_auditlog_datetimes_aware(target, context):
         if dt and isinstance(dt, datetime) and dt.tzinfo is None:
             setattr(target, attr, dt.replace(tzinfo=timezone.utc))
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ScanSession – tracks a full-drive agent scan from start to finish
+# ═══════════════════════════════════════════════════════════════════════════
+class ScanSession(Base):
+    """
+    Top-level scan lifecycle record created for every full-drive scan:
+    - enrollment-triggered  (trigger=ENROLLMENT)
+    - scheduled             (trigger=SCHEDULED)
+    - dashboard-triggered   (trigger=MANUAL)
+
+    Status transitions:
+      RUNNING → COMPLETED | FAILED | CANCELLED
+    When the agent goes offline while status is RUNNING the dashboard
+    endpoint marks it INTERRUPTED.
+
+    Privacy: no file contents are ever stored here.
+    Only aggregate counters and the last folder path are kept.
+    """
+    __tablename__ = "scan_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # Universally-unique scan identifier returned to the agent
+    scan_id = Column(String(64), unique=True, index=True, nullable=False)
+
+    # Device this scan belongs to
+    device_id = Column(Integer, ForeignKey("devices.id"), nullable=False, index=True)
+
+    # Owner – copied from device.user_id so ownership checks are O(1)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+
+    # What caused this scan to start
+    trigger = Column(String(16), nullable=False, default="MANUAL")  # ENROLLMENT | SCHEDULED | MANUAL
+
+    # Lifecycle timestamps
+    started_at = Column(DateTime, nullable=False, default=_utc_now)
+    finished_at = Column(DateTime, nullable=True)
+
+    # Status
+    status = Column(
+        String(16), nullable=False, default="RUNNING", index=True
+    )  # RUNNING | COMPLETED | FAILED | CANCELLED | INTERRUPTED
+
+    # Progress counters (updated periodically while RUNNING)
+    files_discovered = Column(Integer, default=0)
+    files_scanned = Column(Integer, default=0)
+    files_skipped = Column(Integer, default=0)
+    findings_count = Column(Integer, default=0)
+
+    # Last folder the agent was scanning (privacy-safe: no file contents)
+    current_path = Column(String(1024), nullable=True)
+
+    # Terminal error (if status=FAILED)
+    error_message = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, default=_utc_now)
+    updated_at = Column(DateTime, default=_utc_now, onupdate=_utc_now)
+
+
+@event.listens_for(ScanSession, "load")
+def make_scansession_datetimes_aware(target, context):
+    """Convert naive datetimes to UTC-aware when loading ScanSession from DB."""
+    for attr in ["started_at", "finished_at", "created_at", "updated_at"]:
+        dt = getattr(target, attr, None)
+        if dt and isinstance(dt, datetime) and dt.tzinfo is None:
+            setattr(target, attr, dt.replace(tzinfo=timezone.utc))

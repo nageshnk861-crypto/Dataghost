@@ -666,3 +666,50 @@ export async function checkHealth(): Promise<HealthCheckResult> {
   return handleResponse<HealthCheckResult>(res, endpoint);
 }
 
+
+// ─── Scan Sessions ────────────────────────────────────────────────────────────
+
+export interface ScanSession {
+  id: number;
+  scan_id: string;
+  device_id: number;
+  user_id: number;
+  trigger: string;          // ENROLLMENT | SCHEDULED | MANUAL
+  started_at: string | null;
+  finished_at: string | null;
+  status: string;           // RUNNING | COMPLETED | FAILED | CANCELLED | INTERRUPTED
+  files_discovered: number;
+  files_scanned: number;
+  files_skipped: number;
+  findings_count: number;
+  current_path: string | null;
+  error_message: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface ScanSessionListResponse {
+  items: ScanSession[];
+  total: number;
+}
+
+/** List recent scan sessions for a device (analyst-scoped, admin sees all). */
+export async function fetchDeviceScans(
+  deviceId: string,
+  limit = 20
+): Promise<ScanSessionListResponse> {
+  const endpoint = `/api/devices/${encodeURIComponent(deviceId)}/scans?limit=${limit}`;
+  const res = await apiFetch(endpoint);
+  return handleResponse<ScanSessionListResponse>(res, endpoint);
+}
+
+/** Return the latest scan session for a device (or undefined if none). */
+export async function fetchLatestDeviceScan(
+  deviceId: string
+): Promise<ScanSession | undefined> {
+  const endpoint = `/api/devices/${encodeURIComponent(deviceId)}/scans/latest`;
+  const res = await apiFetch(endpoint);
+  if (res.status === 404) return undefined;
+  return handleResponse<ScanSession>(res, endpoint);
+}
+

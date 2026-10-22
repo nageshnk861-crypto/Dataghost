@@ -49,7 +49,9 @@ def run_safe_migrations(db_url: str = None) -> None:
             sl_cols = {c["name"] for c in insp.get_columns("scan_logs")} if "scan_logs" in table_names else set()
             f_cols = {c["name"] for c in insp.get_columns("findings")} if "findings" in table_names else set()
 
-            if "device_token_hash" in dev_cols and "scan_requested" in dev_cols:
+            if "scan_sessions" in table_names:
+                stamp_rev = "d4e5f6a7b8c9"
+            elif "device_token_hash" in dev_cols and "scan_requested" in dev_cols:
                 stamp_rev = "c3d4e5f6a7b8"
             elif "findings" in table_names or "scan_id" in sl_cols:
                 stamp_rev = "b2c3d4e5f6a7"

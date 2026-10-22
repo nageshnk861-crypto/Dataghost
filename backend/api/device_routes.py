@@ -14,6 +14,7 @@ Routes:
   POST   /devices/register             – Legacy agent registration endpoint
 """
 import hashlib
+import hmac
 import json
 import logging
 import secrets
@@ -27,7 +28,7 @@ from sqlalchemy.orm import Session
 from auth import get_current_user, require_admin, require_analyst_or_admin
 from config import settings
 from database import get_db
-from models import Device, EnrollmentToken, Finding, Incident, ScanLog, User
+from models import Device, EnrollmentToken, Finding, Incident, ScanLog, ScanSession, User
 from schemas.schemas import (
     DeviceDetailResponse,
     DeviceHeartbeatRequest,
@@ -46,6 +47,11 @@ from schemas.schemas import (
     AgentFindingItem,
     AgentFindingsUploadRequest,
     AgentFindingsUploadResponse,
+    ScanSessionStartRequest,
+    ScanSessionProgressRequest,
+    ScanSessionCompleteRequest,
+    ScanSessionResponse,
+    ScanSessionListResponse,
 )
 
 logger = logging.getLogger("dataghost.devices")
@@ -221,7 +227,23 @@ def create_enrollment_token(
     # Human-friendly readable code: DG-XXXX-XXXX
     enrollment_code = f"DG-{secrets.token_hex(2).upper()}-{secrets.token_hex(2).upper()}"
 
-    expire_minutes = getattr(settings, "ENROLLMENT_TOKEN_EXPIRE_MINUTES", 10)
+    # Determine assigned user_id
+    assigned_user_id = current_user.id
+    if payload.target_user_id is not None:
+        if current_user.role != "admin" and payload.target_user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: Only administrators can create enrollment codes for another user.",
+            )
+        target_user = db.query(User).filter(User.id == payload.target_user_id).first()
+        if not target_user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Target user with ID {payload.target_user_id} not found.",
+            )
+        assigned_user_id = target_user.id
+
+    expire_minutes = getattr(settings, "ENROLLMENT_TOKEN_EXPIRE_MINUTES", 15)
     expires_at = _utc_now() + timedelta(minutes=expire_minutes)
 
     enrollment = EnrollmentToken(
@@ -230,7 +252,7 @@ def create_enrollment_token(
         platform=norm_platform,
         organization_id=payload.organization_id or "default-org",
         created_by=current_user.username,
-        user_id=current_user.id,
+        user_id=assigned_user_id,
         expires_at=expires_at,
         status="PENDING",
     )
@@ -308,7 +330,23 @@ def create_easy_enrollment(
     # Human-readable DG-XXXX-XXXX code for consistency across all platforms
     enrollment_code = f"DG-{secrets.token_hex(2).upper()}-{secrets.token_hex(2).upper()}"
 
-    expire_minutes = getattr(settings, "ENROLLMENT_TOKEN_EXPIRE_MINUTES", 10)
+    # Determine assigned user_id
+    assigned_user_id = current_user.id
+    if payload.target_user_id is not None:
+        if current_user.role != "admin" and payload.target_user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: Only administrators can create enrollment codes for another user.",
+            )
+        target_user = db.query(User).filter(User.id == payload.target_user_id).first()
+        if not target_user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Target user with ID {payload.target_user_id} not found.",
+            )
+        assigned_user_id = target_user.id
+
+    expire_minutes = getattr(settings, "ENROLLMENT_TOKEN_EXPIRE_MINUTES", 15)
     expires_at = _utc_now() + timedelta(minutes=expire_minutes)
 
     enrollment = EnrollmentToken(
@@ -317,7 +355,7 @@ def create_easy_enrollment(
         platform=norm_platform,
         organization_id=payload.organization_id or "default-org",
         created_by=current_user.username,
-        user_id=current_user.id,
+        user_id=assigned_user_id,
         expires_at=expires_at,
         status="PENDING",
     )
@@ -546,6 +584,51 @@ def get_enrollment_status(
     )
 
 
+@router.post("/enrollment/{enrollment_code}/revoke")
+def revoke_enrollment_token(
+    enrollment_code: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Revoke a pending enrollment code.
+    - Regular users can only revoke enrollment codes they own/created.
+    - Admins can revoke any enrollment code within their administrative scope.
+    """
+    code_clean = enrollment_code.strip().upper()
+    enrollment = (
+        db.query(EnrollmentToken)
+        .filter(EnrollmentToken.enrollment_code == code_clean)
+        .first()
+    )
+
+    if not enrollment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Enrollment code '{code_clean}' not found.",
+        )
+
+    if current_user.role != "admin" and enrollment.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: You do not have permission to revoke this enrollment code.",
+        )
+
+    if enrollment.status != "PENDING":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot revoke enrollment code with status '{enrollment.status}'.",
+        )
+
+    enrollment.status = "CANCELLED"
+    db.commit()
+    return {
+        "status": "revoked",
+        "enrollment_code": code_clean,
+        "message": f"Enrollment code '{code_clean}' was successfully revoked.",
+    }
+
+
 # ---------------------------------------------------------------------------
 # 4. Device Registration with Enrollment Token
 # ---------------------------------------------------------------------------
@@ -558,15 +641,21 @@ def register_with_enrollment(
     Called by an endpoint agent (Windows, Linux, macOS, Android, iOS) during enrollment.
     Validates token, ensures single-use, assigns permanent device ID, and activates device.
     """
-    enrollment = None
+    # Query with row lock (with_for_update) where supported by dialect (Postgres/MySQL)
+    query = db.query(EnrollmentToken)
+    try:
+        query = query.with_for_update()
+    except Exception:
+        pass
 
+    enrollment = None
     if payload.token:
         token_hash = hashlib.sha256(payload.token.encode("utf-8")).hexdigest()
-        enrollment = db.query(EnrollmentToken).filter(EnrollmentToken.token_hash == token_hash).first()
+        enrollment = query.filter(EnrollmentToken.token_hash == token_hash).first()
 
     if not enrollment and payload.enrollment_code:
         code_clean = payload.enrollment_code.strip().upper()
-        enrollment = db.query(EnrollmentToken).filter(EnrollmentToken.enrollment_code == code_clean).first()
+        enrollment = query.filter(EnrollmentToken.enrollment_code == code_clean).first()
 
     if not enrollment:
         raise HTTPException(
@@ -593,44 +682,26 @@ def register_with_enrollment(
             detail="Enrollment code has expired. Please generate a new enrollment code.",
         )
 
-    # Determine platform
-    platform = enrollment.platform
-    if payload.platform:
-        client_platform = _normalize_platform(payload.platform)
-        if client_platform == platform or platform in ("Windows", "Linux", "macOS"):
-            platform = client_platform
-
-    # Generate permanent, non-sequential unique device ID
-    prefix_map = {
-        "Windows": "dg-win",
-        "Linux": "dg-linux",
-        "macOS": "dg-mac",
-        "Android": "dg-android",
-        "iOS": "dg-ios",
-    }
-    pfx = prefix_map.get(platform, "dg-dev")
-
-    # Generate unique ID
-    new_device_id = ""
-    for _ in range(5):
-        cand = f"{pfx}-{secrets.token_hex(4)}"
-        if not db.query(Device).filter(Device.device_id == cand).first():
-            new_device_id = cand
-            break
-
-    if not new_device_id:
-        new_device_id = f"{pfx}-{int(now.timestamp())}-{secrets.token_hex(2)}"
-
-    device_name = payload.device_name.strip() or payload.hostname or f"DataGhost {platform} Device"
-
-    # Resolve creator user_id
-    creator_user_id = 1
+    # Resolve creator user_id strictly. Fail closed if owner cannot be verified.
+    creator_user_id = None
     if getattr(enrollment, "user_id", None):
         creator_user_id = enrollment.user_id
     elif enrollment.created_by:
         creator = db.query(User).filter(User.username == enrollment.created_by).first()
         if creator:
             creator_user_id = creator.id
+
+    if not creator_user_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Enrollment rejected: Unable to resolve authenticated owner for this token.",
+        )
+
+    # Determine platform and identifiers
+    platform = _normalize_platform(payload.platform or enrollment.platform)
+    device_name = payload.device_name.strip()
+    prefix = "dg-win" if platform == "Windows" else f"dg-{platform.lower()[:3]}"
+    new_device_id = f"{prefix}-{secrets.token_hex(4)}"
 
     # Create new Device
     device = Device(
@@ -689,21 +760,69 @@ def register_with_enrollment(
 # 5. Device Heartbeat
 # ---------------------------------------------------------------------------
 def _authenticate_device_request(device: Device, request: Request) -> bool:
-    """Verify that request Authorization header Bearer token matches the device's token hash or token."""
+    """
+    Verify that request Authorization header Bearer token matches the device's token.
+    FAILS CLOSED: if the device has no device_token_hash (and no auth_token),
+    or the Bearer token does not match, returns False.
+    Uses hmac.compare_digest for constant-time comparison against timing attacks.
+    """
+    if not device.device_token_hash and not device.auth_token:
+        # Legacy/unenrolled device without credentials must fail closed
+        return False
+
     auth_header = request.headers.get("Authorization", "")
-    token = auth_header.replace("Bearer ", "").strip() if auth_header.startswith("Bearer ") else ""
+    if not auth_header.startswith("Bearer "):
+        return False
+
+    token = auth_header.replace("Bearer ", "").strip()
     if not token:
-        # If device has neither device_token_hash nor auth_token, allow legacy unauthenticated requests
-        if not device.device_token_hash and not device.auth_token:
-            return True
         return False
 
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
-    if device.device_token_hash and token_hash == device.device_token_hash:
-        return True
-    if device.auth_token and (token == device.auth_token or token_hash == device.auth_token):
-        return True
+
+    # Compare hashes with hmac.compare_digest
+    if device.device_token_hash:
+        if hmac.compare_digest(token_hash, device.device_token_hash):
+            return True
+
+    if device.auth_token:
+        # Legacy auth_token may store either the raw token or its sha256 hash
+        if hmac.compare_digest(token, device.auth_token) or hmac.compare_digest(token_hash, device.auth_token):
+            return True
+
     return False
+
+
+def _mark_offline_scans_interrupted(device: Device, db: Session, threshold_seconds: int = 120) -> int:
+    """
+    Check if device is offline past threshold; if so, mark any RUNNING scan sessions as INTERRUPTED.
+    Returns number of sessions updated.
+    """
+    now = _utc_now()
+    dev_last_seen = device.last_seen
+    if dev_last_seen and dev_last_seen.tzinfo is None:
+        import datetime as _dt
+        dev_last_seen = dev_last_seen.replace(tzinfo=_dt.timezone.utc)
+
+    is_offline = not dev_last_seen or (now - dev_last_seen).total_seconds() > threshold_seconds
+    if not is_offline:
+        return 0
+
+    stuck = (
+        db.query(ScanSession)
+        .filter(
+            ScanSession.device_id == device.id,
+            ScanSession.status == "RUNNING",
+        )
+        .all()
+    )
+    for s in stuck:
+        s.status = "INTERRUPTED"
+        s.finished_at = now
+        s.updated_at = now
+    if stuck:
+        db.commit()
+    return len(stuck)
 
 
 @router.post("/{device_id_or_id}/heartbeat", response_model=DeviceHeartbeatResponse)
@@ -721,12 +840,13 @@ def device_heartbeat_by_param(
             detail=f"Device '{device_id_or_id}' not found.",
         )
 
-    # Check device token authentication if configured on this device
-    if (device.device_token_hash or device.auth_token) and not _authenticate_device_request(device, request):
+    # Fail closed: must authenticate with valid device token
+    if not _authenticate_device_request(device, request):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing device authentication token for this device.",
         )
+
 
     now = _utc_now()
     device.last_seen = now
@@ -930,6 +1050,229 @@ def update_device(
     return device
 
 
+# ===========================================================================
+# Scan Session endpoints  (agent <-> backend lifecycle, analyst read-only)
+# ===========================================================================
+import uuid as _uuid
+
+
+def _find_device_by_int_or_str(device_id_or_id: str, db: Session) -> Device | None:
+    """Resolve either numeric DB id or string device_id to a Device row."""
+    try:
+        return db.query(Device).filter(Device.id == int(device_id_or_id)).first()
+    except (ValueError, TypeError):
+        return db.query(Device).filter(Device.device_id == device_id_or_id).first()
+
+
+@router.post("/{device_id_or_id}/scans/start", response_model=ScanSessionResponse)
+def scan_session_start(
+    device_id_or_id: str,
+    payload: ScanSessionStartRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """
+    Called by the agent at the very start of a full-drive scan.
+    Authenticated via device Bearer token (same mechanism as heartbeat).
+    Returns the new scan_id the agent must use for all subsequent progress/complete calls.
+    """
+    device = _find_device(device_id_or_id, db)
+    if not device:
+        raise HTTPException(status_code=404, detail=f"Device '{device_id_or_id}' not found.")
+
+    if not _authenticate_device_request(device, request):
+        raise HTTPException(status_code=401, detail="Invalid or missing device authentication token.")
+
+    now = _utc_now()
+    scan_id = f"dg-scan-{_uuid.uuid4().hex[:16]}"
+
+    session = ScanSession(
+        scan_id=scan_id,
+        device_id=device.id,
+        user_id=device.user_id,
+        trigger=payload.trigger.upper() if payload.trigger else "MANUAL",
+        started_at=now,
+        status="RUNNING",
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(session)
+    device.last_seen = now
+    if device.status != "DISABLED":
+        device.status = "ACTIVE"
+    db.commit()
+    db.refresh(session)
+    return session
+
+
+@router.post("/{device_id_or_id}/scans/{scan_id}/progress", response_model=ScanSessionResponse)
+def scan_session_progress(
+    device_id_or_id: str,
+    scan_id: str,
+    payload: ScanSessionProgressRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """
+    Called by the agent periodically (~every 15 s) while a scan is running.
+    Updates counters and current_path.  No-op if session is already terminal.
+    """
+    device = _find_device(device_id_or_id, db)
+    if not device:
+        raise HTTPException(status_code=404, detail=f"Device '{device_id_or_id}' not found.")
+
+    if not _authenticate_device_request(device, request):
+        raise HTTPException(status_code=401, detail="Invalid or missing device authentication token.")
+
+    sess = db.query(ScanSession).filter(
+        ScanSession.scan_id == scan_id,
+        ScanSession.device_id == device.id,
+    ).first()
+    if not sess:
+        raise HTTPException(status_code=404, detail=f"Scan session '{scan_id}' not found.")
+
+    if sess.status != "RUNNING":
+        return sess  # ignore progress reports for already-terminal sessions
+
+    now = _utc_now()
+    if payload.files_discovered is not None:
+        sess.files_discovered = payload.files_discovered
+    if payload.files_scanned is not None:
+        sess.files_scanned = payload.files_scanned
+    if payload.files_skipped is not None:
+        sess.files_skipped = payload.files_skipped
+    if payload.findings_count is not None:
+        sess.findings_count = payload.findings_count
+    if payload.current_path is not None:
+        sess.current_path = payload.current_path
+    sess.updated_at = now
+    device.last_seen = now
+    db.commit()
+    db.refresh(sess)
+    return sess
+
+
+@router.post("/{device_id_or_id}/scans/{scan_id}/complete", response_model=ScanSessionResponse)
+def scan_session_complete(
+    device_id_or_id: str,
+    scan_id: str,
+    payload: ScanSessionCompleteRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """
+    Called by the agent when the scan finishes (COMPLETED, FAILED, CANCELLED).
+    Closes the session and clears scan_requested on the device.
+    """
+    device = _find_device(device_id_or_id, db)
+    if not device:
+        raise HTTPException(status_code=404, detail=f"Device '{device_id_or_id}' not found.")
+
+    if not _authenticate_device_request(device, request):
+        raise HTTPException(status_code=401, detail="Invalid or missing device authentication token.")
+
+
+    sess = db.query(ScanSession).filter(
+        ScanSession.scan_id == scan_id,
+        ScanSession.device_id == device.id,
+    ).first()
+    if not sess:
+        raise HTTPException(status_code=404, detail=f"Scan session '{scan_id}' not found.")
+
+    now = _utc_now()
+    allowed_terminal = {"COMPLETED", "FAILED", "CANCELLED"}
+    new_status = (payload.status or "COMPLETED").upper()
+    if new_status not in allowed_terminal:
+        new_status = "COMPLETED"
+
+    sess.status = new_status
+    sess.finished_at = now
+    sess.updated_at = now
+    if payload.files_discovered is not None:
+        sess.files_discovered = payload.files_discovered
+    if payload.files_scanned is not None:
+        sess.files_scanned = payload.files_scanned
+    if payload.files_skipped is not None:
+        sess.files_skipped = payload.files_skipped
+    if payload.findings_count is not None:
+        sess.findings_count = payload.findings_count
+    if payload.error_message:
+        sess.error_message = payload.error_message
+
+    # Clear the dashboard-triggered scan flag
+    device.scan_requested = False
+    device.last_seen = now
+    if device.status != "DISABLED":
+        device.status = "ACTIVE"
+    db.commit()
+    db.refresh(sess)
+    return sess
+
+
+@router.get("/{device_id_or_id}/scans", response_model=ScanSessionListResponse)
+def list_scan_sessions(
+    device_id_or_id: str,
+    limit: int = 20,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    List recent scan sessions for a device.
+    - Admins see all sessions.
+    - Analysts see only their own device sessions (Device.user_id == current_user.id).
+    """
+    device = _find_device(device_id_or_id, db)
+    if not device:
+        raise HTTPException(status_code=404, detail=f"Device '{device_id_or_id}' not found.")
+
+    # Ownership check for analysts (return 404 to avoid leaking existence)
+    if current_user.role != "admin" and device.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail=f"Device '{device_id_or_id}' not found.")
+
+    # Auto-mark INTERRUPTED: RUNNING sessions on an OFFLINE device
+    _mark_offline_scans_interrupted(device, db)
+
+    total_count = db.query(ScanSession).filter(ScanSession.device_id == device.id).count()
+
+    sessions = (
+        db.query(ScanSession)
+        .filter(ScanSession.device_id == device.id)
+        .order_by(ScanSession.started_at.desc())
+        .limit(max(1, min(limit, 100)))
+        .all()
+    )
+    return ScanSessionListResponse(items=sessions, total=total_count)
+
+
+@router.get("/{device_id_or_id}/scans/latest", response_model=ScanSessionResponse)
+def get_latest_scan_session(
+    device_id_or_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Return the most recent scan session for a device.
+    Marks in-flight sessions as INTERRUPTED when the device is offline.
+    """
+    device = _find_device(device_id_or_id, db)
+    if not device:
+        raise HTTPException(status_code=404, detail=f"Device '{device_id_or_id}' not found.")
+
+    if current_user.role != "admin" and device.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail=f"Device '{device_id_or_id}' not found.")
+
+    # Auto-mark INTERRUPTED: RUNNING sessions on an OFFLINE device
+    _mark_offline_scans_interrupted(device, db)
+
+    sess = (
+        db.query(ScanSession)
+        .filter(ScanSession.device_id == device.id)
+        .order_by(ScanSession.started_at.desc())
+        .first()
+    )
+    if not sess:
+        raise HTTPException(status_code=404, detail="No scan sessions found for this device.")
+    return sess
 # ---------------------------------------------------------------------------
 # 8. Delete Device
 # ---------------------------------------------------------------------------
@@ -1620,11 +1963,12 @@ def upload_device_findings(
             except Exception:
                 pass
 
-    if not is_authenticated and (device.device_token_hash or device.auth_token):
+    if not is_authenticated:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing device authentication token for this device.",
         )
+
 
     now = _utc_now()
     device.last_seen = now

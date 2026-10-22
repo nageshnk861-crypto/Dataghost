@@ -176,6 +176,7 @@ class DeviceResponse(BaseModel):
 class EnrollmentCreateRequest(BaseModel):
     platform: str = Field(..., description="Windows | Linux | macOS | Android | iOS")
     organization_id: Optional[str] = None
+    target_user_id: Optional[int] = Field(None, description="Target user ID to bind enrollment to (admin only)")
 
 
 class EnrollmentCreateResponse(BaseModel):
@@ -461,3 +462,58 @@ class AuditLogListResponse(BaseModel):
     pages: int
 
 
+# ---------------------------------------------------------------------------
+# Scan Sessions
+# ---------------------------------------------------------------------------
+
+from typing import Literal
+
+class ScanSessionStartRequest(BaseModel):
+    """Sent by the agent when it begins a full-drive scan."""
+    trigger: Literal["ENROLLMENT", "SCHEDULED", "MANUAL"] = "MANUAL"
+
+
+class ScanSessionProgressRequest(BaseModel):
+    """Sent by the agent every ~15 s to update scan progress."""
+    files_discovered: Optional[int] = Field(default=None, ge=0)
+    files_scanned: Optional[int] = Field(default=None, ge=0)
+    files_skipped: Optional[int] = Field(default=None, ge=0)
+    findings_count: Optional[int] = Field(default=None, ge=0)
+    current_path: Optional[str] = None
+
+
+class ScanSessionCompleteRequest(BaseModel):
+    """Sent by the agent when the scan finishes (success or failure)."""
+    status: Literal["COMPLETED", "FAILED", "CANCELLED"] = "COMPLETED"
+    files_discovered: Optional[int] = Field(default=None, ge=0)
+    files_scanned: Optional[int] = Field(default=None, ge=0)
+    files_skipped: Optional[int] = Field(default=None, ge=0)
+    findings_count: Optional[int] = Field(default=None, ge=0)
+    error_message: Optional[str] = None
+
+
+
+class ScanSessionResponse(BaseModel):
+    id: int
+    scan_id: str
+    device_id: int
+    user_id: int
+    trigger: str
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    status: str
+    files_discovered: Optional[int] = 0
+    files_scanned: Optional[int] = 0
+    files_skipped: Optional[int] = 0
+    findings_count: Optional[int] = 0
+    current_path: Optional[str] = None
+    error_message: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class ScanSessionListResponse(BaseModel):
+    items: List[ScanSessionResponse]
+    total: int

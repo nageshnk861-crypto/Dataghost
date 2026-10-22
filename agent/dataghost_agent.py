@@ -324,12 +324,27 @@ def print_info(filepath: str, classification: str, risk_score: int, severity: st
 # ---------------------------------------------------------------------------
 
 def save_config(cfg: Dict[str, Any]) -> None:
-    """Persist config back to config.json."""
+    """Persist config back to config.json with restricted file permissions."""
     try:
         with open(_CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2)
+        # Apply restricted file permissions (owner read/write only)
+        try:
+            os.chmod(_CONFIG_PATH, 0o600)
+        except Exception:
+            pass
     except Exception as e:
         logger.warning("Could not save config.json: %s", e)
+
+
+def _validate_api_url(url: str) -> str:
+    """Validate and clean backend API URL."""
+    cleaned = (url or "").strip().rstrip("/")
+    if not cleaned:
+        raise ValueError("API URL cannot be empty.")
+    if not (cleaned.startswith("http://") or cleaned.startswith("https://")):
+        raise ValueError(f"Invalid API URL '{cleaned}': must start with http:// or https://")
+    return cleaned
 
 
 def enroll_device(api_url: str, enrollment_code_or_token: str) -> Optional[str]:
@@ -471,6 +486,9 @@ def upload_findings(
     total_bytes: int,
 ) -> bool:
     """Upload redacted finding metadata to POST /api/devices/{device_id}/findings in manageable batches."""
+    if not api_url:
+        logger.error("Cannot upload findings: API URL is missing or not configured.")
+        return False
     headers = {"Authorization": f"Bearer {auth_token}"} if auth_token else {}
     if not findings:
         try:
@@ -545,71 +563,324 @@ def upload_findings(
     return success
 
 
-def run_full_scan(cfg: Dict[str, Any], auth_token: Optional[str]) -> None:
+def _discover_scan_roots(cfg: dict) -> list:
+    r"""
+    Return the list of directories to scan.
+    Priority:
+      1. config.json 'scan_roots'  (explicit user override)
+      2. All fixed local drives on Windows (C:\, D:\, ...)
+      3. Fallback: user home directory
     """
-    Perform a full local DLP scan of watch_dirs.
-    Uploads ONLY redacted finding metadata. Raw file bytes never leave this device.
+    # 1. Explicit override
+    if cfg.get("scan_roots"):
+        roots = [str(Path(r).expanduser().resolve()) for r in cfg["scan_roots"] if r]
+        if roots:
+            return roots
+
+    # 2. Windows: enumerate fixed drives
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            bitmask = ctypes.windll.kernel32.GetLogicalDrives()
+            DRIVE_FIXED = 3
+            drives = []
+            for i, letter in enumerate("ABCDEFGHIJKLMNOPQRSTUVWXYZ"):
+                if bitmask & (1 << i):
+                    path = f"{letter}:\\"
+                    if ctypes.windll.kernel32.GetDriveTypeW(path) == DRIVE_FIXED:
+                        drives.append(path)
+            if drives:
+                return drives
+        except Exception:
+            pass
+        # ctypes failed – fall back to probing A-Z
+        roots = [f"{l}:\\" for l in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                 if os.path.exists(f"{l}:\\")]
+        if roots:
+            return roots
+
+    # 3. Non-Windows (CI, Linux, macOS): home dir
+    return [str(Path.home())]
+
+
+# Directories to skip anywhere (developer noise, hidden folders, caches)
+_SKIP_DIR_NAMES = {
+    ".git", "node_modules", ".venv", "venv", ".next", "__pycache__",
+    "dist", "build", "target", ".idea", ".vscode", ".gemini",
+}
+
+# Full-path patterns for OS system directories (case-insensitive)
+# Matches e.g. C:\Windows, C:\Program Files, D:\$Recycle.Bin, etc.
+_SYSTEM_SKIP_PATH_PREFIXES = (
+    r":\Windows",
+    r":\Program Files",
+    r":\Program Files (x86)",
+    r":\ProgramData",
+    r":\System Volume Information",
+    r":\$Recycle.Bin",
+    r":\$RECYCLE.BIN",
+    r":\Recovery",
+)
+
+# File extensions that may contain sensitive text / documents
+_SCAN_EXTENSIONS = {
+    ".txt", ".csv", ".json", ".env", ".log", ".py", ".js", ".ts",
+    ".docx", ".xlsx", ".pdf", ".yaml", ".yml", ".toml", ".sql",
+    ".md", ".xml", ".ini", ".cfg", ".conf", ".html", ".htm",
+    ".pem", ".key", ".crt", ".bak", ".db",
+}
+
+MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024   # 50 MB
+
+
+# Sensitive hidden directories that must NOT be skipped (high risk credentials/config)
+_PRESERVED_HIDDEN_DIRS = {
+    ".ssh", ".aws", ".config", ".kube", ".docker",
+}
+
+
+def _should_skip_dir(dirname: str, full_path: Optional[str] = None) -> bool:
     """
+    Return True if the directory should be skipped.
+    - Sensitive hidden directories (.ssh, .aws, .config, .kube, .docker) are explicitly PRESERVED and scanned.
+    - System locations (Windows, Program Files, ProgramData, AppData, etc.)
+      are matched by full path so a user folder like 'C:\\Users\\Bob\\Windows' is NOT skipped.
+    - Dev tooling and general hidden directories (.git, node_modules, .venv, caches, etc.) are skipped.
+    """
+    # 0. Never skip sensitive credential / configuration directories
+    dirname_lower = dirname.lower()
+    if dirname_lower in _PRESERVED_HIDDEN_DIRS:
+        return False
+
+    # 1. Skip developer / VCS folders and hidden folders by name
+    if dirname_lower in _SKIP_DIR_NAMES or (dirname.startswith(".") and dirname != "."):
+        return True
+
+    # 2. If full path is provided, inspect system locations
+    if full_path:
+        norm = os.path.normcase(os.path.abspath(full_path))
+        # AppData caches
+        if norm.endswith("\\appdata") or "\\appdata\\" in norm:
+            return True
+        # Windows system paths at drive root: e.g. c:\windows, c:\program files, etc.
+        for prefix in _SYSTEM_SKIP_PATH_PREFIXES:
+            pattern = os.path.normcase(prefix)
+            # Check drive letter + prefix: e.g. "c:\windows"
+            drive, rest = os.path.splitdrive(norm)
+            if drive and (rest == pattern[1:] or rest.startswith(pattern[1:] + "\\")):
+                return True
+        return False
+
+    # 3. Fallback when only dirname given: skip only universal developer/hidden dirs
+    return False
+
+
+
+def _report_session_start(api_url: str, device_id: str, auth_token: Optional[str],
+                          trigger: str = "MANUAL") -> Optional[str]:
+    """POST /api/devices/{id}/scans/start and return the scan_id, or None on error."""
+    if not api_url:
+        return None
+    headers = {"Authorization": f"Bearer {auth_token}"} if auth_token else {}
+    try:
+        resp = requests.post(
+            f"{api_url}/api/devices/{device_id}/scans/start",
+            json={"trigger": trigger},
+            headers=headers,
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            return resp.json().get("scan_id")
+        logger.warning("scan/start returned %s: %s", resp.status_code, resp.text[:200])
+    except Exception as exc:
+        logger.warning("scan/start error: %s", exc)
+    return None
+
+
+def _report_session_progress(api_url: str, device_id: str, auth_token: Optional[str],
+                              scan_id: str, files_discovered: int, files_scanned: int,
+                              files_skipped: int, findings_count: int, current_path: str) -> None:
+    """PATCH progress to /api/devices/{id}/scans/{scan_id}/progress (best-effort)."""
+    if not api_url or not scan_id:
+        return
+    headers = {"Authorization": f"Bearer {auth_token}"} if auth_token else {}
+    try:
+        requests.post(
+            f"{api_url}/api/devices/{device_id}/scans/{scan_id}/progress",
+            json={
+                "files_discovered": files_discovered,
+                "files_scanned": files_scanned,
+                "files_skipped": files_skipped,
+                "findings_count": findings_count,
+                "current_path": current_path[:512] if current_path else None,
+            },
+            headers=headers,
+            timeout=10,
+        )
+    except Exception as exc:
+        logger.debug("scan/progress error: %s", exc)
+
+
+def _report_session_complete(api_url: str, device_id: str, auth_token: Optional[str],
+                              scan_id: str, status: str, files_discovered: int,
+                              files_scanned: int, files_skipped: int, findings_count: int,
+                              error_message: Optional[str] = None) -> None:
+    """POST completion to /api/devices/{id}/scans/{scan_id}/complete (best-effort)."""
+    if not api_url or not scan_id:
+        return
+    headers = {"Authorization": f"Bearer {auth_token}"} if auth_token else {}
+    try:
+        requests.post(
+            f"{api_url}/api/devices/{device_id}/scans/{scan_id}/complete",
+            json={
+                "status": status,
+                "files_discovered": files_discovered,
+                "files_scanned": files_scanned,
+                "files_skipped": files_skipped,
+                "findings_count": findings_count,
+                "error_message": error_message,
+            },
+            headers=headers,
+            timeout=15,
+        )
+    except Exception as exc:
+        logger.debug("scan/complete error: %s", exc)
+
+
+
+def run_full_scan(cfg: Dict[str, Any], auth_token: Optional[str],
+                  trigger: str = "MANUAL") -> None:
+    """
+    Perform a full local DLP scan.
+    Scope:  all fixed local drives on Windows, or 'scan_roots' from config.json.
+    Privacy: only redacted metadata is uploaded – raw file bytes never leave the device.
+
+    Lifecycle reported to the backend:
+      POST /api/devices/{id}/scans/start            -> scan_id
+      POST /api/devices/{id}/scans/{id}/progress    (every ~15 s)
+      POST /api/devices/{id}/scans/{id}/complete
+    """
+    import time as _time
+
     device_id = cfg.get("device_id", "unknown")
-    api_url = cfg["api_url"]
-    watch_dirs = cfg.get("watch_dirs", [])
+    api_url = cfg.get("api_url", "")
     excluded = set(cfg.get("excluded_extensions", []))
-    max_mb = cfg.get("max_file_size_mb", 50)
-    max_size = max_mb * 1024 * 1024
+    max_size = cfg.get("max_file_size_mb", 50) * 1024 * 1024
 
-    IGNORED_DIRS = {
-        ".git", "node_modules", ".venv", "venv", ".next", "__pycache__",
-        "AppData", ".gemini", "dist", "build", "target", ".idea", ".vscode",
-    }
+    scan_roots = _discover_scan_roots(cfg)
 
-    print(Fore.CYAN + Style.BRIGHT + f"\n  [*] Starting full DLP scan of {len(watch_dirs)} director{'ies' if len(watch_dirs) != 1 else 'y'}...")
+    # ── Banner ───────────────────────────────────────────────────────────────
+    started_at = _time.time()
+    print(Fore.CYAN + Style.BRIGHT + "\n" + "=" * 62)
+    print(Fore.CYAN + Style.BRIGHT + f"  [SCAN START]  {trigger}  |  {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}")
+    print(Fore.CYAN + Style.BRIGHT + f"  Roots: {', '.join(scan_roots)}")
+    print(Fore.CYAN + Style.BRIGHT + "=" * 62)
 
+    # ── Open a scan session on the backend ──────────────────────────────────
+    scan_id = _report_session_start(api_url, device_id, auth_token, trigger)
+    if scan_id:
+        logger.info("Scan session opened: %s", scan_id)
+    else:
+        logger.warning("Could not open scan session on backend – continuing offline")
+
+    # ── Discovery & scanning ─────────────────────────────────────────────────
     all_findings: List[Dict[str, Any]] = []
-    scanned_count = 0
+    files_scanned = 0
+    files_skipped = 0
     total_bytes = 0
+    last_progress_report = _time.time()
+    PROGRESS_INTERVAL = 15  # seconds between progress reports
 
-    for watch_dir in watch_dirs:
-        if not os.path.isdir(watch_dir):
+    for root_dir in scan_roots:
+        if not os.path.isdir(root_dir):
             continue
-        for root, dirs, files in os.walk(watch_dir, topdown=True):
-            dirs[:] = [d for d in dirs if d not in IGNORED_DIRS and not d.startswith(".")]
+        for dirpath, dirs, files in os.walk(root_dir, topdown=True):
+            # Prune skip directories in-place (os.walk respects this)
+            dirs[:] = [d for d in dirs if not _should_skip_dir(d, os.path.join(dirpath, d))]
+
+            current_folder = dirpath
             for fname in files:
-                fpath = os.path.join(root, fname)
+                fpath = os.path.join(dirpath, fname)
                 ext = _ext(fname)
-                if ext in excluded:
+                if ext in excluded or fname.startswith(".") or fname.startswith("~"):
+                    files_skipped += 1
                     continue
-                if fname.startswith(".") or fname.startswith("~"):
+                if ext not in _SCAN_EXTENSIONS:
+                    files_skipped += 1
                     continue
                 try:
                     size = os.path.getsize(fpath)
                     if size == 0 or size > max_size:
+                        files_skipped += 1
                         continue
                     with open(fpath, "rb") as fh:
                         content = fh.read()
                     findings = scan_file_for_findings(fpath, content, device_id)
-                    scanned_count += 1
+                    files_scanned += 1
                     total_bytes += size
                     if findings:
                         all_findings.extend(findings)
-                        sev = max((f["severity"] for f in findings),
-                                  key=lambda s: {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}.get(s, 0))
+                        sev = max(
+                            (f["severity"] for f in findings),
+                            key=lambda s: {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}.get(s, 0),
+                        )
                         color = Fore.RED if sev == "CRITICAL" else (Fore.YELLOW if sev == "HIGH" else Fore.CYAN)
                         print(color + f"  [!] {fname}: {len(findings)} finding(s) [{sev}]")
                     else:
-                        print(Fore.GREEN + f"  [OK] {fname}: clean")
-                except (PermissionError, OSError) as e:
-                    logger.debug("Skip %s: %s", fpath, e)
+                        print(Fore.GREEN + f"  [OK] {fname}")
+                    # Gentle throttle: 5ms pause per file to avoid CPU spike
+                    _time.sleep(0.005)
+                except (PermissionError, OSError):
+                    files_skipped += 1
+                    continue
 
-    print(Fore.CYAN + f"\n  Scan complete: {scanned_count} files, {len(all_findings)} findings")
+                # Periodic progress report
+                now_t = _time.time()
+                if scan_id and (now_t - last_progress_report) >= PROGRESS_INTERVAL:
+                    _report_session_progress(
+                        api_url, device_id, auth_token, scan_id,
+                        files_discovered=files_scanned + files_skipped,
+                        files_scanned=files_scanned,
+                        files_skipped=files_skipped,
+                        findings_count=len(all_findings),
+                        current_path=current_folder,
+                    )
+                    last_progress_report = now_t
 
-    # Upload redacted findings to backend
-    if all_findings or scanned_count > 0:
-        upload_findings(api_url, device_id, auth_token, all_findings, scanned_count, total_bytes)
+    # ── Upload findings ──────────────────────────────────────────────────────
+    if all_findings or files_scanned > 0:
+        upload_findings(api_url, device_id, auth_token, all_findings, files_scanned, total_bytes)
+
+    # ── Summary banner ───────────────────────────────────────────────────────
+    elapsed = _time.time() - started_at
+    h, rem = divmod(int(elapsed), 3600)
+    m, s = divmod(rem, 60)
+    duration_str = f"{h:02d}:{m:02d}:{s:02d}"
+    risk_findings = sum(1 for f in all_findings if f.get("severity") in ("HIGH", "CRITICAL"))
+
+    print(Fore.CYAN + Style.BRIGHT + "\n" + "=" * 62)
+    print(Fore.CYAN + Style.BRIGHT + f"  [SCAN END]   {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}")
+    print(Fore.WHITE + f"  Duration     : {duration_str}")
+    print(Fore.WHITE + f"  Files scanned: {files_scanned}")
+    print(Fore.WHITE + f"  Files skipped: {files_skipped}")
+    print(Fore.WHITE + f"  Findings     : {len(all_findings)}  (high/critical: {risk_findings})")
+    print(Fore.CYAN + Style.BRIGHT + "=" * 62 + "\n")
+
+    # ── Close session on backend ──────────────────────────────────────────────
+    if scan_id:
+        _report_session_complete(
+            api_url, device_id, auth_token, scan_id,
+            status="COMPLETED",
+            files_discovered=files_scanned + files_skipped,
+            files_scanned=files_scanned,
+            files_skipped=files_skipped,
+            findings_count=len(all_findings),
+        )
 
     global SCANNED_FILES_COUNT, INCIDENTS_COUNT
     with _COUNTERS_LOCK:
-        SCANNED_FILES_COUNT += scanned_count
-        INCIDENTS_COUNT += sum(1 for f in all_findings if f["severity"] in ("HIGH", "CRITICAL"))
+        SCANNED_FILES_COUNT += files_scanned
+        INCIDENTS_COUNT += risk_findings
 
 
 def process_file_event(filepath: str, cfg: Dict[str, Any], auth_token: Optional[str]) -> None:
@@ -696,7 +967,7 @@ def start_heartbeat_loop(cfg: Dict[str, Any], auth_token: Optional[str]) -> None
                     if data.get("scan_requested"):
                         logger.info("Dashboard requested scan -- starting full scan...")
                         print(Fore.CYAN + Style.BRIGHT + "\n  [*] On-demand scan requested by dashboard. Scanning now...")
-                        run_full_scan(cfg, current_token)
+                        run_full_scan(cfg, current_token, trigger="MANUAL")
                 else:
                     logger.debug("Heartbeat returned %s", resp.status_code)
             except Exception as exc:
@@ -750,6 +1021,44 @@ def print_startup_banner(watch_dirs: List[str]) -> None:
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+_PRIVACY_NOTICE = """
+  ┌─────────────────────────────────────────────────────────────────┐
+  │              DataGhost Agent – Privacy Disclosure               │
+  │─────────────────────────────────────────────────────────────────│
+  │ After enrollment this agent will:                               │
+  │  • Scan ALL files on fixed local drives (C:\\, D:\\, …)           │
+  │    – skipping Windows system dirs, AppData caches, .git, etc.  │
+  │  • Read only text-like and document files                       │
+  │    (.txt .csv .json .env .log .py .js .ts .docx .xlsx .pdf …)  │
+  │  • Upload ONLY redacted metadata (rule match, severity, file   │
+  │    name, line number, [REDACTED] snippet – never raw content)  │
+  │  • Repeat the full scan every 24 hours automatically           │
+  │  • Send heartbeats every 25 seconds (counters only, no content)│
+  │                                                                 │
+  │ Raw file bytes NEVER leave this device.                        │
+  └─────────────────────────────────────────────────────────────────┘
+"""
+
+
+def _start_scheduled_scan_loop(cfg: Dict[str, Any], auth_token: Optional[str],
+                                interval_hours: float = 24.0) -> None:
+    """Background thread that repeats a full scan every `interval_hours`."""
+    def _worker():
+        interval_s = interval_hours * 3600
+        time.sleep(interval_s)          # first run is the post-enrollment scan; wait a full cycle
+        while True:
+            try:
+                logger.info("Scheduled scan starting (every %.0fh)", interval_hours)
+                current_token = cfg.get("auth_token") or auth_token
+                run_full_scan(cfg, current_token, trigger="SCHEDULED")
+            except Exception as exc:
+                logger.warning("Scheduled scan error: %s", exc)
+            time.sleep(interval_s)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="dataghost_agent",
@@ -775,6 +1084,11 @@ def main() -> None:
         action="store_true",
         help="Run a one-shot full scan immediately after startup then exit",
     )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip the privacy disclosure confirmation prompt during enrollment",
+    )
     args = parser.parse_args()
 
     # Load config
@@ -787,6 +1101,18 @@ def main() -> None:
     # Handle enrollment flag if specified
     if args.enroll:
         print_startup_banner(cfg.get("watch_dirs", []))
+
+        # ── Privacy disclosure ─────────────────────────────────────────────
+        print(Fore.YELLOW + _PRIVACY_NOTICE)
+        if not args.yes:
+            try:
+                answer = input("  Do you want to proceed? [y/N] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                answer = "n"
+            if answer not in ("y", "yes"):
+                print(Fore.RED + "\n  Enrollment cancelled.\n")
+                sys.exit(0)
+
         assigned_id = enroll_device(api_url, args.enroll.strip())
         if not assigned_id:
             sys.exit(1)
@@ -794,6 +1120,15 @@ def main() -> None:
         cfg = load_config()
         if args.api_url:
             cfg["api_url"] = args.api_url
+
+        # ── Immediate post-enrollment scan ────────────────────────────────
+        print(Fore.CYAN + Style.BRIGHT + "\n  [*] Starting initial enrollment scan (full drive)...")
+        enroll_token = cfg.get("auth_token")
+        run_full_scan(cfg, enroll_token, trigger="ENROLLMENT")
+
+        # ── Start 24h recurring scan loop ─────────────────────────────────
+        scan_interval_h = float(cfg.get("scan_interval_hours", 24))
+        _start_scheduled_scan_loop(cfg, enroll_token, interval_hours=scan_interval_h)
 
     watch_dirs = cfg.get("watch_dirs", [])
     print_startup_banner(watch_dirs)
@@ -810,10 +1145,10 @@ def main() -> None:
     start_heartbeat_loop(cfg, auth_token)
 
     if args.scan_now:
-        run_full_scan(cfg, auth_token)
+        run_full_scan(cfg, auth_token, trigger="MANUAL")
         return
 
-    # Start watchdog observers
+    # Start watchdog observers (real-time file watch on watch_dirs)
     handler  = DataGhostHandler(cfg, auth_token)
     observer = Observer()
 

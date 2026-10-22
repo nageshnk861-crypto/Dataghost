@@ -15,12 +15,15 @@ import {
   deleteDevice,
   triggerDeviceScan,
   fetchDeviceScanSummary,
+  fetchLatestDeviceScan,
+  fetchDeviceScans,
   scanFile,
 } from "@/lib/api";
 import type {
   Device,
   EnrollmentCreateResponse,
   DeviceDetail,
+  ScanSession,
 } from "@/lib/api";
 import { useAuthGuard } from "@/lib/useAuthGuard";
 
@@ -208,18 +211,37 @@ export default function DevicesPage() {
   const [scanLoadingDevice, setScanLoadingDevice] = useState<string | null>(null);
   const [scanStatusMessage, setScanStatusMessage] = useState<string>("Scanning…");
   const [scanResultData, setScanResultData] = useState<any | null>(null);
+  const [latestScans, setLatestScans] = useState<Record<string, ScanSession>>({});
+  const [scanHistory, setScanHistory] = useState<ScanSession[]>([]);
 
   // Ref for polling timer cleanup
   const statusPollRef = useRef<NodeJS.Timeout | null>(null);
   const countdownRef = useRef<NodeJS.Timeout | null>(null);
 
-  // --- Fetch devices list ---
+  // --- Fetch devices list & their latest scan sessions ---
   const loadDevices = useCallback(async (showSpinner = true) => {
     if (showSpinner) setLoading(true);
     setError(null);
     try {
       const data = await fetchDevices();
       setDevices(data);
+
+      // Concurrently fetch latest scan session for each device
+      const scanMap: Record<string, ScanSession> = {};
+      await Promise.allSettled(
+        (data || []).map(async (dev) => {
+          const devId = dev.device_id || String(dev.id);
+          try {
+            const scan = await fetchLatestDeviceScan(devId);
+            if (scan) {
+              scanMap[devId] = scan;
+            }
+          } catch {
+            // best-effort
+          }
+        })
+      );
+      setLatestScans(scanMap);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load devices");
     } finally {
@@ -461,9 +483,17 @@ export default function DevicesPage() {
     const devId = dev.device_id || String(dev.id);
     setScanLoadingDevice(devId);
     try {
-      const data = await fetchDeviceScanSummary(devId);
+      const [summaryData, scansData] = await Promise.allSettled([
+        fetchDeviceScanSummary(devId),
+        fetchDeviceScans(devId, 10),
+      ]);
+      const data = summaryData.status === "fulfilled" ? summaryData.value : null;
+      const history = scansData.status === "fulfilled" ? (scansData.value?.items || []) : [];
+      setScanHistory(history);
+
       setScanResultData({
         ...data,
+        scan_history: history,
         device: {
           ...dev,
           ...(data?.device || {}),
@@ -936,6 +966,82 @@ export default function DevicesPage() {
                         </span>
                       </div>
                     </div>
+
+                    {/* Scan Session Live Status & Progress */}
+                    {(() => {
+                      const devId = device.device_id || String(device.id);
+                      const curScan = latestScans[devId];
+                      if (!curScan) return null;
+
+                      const isRunning = curScan.status === "RUNNING";
+                      const isInterrupted = curScan.status === "INTERRUPTED";
+                      const isFailed = curScan.status === "FAILED";
+                      const isCompleted = curScan.status === "COMPLETED";
+
+                      const statusColor = isRunning ? "#00d4ff" : isInterrupted ? "#f59e0b" : isFailed ? "#ff3b3b" : "#34d058";
+                      const statusBg = isRunning ? "rgba(0,212,255,0.12)" : isInterrupted ? "rgba(245,158,11,0.12)" : isFailed ? "rgba(255,59,59,0.12)" : "rgba(52,208,88,0.12)";
+                      const statusBorder = isRunning ? "rgba(0,212,255,0.3)" : isInterrupted ? "rgba(245,158,11,0.3)" : isFailed ? "rgba(255,59,59,0.3)" : "rgba(52,208,88,0.3)";
+
+                      const pct = curScan.files_discovered > 0
+                        ? Math.min(100, Math.round((curScan.files_scanned / curScan.files_discovered) * 100))
+                        : (isCompleted ? 100 : 0);
+
+                      let durationStr = "—";
+                      if (curScan.started_at) {
+                        const start = new Date(curScan.started_at).getTime();
+                        const end = curScan.finished_at ? new Date(curScan.finished_at).getTime() : Date.now();
+                        const diffSec = Math.max(0, Math.round((end - start) / 1000));
+                        const m = Math.floor(diffSec / 60);
+                        const s = diffSec % 60;
+                        durationStr = m > 0 ? `${m}m ${s}s` : `${s}s`;
+                      }
+
+                      return (
+                        <div
+                          className="mt-3 p-2.5 rounded-lg space-y-1.5 border"
+                          style={{ background: "rgba(10,16,30,0.6)", borderColor: "#1e293b" }}
+                        >
+                          <div className="flex items-center justify-between text-[11px]">
+                            <span className="text-slate-400 font-semibold flex items-center gap-1.5">
+                              {isRunning && <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />}
+                              Scan ({curScan.trigger})
+                            </span>
+                            <span
+                              className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider"
+                              style={{ background: statusBg, color: statusColor, border: `1px solid ${statusBorder}` }}
+                            >
+                              {curScan.status}
+                            </span>
+                          </div>
+
+                          {/* Progress bar */}
+                          <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
+                            <div
+                              className="h-1.5 rounded-full transition-all duration-300"
+                              style={{
+                                width: `${pct}%`,
+                                background: isRunning
+                                  ? "linear-gradient(90deg, #00d4ff, #38bdf8)"
+                                  : isInterrupted ? "#f59e0b" : isFailed ? "#ff3b3b" : "#34d058",
+                              }}
+                            />
+                          </div>
+
+                          <div className="flex items-center justify-between text-[10px] text-slate-400">
+                            <span>
+                              {curScan.files_scanned.toLocaleString()} / {curScan.files_discovered > 0 ? curScan.files_discovered.toLocaleString() : curScan.files_scanned.toLocaleString()} files ({pct}%)
+                            </span>
+                            <span>{durationStr}</span>
+                          </div>
+
+                          {curScan.current_path && isRunning && (
+                            <p className="text-[10px] text-slate-500 font-mono truncate" title={curScan.current_path}>
+                              📂 {curScan.current_path}
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })()}
 
                     <div className="mt-4 pt-3 grid grid-cols-2 gap-2 border-t" style={{ borderColor: "#1a2744" }}>
                       <div className="text-center">
@@ -1552,14 +1658,14 @@ export default function DevicesPage() {
                         <p className="text-cyan-300">
                           {typeof window !== "undefined" ? window.location.origin : "https://dataghost-five.vercel.app"}
                         </p>
-                        <p className="text-slate-400 mt-1"># 2. Run agent on endpoint device (connects to Render backend):</p>
+                        <p className="text-slate-400 mt-1"># 2. Run agent on endpoint device (auto-enroll and scan):</p>
                         <div className="flex items-center justify-between bg-slate-900/80 p-2 rounded border border-slate-800 text-green-400">
                           <span className="truncate">
-                            python dataghost_agent.py --api-url https://dataghost-1.onrender.com --enroll {enrollmentData.enrollment_code}
+                            python dataghost_agent.py --api-url {typeof window !== "undefined" ? window.location.origin : "https://dataghost-five.vercel.app"} --enroll {enrollmentData.enrollment_code} --yes
                           </span>
                           <button
                             type="button"
-                            onClick={() => handleCopyCode(`python dataghost_agent.py --api-url https://dataghost-1.onrender.com --enroll ${enrollmentData.enrollment_code}`)}
+                            onClick={() => handleCopyCode(`python dataghost_agent.py --api-url ${typeof window !== "undefined" ? window.location.origin : "https://dataghost-five.vercel.app"} --enroll ${enrollmentData.enrollment_code} --yes`)}
                             className="text-[10px] text-slate-300 hover:text-white ml-2 px-1.5 py-0.5 rounded bg-slate-800 flex-shrink-0"
                           >
                             Copy Command
@@ -2409,6 +2515,73 @@ export default function DevicesPage() {
                   );
                 })()}
                 </div>
+
+                {/* ── Recent Scan Sessions History ── */}
+                {scanHistory.length > 0 && (
+                  <div className="mt-6 pt-5 border-t border-slate-800">
+                    <h3 className="text-xs font-bold uppercase tracking-wider mb-3 flex items-center gap-1.5 text-cyan-400">
+                      <span>⏱️</span> Recent Scan History ({scanHistory.length})
+                    </h3>
+                    <div className="rounded-xl overflow-hidden border border-slate-800 bg-slate-900/60">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-slate-800/80 border-b border-slate-700/60">
+                          <tr>
+                            <th className="px-3 py-2 text-slate-400 font-semibold uppercase text-[10px]">Status</th>
+                            <th className="px-3 py-2 text-slate-400 font-semibold uppercase text-[10px]">Trigger</th>
+                            <th className="px-3 py-2 text-slate-400 font-semibold uppercase text-[10px]">Started</th>
+                            <th className="px-3 py-2 text-slate-400 font-semibold uppercase text-[10px]">Duration</th>
+                            <th className="px-3 py-2 text-slate-400 font-semibold uppercase text-[10px]">Scanned / Discovered</th>
+                            <th className="px-3 py-2 text-slate-400 font-semibold uppercase text-[10px]">Findings</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/50">
+                          {scanHistory.map((sh, idx) => {
+                            const isRun = sh.status === "RUNNING";
+                            const isInt = sh.status === "INTERRUPTED";
+                            const isFail = sh.status === "FAILED";
+                            const col = isRun ? "#00d4ff" : isInt ? "#f59e0b" : isFail ? "#ff3b3b" : "#34d058";
+                            const bg = isRun ? "rgba(0,212,255,0.1)" : isInt ? "rgba(245,158,11,0.1)" : isFail ? "rgba(255,59,59,0.1)" : "rgba(52,208,88,0.1)";
+
+                            let dur = "—";
+                            if (sh.started_at) {
+                              const st = new Date(sh.started_at).getTime();
+                              const en = sh.finished_at ? new Date(sh.finished_at).getTime() : Date.now();
+                              const diffSec = Math.max(0, Math.round((en - st) / 1000));
+                              const m = Math.floor(diffSec / 60);
+                              const s = diffSec % 60;
+                              dur = m > 0 ? `${m}m ${s}s` : `${s}s`;
+                              if (isRun) dur = `${dur} (running)`;
+                            }
+
+                            return (
+                              <tr key={idx} className="hover:bg-slate-800/40">
+                                <td className="px-3 py-2">
+                                  <span
+                                    className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide"
+                                    style={{ background: bg, color: col }}
+                                  >
+                                    {sh.status}
+                                  </span>
+                                </td>
+                                <td className="px-3 py-2 font-mono text-[11px] text-slate-300">{sh.trigger}</td>
+                                <td className="px-3 py-2 text-slate-400 text-[11px]">
+                                  {sh.started_at ? new Date(sh.started_at).toLocaleString() : "—"}
+                                </td>
+                                <td className="px-3 py-2 font-mono text-slate-300 text-[11px]">{dur}</td>
+                                <td className="px-3 py-2 text-slate-300 text-[11px]">
+                                  {sh.files_scanned.toLocaleString()} / {sh.files_discovered.toLocaleString()}
+                                </td>
+                                <td className="px-3 py-2 font-bold" style={{ color: sh.findings_count > 0 ? "#ff9f0a" : "#34d058" }}>
+                                  {sh.findings_count}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
               </>
             )}
             </div>
