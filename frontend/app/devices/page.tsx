@@ -9,7 +9,6 @@ import {
   createEasyEnrollmentToken,
   createAndroidEnterpriseEnrollmentToken,
   fetchEnrollmentStatus,
-  registerEnrollmentDevice,
   fetchDeviceDetail,
   updateDevice,
   deleteDevice,
@@ -17,7 +16,6 @@ import {
   fetchDeviceScanSummary,
   fetchLatestDeviceScan,
   fetchDeviceScans,
-  scanFile,
 } from "@/lib/api";
 import type {
   Device,
@@ -127,99 +125,10 @@ export default function DevicesPage() {
   const [timeLeft, setTimeLeft] = useState<number>(600);
   const [copySuccess, setCopySuccess] = useState(false);
   const [copyUrlSuccess, setCopyUrlSuccess] = useState(false);
-  const [modalAutoEnrolling, setModalAutoEnrolling] = useState(false);
-  const [batchEnrolling, setBatchEnrolling] = useState(false);
-
-  // ── Auto-scan SSE state (zero-touch) ──────────────────────────────────────
+  // SSE ref for enrollment status polling only (no auto-scan)
   const sseRef = useRef<EventSource | null>(null);
-  const [autoScanPhase, setAutoScanPhase] = useState<"idle" | "enrolling" | "waiting" | "scanning" | "done" | "error">("idle");
-  const [autoScanFile, setAutoScanFile] = useState("");
-  const [autoScanIndex, setAutoScanIndex] = useState(0);
-  const [autoScanTotal, setAutoScanTotal] = useState(0);
-  const [autoScanFindings, setAutoScanFindings] = useState(0);
-  const [autoScanError, setAutoScanError] = useState("");
 
-  // Auto-enroll the currently active modal session instantly
-  const handleAutoEnrollCurrentModal = async () => {
-    if (!enrollmentData?.enrollment_code) return;
-    setModalAutoEnrolling(true);
-    try {
-      const code = enrollmentData.enrollment_code;
-      const plat = selectedPlatform || "Windows";
-      const devName = `${plat}-Endpoint-${code.replace(/[^A-Z0-9]/g, "").slice(-4) || "01"}`;
-      const reg = await registerEnrollmentDevice({
-        enrollment_code: code,
-        device_name: devName,
-        platform: plat,
-        os_name: `${plat} Enterprise`,
-        hostname: `${plat.toUpperCase()}-NODE-${code.replace(/[^A-Z0-9]/g, "").slice(-4) || "01"}`,
-      });
-      setEnrolledDeviceName(devName);
-      setEnrollmentStatus("USED");
-      // ── START: Auto-scan immediately after enrollment ──
-      if (reg?.device_id) {
-        try { await triggerDeviceScan(reg.device_id); } catch { /* best effort */ }
-      }
-      await loadDevices(false);
-    } catch (err: unknown) {
-      console.error("Auto-enroll modal device error:", err);
-    } finally {
-      setModalAutoEnrolling(false);
-    }
-  };
 
-  // Detect the actual host platform from the browser
-  const detectHostPlatform = (): { platform: PlatformType; osName: string; hostname: string; osVersion: string } => {
-    const ua = navigator.userAgent.toLowerCase();
-    const plat = (navigator as any).userAgentData?.platform?.toLowerCase?.() || navigator.platform?.toLowerCase() || "";
-
-    // Extract OS version from user-agent string
-    let osVersion = "";
-    const winMatch = ua.match(/windows nt ([\d.]+)/);
-    const macMatch = ua.match(/mac os x ([\d_]+)/);
-    const androidMatch = ua.match(/android ([\d.]+)/);
-    if (winMatch) osVersion = `Windows ${winMatch[1] === "10.0" ? "10/11" : winMatch[1]}`;
-    else if (macMatch) osVersion = `macOS ${macMatch[1].replace(/_/g, ".")}`;
-    else if (androidMatch) osVersion = `Android ${androidMatch[1]}`;
-
-    if (ua.includes("android")) return { platform: "Android", osName: "Android", hostname: "ANDROID-DEVICE", osVersion: osVersion || "Android" };
-    if (ua.includes("iphone") || ua.includes("ipad") || ua.includes("ipod")) return { platform: "iOS", osName: "iOS", hostname: "IOS-DEVICE", osVersion: "iOS" };
-    if (plat.includes("mac") || ua.includes("macintosh")) return { platform: "macOS", osName: "macOS", hostname: "MAC-WORKSTATION", osVersion: osVersion || "macOS" };
-    if (plat.includes("linux") || ua.includes("linux")) return { platform: "Linux", osName: "Linux", hostname: "LINUX-WORKSTATION", osVersion: "Linux" };
-    return { platform: "Windows", osName: "Windows", hostname: "WINDOWS-WORKSTATION", osVersion: osVersion || "Windows 10/11" };
-  };
-
-  // Automatically provision and enroll this device (detected from the browser)
-  const handleAutoEnrollThisDevice = async () => {
-    setBatchEnrolling(true);
-    try {
-      const host = detectHostPlatform();
-      const tokenRes = await createEnrollmentToken(host.platform);
-      if (tokenRes?.enrollment_code) {
-        // Unique device name: platform + last 4 chars of code to avoid duplicates
-        const suffix = tokenRes.enrollment_code.replace(/[^A-Z0-9]/g, "").slice(-4) || "0001";
-        const deviceName = `${host.hostname}-${suffix}`;
-        const reg = await registerEnrollmentDevice({
-          enrollment_code: tokenRes.enrollment_code,
-          device_name: deviceName,
-          platform: host.platform,
-          os_name: host.osVersion,
-          os_version: host.osVersion,
-          hostname: deviceName,
-        });
-        // ── START: Auto-scan immediately after enrollment ──
-        if (reg?.device_id) {
-          try { await triggerDeviceScan(reg.device_id); } catch { /* best effort */ }
-        }
-      }
-      await loadDevices(true);
-    } catch (err: unknown) {
-      console.error("Auto-enroll error:", err);
-      alert(err instanceof Error ? err.message : "Auto-enrollment failed. Please try again.");
-    } finally {
-      setBatchEnrolling(false);
-    }
-  };
 
 
   // --- Device Details Modal state ---
@@ -286,7 +195,7 @@ export default function DevicesPage() {
     };
   }, []);
 
-  // --- Generate Enrollment Token + Auto Enroll + Auto Scan (Zero-Touch) ---
+  // --- Generate Enrollment Token (Manual) ---
   const handleGenerateEnrollment = async (mode: "easy" | "enterprise" | "standard" = "standard") => {
     setGeneratingCode(true);
     setError(null);
@@ -294,11 +203,6 @@ export default function DevicesPage() {
     setQrDataUrl(null);
     setEnrollmentStatus("PENDING");
     setEnrolledDeviceName(null);
-    setAutoScanPhase("idle");
-    setAutoScanIndex(0);
-    setAutoScanTotal(0);
-    setAutoScanFindings(0);
-    setAutoScanError("");
 
     // Close any existing SSE stream
     if (sseRef.current) { sseRef.current.close(); sseRef.current = null; }
@@ -327,81 +231,24 @@ export default function DevicesPage() {
         setQrDataUrl(qrUrl);
       } catch { /* QR optional */ }
 
-      // ── AUTO ENROLL + SCAN via SSE (zero-touch) ──────────────────────────
-      const envApi = process.env.NEXT_PUBLIC_API_URL?.trim();
-      const apiBase = (envApi && !envApi.includes("devtunnels.ms"))
-        ? envApi.replace(/\/+$/, "")
-        : "https://dataghost.onrender.com";
-      const sseUrl = `${apiBase}/api/devices/auto-enroll-scan?code=${encodeURIComponent(res.enrollment_code)}`;
-      setAutoScanPhase("enrolling");
-      const es = new EventSource(sseUrl);
-      sseRef.current = es;
-
-      es.onmessage = (ev) => {
-        let data: Record<string, unknown>;
-        try { data = JSON.parse(ev.data); } catch { return; }
-
-        switch (data.type) {
-          case "enrolled":
-          case "already_enrolled":
-            setEnrolledDeviceName(String(data.device_name ?? "New Device"));
+      // ── Poll enrollment status (waiting for real agent to enroll) ──
+      if (statusPollRef.current) clearInterval(statusPollRef.current);
+      statusPollRef.current = setInterval(async () => {
+        try {
+          const st = await fetchEnrollmentStatus(res.enrollment_code);
+          if (st.status === "USED") {
             setEnrollmentStatus("USED");
-            break;
-          case "waiting_for_agent":
-            setAutoScanPhase("waiting");
-            break;
-          case "scan_start":
-            setAutoScanPhase("scanning");
-            setAutoScanTotal(Number(data.total_files ?? 0));
-            break;
-          case "scanning_file":
-            setAutoScanFile(String(data.filename ?? ""));
-            setAutoScanIndex(Number(data.index ?? 0));
-            setAutoScanTotal(Number(data.total ?? 0));
-            break;
-          case "finding":
-            setAutoScanFindings((p) => p + 1);
-            break;
-          case "scan_complete":
-            setAutoScanPhase("done");
-            setAutoScanTotal(Number(data.files_scanned ?? 0));
-            setAutoScanIndex(Number(data.files_scanned ?? 0));
-            if (countdownRef.current) clearInterval(countdownRef.current);
+            setEnrolledDeviceName(st.device_name || "New Device");
             if (statusPollRef.current) clearInterval(statusPollRef.current);
+            if (countdownRef.current) clearInterval(countdownRef.current);
             loadDevices(false);
-            es.close();
-            break;
-          case "error":
-            setAutoScanPhase("error");
-            setAutoScanError(String(data.message ?? "Unknown error"));
-            es.close();
-            break;
-        }
-      };
-
-      es.onerror = () => {
-        // SSE failed (e.g. Render cold start) — fall back to normal poll
-        setAutoScanPhase("idle");
-        es.close();
-        // Fallback: regular status polling
-        if (statusPollRef.current) clearInterval(statusPollRef.current);
-        statusPollRef.current = setInterval(async () => {
-          try {
-            const st = await fetchEnrollmentStatus(res.enrollment_code);
-            if (st.status === "USED") {
-              setEnrollmentStatus("USED");
-              setEnrolledDeviceName(st.device_name || "New Device");
-              if (statusPollRef.current) clearInterval(statusPollRef.current);
-              if (countdownRef.current) clearInterval(countdownRef.current);
-              loadDevices(false);
-            } else if (st.status === "EXPIRED" || st.is_expired) {
-              setEnrollmentStatus("EXPIRED");
-              if (statusPollRef.current) clearInterval(statusPollRef.current);
-              if (countdownRef.current) clearInterval(countdownRef.current);
-            }
-          } catch { /* ignore */ }
-        }, 2000);
-      };
+          } else if (st.status === "EXPIRED" || st.is_expired) {
+            setEnrollmentStatus("EXPIRED");
+            if (statusPollRef.current) clearInterval(statusPollRef.current);
+            if (countdownRef.current) clearInterval(countdownRef.current);
+          }
+        } catch { /* ignore */ }
+      }, 3000);
 
       // Countdown timer
       if (countdownRef.current) clearInterval(countdownRef.current);
@@ -433,12 +280,6 @@ export default function DevicesPage() {
     setAddModalStep("platform");
     setCopySuccess(false);
     setCopyUrlSuccess(false);
-    setAutoScanPhase("idle");
-    setAutoScanFile("");
-    setAutoScanIndex(0);
-    setAutoScanTotal(0);
-    setAutoScanFindings(0);
-    setAutoScanError("");
     if (sseRef.current) { sseRef.current.close(); sseRef.current = null; }
     if (statusPollRef.current) clearInterval(statusPollRef.current);
     if (countdownRef.current) clearInterval(countdownRef.current);
@@ -768,21 +609,6 @@ export default function DevicesPage() {
               <span className="text-sm font-bold">+</span> Add Device
             </button>
 
-            <button
-              onClick={handleAutoEnrollThisDevice}
-              disabled={batchEnrolling}
-              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold text-white transition-all shadow-md hover:brightness-110 active:scale-95 disabled:opacity-50"
-              style={{
-                background: "linear-gradient(135deg, #10b981, #059669)",
-                border: "1px solid rgba(16,185,129,0.4)",
-              }}
-              title="Automatically enroll this browser/workstation into DataGhost"
-            >
-              <span>{batchEnrolling ? "⏳" : "⚡"}</span>
-              <span>{batchEnrolling ? "Enrolling..." : "Enroll This Device"}</span>
-            </button>
-
-
 
             <button
               onClick={() => loadDevices(true)}
@@ -950,17 +776,6 @@ export default function DevicesPage() {
                   }}
                 >
                   + Add Device
-                </button>
-                <button
-                  onClick={handleAutoEnrollThisDevice}
-                  disabled={batchEnrolling}
-                  className="px-5 py-2 rounded-lg text-xs font-semibold text-white transition-all shadow-md hover:brightness-110 active:scale-95 disabled:opacity-50"
-                  style={{
-                    background: "linear-gradient(135deg, #10b981, #059669)",
-                    border: "1px solid rgba(16,185,129,0.4)",
-                  }}
-                >
-                  {batchEnrolling ? "⏳ Enrolling..." : "⚡ Enroll This Device"}
                 </button>
               </div>
             </div>
@@ -1635,86 +1450,8 @@ export default function DevicesPage() {
               {/* ── Step 3: QR Code & Enrollment Code Display ─────────────────── */}
               {enrollmentData && (
                 <div className="flex flex-col items-center text-center space-y-4">
-                  {/* ── Auto-Scan Progress Panel (zero-touch) ── */}
-                  {autoScanPhase !== "idle" ? (
-                    <div className="w-full space-y-3">
-                      {/* Phase header */}
-                      {autoScanPhase === "enrolling" && (
-                        <div className="flex items-center gap-2 py-2 px-3 rounded-lg"
-                          style={{ background: "rgba(0,212,255,0.06)", border: "1px solid rgba(0,212,255,0.15)" }}>
-                          <div className="w-4 h-4 rounded-full border-2 border-t-cyan-400 border-cyan-400/20 animate-spin flex-shrink-0" />
-                          <p className="text-xs font-semibold" style={{ color: "#00d4ff" }}>Registering device securely…</p>
-                        </div>
-                      )}
-                      {autoScanPhase === "waiting" && (
-                        <div className="flex items-center gap-2 py-2 px-3 rounded-lg"
-                          style={{ background: "rgba(0,212,255,0.06)", border: "1px solid rgba(0,212,255,0.15)" }}>
-                          <div className="w-4 h-4 rounded-full border-2 border-t-cyan-400 border-cyan-400/20 animate-spin flex-shrink-0" />
-                          <p className="text-xs font-semibold" style={{ color: "#00d4ff" }}>Waiting for DataGhost Agent to connect</p>
-                        </div>
-                      )}
-                      {autoScanPhase === "scanning" && (
-                        <div className="space-y-2">
-                          <div className="flex items-center gap-2 py-2 px-3 rounded-lg"
-                            style={{ background: "rgba(52,208,88,0.06)", border: "1px solid rgba(52,208,88,0.18)" }}>
-                            <div className="w-4 h-4 rounded-full border-2 border-t-green-400 border-green-400/20 animate-spin flex-shrink-0" />
-                            <p className="text-xs font-semibold" style={{ color: "#34d058" }}>
-                              🔍 Scanning — {autoScanIndex}/{autoScanTotal} files
-                              {autoScanFindings > 0 && (
-                                <span className="ml-2 px-1.5 rounded font-bold"
-                                  style={{ background: "rgba(255,159,10,0.15)", color: "#ff9f0a" }}>
-                                  ⚠ {autoScanFindings} findings
-                                </span>
-                              )}
-                            </p>
-                          </div>
-                          {/* Progress bar with Starting & Ending Points */}
-                          <div className="space-y-1">
-                            <div className="h-2 rounded-full overflow-hidden" style={{ background: "#0a1628", border: "1px solid rgba(255,255,255,0.05)" }}>
-                              <div
-                                className="h-full rounded-full transition-all duration-300"
-                                style={{
-                                  width: autoScanTotal > 0 ? `${Math.max(5, Math.min(100, Math.round((autoScanIndex / autoScanTotal) * 100)))}%` : "5%",
-                                  background: "linear-gradient(90deg, #00d4ff 0%, #34d058 100%)",
-                                  boxShadow: "0 0 10px rgba(0,212,255,0.5)",
-                                }}
-                              />
-                            </div>
-                            <div className="flex justify-between items-center text-[10px] text-slate-400 font-mono px-0.5">
-                              <span>🟢 Start: File 1</span>
-                              <span className="text-cyan-400 font-semibold">{autoScanTotal > 0 ? `${Math.round((autoScanIndex / autoScanTotal) * 100)}%` : "0%"}</span>
-                              <span>🏁 End: File {autoScanTotal}</span>
-                            </div>
-                          </div>
-                          {/* Current file */}
-                          {autoScanFile && (
-                            <p className="text-[10px] font-mono truncate text-left px-1 py-0.5 rounded bg-slate-900/60 border border-slate-800 text-slate-300">
-                              ▶ Current: {autoScanFile}
-                            </p>
-                          )}
-                        </div>
-                      )}
-                      {autoScanPhase === "done" && (
-                        <div className="py-3 px-4 rounded-xl text-center space-y-1"
-                          style={{ background: "rgba(52,208,88,0.1)", border: "1px solid rgba(52,208,88,0.3)", color: "#34d058" }}>
-                          <p className="text-sm font-bold">✅ Enrolled &amp; Scanned!</p>
-                          <p className="text-xs" style={{ color: "#94a3b8" }}>
-                            <strong style={{ color: "#fff" }}>{enrolledDeviceName}</strong> —{" "}
-                            {autoScanTotal} files scanned,{" "}
-                            <span style={{ color: autoScanFindings > 0 ? "#ff9f0a" : "#34d058" }}>
-                              {autoScanFindings} findings
-                            </span>
-                          </p>
-                        </div>
-                      )}
-                      {autoScanPhase === "error" && (
-                        <div className="py-2 px-3 rounded-lg text-xs"
-                          style={{ background: "rgba(255,59,59,0.07)", border: "1px solid rgba(255,59,59,0.2)", color: "#ff6b6b" }}>
-                          ⚠ {autoScanError || "Auto-scan failed — device may still be registered."}
-                        </div>
-                      )}
-                    </div>
-                  ) : enrollmentStatus === "USED" ? (
+                  {/* Enrollment status banners */}
+                  {enrollmentStatus === "USED" ? (
                     <div
                       className="w-full py-3 px-4 rounded-xl text-center space-y-1"
                       style={{ background: "rgba(52,208,88,0.1)", border: "1px solid rgba(52,208,88,0.3)", color: "#34d058" }}
@@ -1798,22 +1535,9 @@ export default function DevicesPage() {
                       <div className="flex items-center gap-2 mt-3">
                         <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
                         <span className="text-[11px] font-semibold text-cyan-400">
-                          Waiting for device...
+                          Waiting for agent to enroll this device…
                         </span>
                       </div>
-
-                      <button
-                        type="button"
-                        onClick={handleAutoEnrollCurrentModal}
-                        disabled={modalAutoEnrolling}
-                        className="mt-3 px-3.5 py-1.5 rounded-lg text-xs font-semibold text-white transition-all shadow hover:brightness-110 active:scale-95 disabled:opacity-50"
-                        style={{
-                          background: "linear-gradient(135deg, #10b981, #059669)",
-                          border: "1px solid rgba(16,185,129,0.3)",
-                        }}
-                      >
-                        {modalAutoEnrolling ? "⏳ Enrolling & Activating..." : "⚡ Instantly Activate This Device Now"}
-                      </button>
 
                     </div>
                   )}
