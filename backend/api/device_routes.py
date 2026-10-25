@@ -675,6 +675,45 @@ def register_with_enrollment(
     if exp.tzinfo is None:
         exp = exp.replace(tzinfo=timezone.utc)
 
+    if enrollment.status == "USED":
+        # Token was already consumed by the browser SSE enrollment flow.
+        # Look up the device that was already created and return it to the agent.
+        existing_device = (
+            db.query(Device).filter(Device.device_id == enrollment.device_id).first()
+            if enrollment.device_id
+            else None
+        )
+        if existing_device:
+            # Issue a fresh agent auth token bound to this device
+            device_token = f"dg_dev_{secrets.token_urlsafe(32)}"
+            token_hash = hashlib.sha256(device_token.encode("utf-8")).hexdigest()
+            existing_device.device_token_hash = token_hash
+            existing_device.status = "ACTIVE"
+            existing_device.last_seen = now
+            db.commit()
+            logger.info(
+                "Agent re-enrolled already-registered device %s via USED token",
+                existing_device.device_id,
+            )
+            return EnrollmentRegisterResponse(
+                device_id=existing_device.device_id,
+                device_name=existing_device.device_name,
+                platform=existing_device.platform,
+                status="ACTIVE",
+                auth_token=device_token,
+                heartbeat_interval_seconds=30,
+                server_time=now,
+                message=(
+                    "Device was already enrolled via web browser. "
+                    "Agent now linked to the same device record. "
+                    "Ready to scan."
+                ),
+            )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Enrollment token already used but the linked device was not found. Please generate a new enrollment code.",
+        )
+
     if enrollment.status != "PENDING":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
