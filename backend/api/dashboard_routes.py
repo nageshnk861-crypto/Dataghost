@@ -100,7 +100,7 @@ def dashboard_stats(
         )
 
     else:
-        # Analyst: scoped to user's owned devices
+        # Analyst: scoped to user's owned devices plus web-console scans
         allowed_device_ids = _analyst_device_ids(db, current_user)
 
         protected_devices = (
@@ -112,65 +112,67 @@ def dashboard_stats(
             .count()
         )
 
+        # Base scan query for analyst: their devices OR scans performed by their user_id
+        scan_conditions = [ScanLog.user_id == current_user.id]
         if allowed_device_ids:
-            # Count scans on analyst's permitted devices
+            scan_conditions.append(ScanLog.device_id.in_(allowed_device_ids))
+
+        incident_conditions = [
+            Incident.user == current_user.username,
+        ]
+        if allowed_device_ids:
+            incident_conditions.append(Incident.device_id.in_(allowed_device_ids))
+
+        files_scanned = (
+            db.query(ScanLog)
+            .filter(
+                ScanLog.status == "COMPLETED",
+                or_(*scan_conditions),
+            )
+            .count()
+        )
+        if files_scanned == 0:
             files_scanned = (
-                db.query(ScanLog)
-                .filter(
-                    ScanLog.status == "COMPLETED",
-                    ScanLog.device_id.in_(allowed_device_ids),
-                )
-                .count()
-            )
-            # Fall back to device-level counter
-            if files_scanned == 0:
-                files_scanned = (
-                    db.query(func.sum(Device.files_scanned))
-                    .filter(Device.user_id == current_user.id)
-                    .scalar()
-                    or 0
-                )
-
-            sensitive_files = (
-                db.query(ScanLog)
-                .filter(
-                    or_(ScanLog.risk_score >= 30, ScanLog.findings_count > 0),
-                    ScanLog.device_id.in_(allowed_device_ids),
-                )
-                .count()
+                db.query(func.sum(Device.files_scanned))
+                .filter(Device.user_id == current_user.id)
+                .scalar()
+                or 0
             )
 
-            blocked_transfers = (
-                db.query(Incident)
-                .filter(
-                    Incident.action_taken.in_(["BLOCKED", "ALERTED"]),
-                    Incident.device_id.in_(allowed_device_ids),
-                )
-                .count()
+        sensitive_files = (
+            db.query(ScanLog)
+            .filter(
+                or_(ScanLog.risk_score >= 30, ScanLog.findings_count > 0),
+                or_(*scan_conditions),
             )
+            .count()
+        )
 
-            critical_incidents = (
-                db.query(Incident)
-                .filter(
-                    Incident.severity == "CRITICAL",
-                    Incident.device_id.in_(allowed_device_ids),
-                )
-                .count()
+        blocked_transfers = (
+            db.query(Incident)
+            .filter(
+                Incident.action_taken.in_(["BLOCKED", "ALERTED"]),
+                or_(*incident_conditions),
             )
+            .count()
+        )
 
-            top_incidents = (
-                db.query(Incident)
-                .filter(Incident.device_id.in_(allowed_device_ids))
-                .order_by(Incident.risk_score.desc())
-                .limit(5)
-                .all()
+        critical_incidents = (
+            db.query(Incident)
+            .filter(
+                Incident.severity == "CRITICAL",
+                or_(*incident_conditions),
             )
-        else:
-            files_scanned = 0
-            sensitive_files = 0
-            blocked_transfers = 0
-            critical_incidents = 0
-            top_incidents = []
+            .count()
+        )
+
+        top_incidents = (
+            db.query(Incident)
+            .filter(or_(*incident_conditions))
+            .order_by(Incident.risk_score.desc())
+            .limit(5)
+            .all()
+        )
 
     recent_threats = [
         ThreatItem(
@@ -234,10 +236,21 @@ def dashboard_activity(
             Incident.action_taken.in_(["BLOCKED", "ALERTED"]),
         )
 
-        if allowed_device_ids is not None:
-            scan_q = scan_q.filter(ScanLog.device_id.in_(allowed_device_ids))
-            sensitive_q = sensitive_q.filter(ScanLog.device_id.in_(allowed_device_ids))
-            blocked_q = blocked_q.filter(Incident.device_id.in_(allowed_device_ids))
+        if not is_admin:
+            scan_conditions = [ScanLog.user_id == current_user.id]
+            if allowed_device_ids:
+                scan_conditions.append(ScanLog.device_id.in_(allowed_device_ids))
+            scan_q = scan_q.filter(or_(*scan_conditions))
+
+            sensitive_conditions = [ScanLog.user_id == current_user.id]
+            if allowed_device_ids:
+                sensitive_conditions.append(ScanLog.device_id.in_(allowed_device_ids))
+            sensitive_q = sensitive_q.filter(or_(*sensitive_conditions))
+
+            incident_conditions = [Incident.user == current_user.username]
+            if allowed_device_ids:
+                incident_conditions.append(Incident.device_id.in_(allowed_device_ids))
+            blocked_q = blocked_q.filter(or_(*incident_conditions))
 
         result.append(
             ActivityDataPoint(

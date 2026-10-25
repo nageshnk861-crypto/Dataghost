@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from auth import get_current_user, require_admin
@@ -126,11 +127,10 @@ def list_incidents(
     # RBAC scope filter – applied BEFORE any user-supplied filters.
     if current_user.role != "admin":
         allowed_ids = _allowed_device_ids_for_analyst(db, current_user)
+        conditions = [Incident.user == current_user.username]
         if allowed_ids:
-            q = q.filter(Incident.device_id.in_(allowed_ids))
-        else:
-            # Analyst has no accessible devices → return empty result set
-            return IncidentListResponse(items=[], total=0, page=page, per_page=per_page, pages=0)
+            conditions.append(Incident.device_id.in_(allowed_ids))
+        q = q.filter(or_(*conditions))
 
     if status_filter:
         norm_status = status_filter.strip().upper()
@@ -203,10 +203,11 @@ def get_incident(
             detail=f"Incident '{incident_id}' not found",
         )
 
-    # RBAC: analysts may only access incidents for their allowed devices.
+    # RBAC: analysts may only access incidents for their allowed devices or user account.
     if current_user.role != "admin":
         allowed_ids = _allowed_device_ids_for_analyst(db, current_user)
-        if incident.device_id and incident.device_id not in allowed_ids:
+        is_owner = (incident.user == current_user.username) or (incident.device_id and incident.device_id in allowed_ids)
+        if not is_owner:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Access to this incident is not permitted",
@@ -245,10 +246,11 @@ def update_incident_status(
             detail=f"Incident '{incident_id}' not found",
         )
 
-    # RBAC: analysts may only update incidents for their allowed devices.
+    # RBAC: analysts may only update incidents for their allowed devices or user account.
     if current_user.role != "admin":
         allowed_ids = _allowed_device_ids_for_analyst(db, current_user)
-        if incident.device_id and incident.device_id not in allowed_ids:
+        is_owner = (incident.user == current_user.username) or (incident.device_id and incident.device_id in allowed_ids)
+        if not is_owner:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Access to this incident is not permitted",
