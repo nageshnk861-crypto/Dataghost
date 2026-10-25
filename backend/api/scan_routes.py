@@ -214,9 +214,14 @@ def _process_scan(
     # 5. Determine effective file size
     effective_size = file_size_override if file_size_override is not None else len(content)
 
-    # 6. Risk score calculation
+    # 6. Risk score calculation — use ALL findings (detector + DLP merged)
+    # Build a findings-like list from masked_findings for the risk engine
+    all_findings_for_risk = [
+        {"severity": mf.severity, "category": mf.category, "rule": mf.rule}
+        for mf in masked_findings
+    ]
     risk_result = _risk_calc.calculate(
-        findings=raw_findings,
+        findings=all_findings_for_risk,
         classification=classification,
         confidence=confidence,
         destination=destination,
@@ -416,6 +421,9 @@ def _process_scan(
 
 
 
+    # decision_score: confidence-weighted normalised risk (0.0–1.0)
+    decision_score = round((risk_result.risk_score / 100.0) * confidence, 4)
+
     return ScanResponse(
         scan_id=scan_id,
         filename=filename,
@@ -430,6 +438,7 @@ def _process_scan(
         classification=classification,
         confidence=confidence,
         risk_score=risk_result.risk_score,
+        decision_score=decision_score,
         severity=risk_result.severity,
         recommended_action=risk_result.recommended_action,
         action_taken=risk_result.action_taken,

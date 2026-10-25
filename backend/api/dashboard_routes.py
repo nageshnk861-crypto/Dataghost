@@ -18,7 +18,7 @@ SECURITY: Role is loaded from the database via get_current_user.
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from auth import get_current_user
@@ -59,17 +59,30 @@ def dashboard_stats(
     if is_admin:
         # Admin: full system-wide view
         protected_devices = db.query(Device).filter(Device.status == "ACTIVE").count()
-        files_scanned = db.query(func.sum(Device.files_scanned)).scalar() or 0
 
+        # Count completed scans from ScanLog for accuracy across all scan sources
+        files_scanned = (
+            db.query(ScanLog)
+            .filter(ScanLog.status == "COMPLETED")
+            .count()
+        )
+        # Fall back to device-level counter if ScanLog is empty (legacy deployments)
+        if files_scanned == 0:
+            files_scanned = db.query(func.sum(Device.files_scanned)).scalar() or 0
+
+        # Sensitive files: any scan that found something (findings_count > 0) OR risk >= 30
         sensitive_files = (
             db.query(ScanLog)
-            .filter(ScanLog.risk_score >= 30)
+            .filter(
+                or_(ScanLog.risk_score >= 30, ScanLog.findings_count > 0)
+            )
             .count()
         )
 
+        # Security events: BLOCKED (critical) + ALERTED (medium/high) incidents
         blocked_transfers = (
             db.query(Incident)
-            .filter(Incident.action_taken == "BLOCKED")
+            .filter(Incident.action_taken.in_(["BLOCKED", "ALERTED"]))
             .count()
         )
 
@@ -99,18 +112,29 @@ def dashboard_stats(
             .count()
         )
 
-        files_scanned = (
-            db.query(func.sum(Device.files_scanned))
-            .filter(Device.user_id == current_user.id)
-            .scalar()
-            or 0
-        )
-
         if allowed_device_ids:
+            # Count scans on analyst's permitted devices
+            files_scanned = (
+                db.query(ScanLog)
+                .filter(
+                    ScanLog.status == "COMPLETED",
+                    ScanLog.device_id.in_(allowed_device_ids),
+                )
+                .count()
+            )
+            # Fall back to device-level counter
+            if files_scanned == 0:
+                files_scanned = (
+                    db.query(func.sum(Device.files_scanned))
+                    .filter(Device.user_id == current_user.id)
+                    .scalar()
+                    or 0
+                )
+
             sensitive_files = (
                 db.query(ScanLog)
                 .filter(
-                    ScanLog.risk_score >= 30,
+                    or_(ScanLog.risk_score >= 30, ScanLog.findings_count > 0),
                     ScanLog.device_id.in_(allowed_device_ids),
                 )
                 .count()
@@ -119,7 +143,7 @@ def dashboard_stats(
             blocked_transfers = (
                 db.query(Incident)
                 .filter(
-                    Incident.action_taken == "BLOCKED",
+                    Incident.action_taken.in_(["BLOCKED", "ALERTED"]),
                     Incident.device_id.in_(allowed_device_ids),
                 )
                 .count()
@@ -142,6 +166,7 @@ def dashboard_stats(
                 .all()
             )
         else:
+            files_scanned = 0
             sensitive_files = 0
             blocked_transfers = 0
             critical_incidents = 0
@@ -201,12 +226,12 @@ def dashboard_activity(
         sensitive_q = db.query(ScanLog).filter(
             ScanLog.timestamp >= day_start,
             ScanLog.timestamp <= day_end,
-            ScanLog.risk_score >= 30,
+            or_(ScanLog.risk_score >= 30, ScanLog.findings_count > 0),
         )
         blocked_q = db.query(Incident).filter(
             Incident.timestamp >= day_start,
             Incident.timestamp <= day_end,
-            Incident.action_taken == "BLOCKED",
+            Incident.action_taken.in_(["BLOCKED", "ALERTED"]),
         )
 
         if allowed_device_ids is not None:

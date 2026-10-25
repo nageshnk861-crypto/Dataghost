@@ -525,8 +525,10 @@ export async function GET(request: NextRequest, { params }: { params: { path: st
   if (pathStr === "/dashboard/stats") {
     const totalFilesScanned = devicesStore.reduce((acc, d) => acc + (d.files_scanned || d.total_scans || 0), 0);
     const activeCount = devicesStore.filter((d) => d.status === "ACTIVE").length;
-    const sensitiveFiles = devicesStore.reduce((acc, d) => acc + (d.sensitive_files_count || 0), 0) || incidentsStore.length;
-    const blockedTransfers = incidentsStore.filter((i) => i.action_taken === "BLOCKED").length;
+    // sensitive_files: scans with any findings (matches real backend: findings_count > 0 OR risk >= 30)
+    const sensitiveFiles = incidentsStore.length || devicesStore.reduce((acc, d) => acc + (d.sensitive_files_count || 0), 0);
+    // security events: BLOCKED + ALERTED (matches real backend)
+    const blockedTransfers = incidentsStore.filter((i) => i.action_taken === "BLOCKED" || i.action_taken === "ALERTED").length;
     const criticalIncidents = incidentsStore.filter((i) => i.severity === "CRITICAL").length;
 
     const recentThreats = incidentsStore.slice(0, 5).map((i) => ({
@@ -1186,7 +1188,8 @@ export async function POST(request: NextRequest, { params }: { params: { path: s
       is_simulated: false,
       score: res.risk_score,
       risk_score: res.risk_score,
-      decision_score: res.risk_score,
+      // decision_score: confidence-weighted normalised 0.0–1.0 (matches real backend)
+      decision_score: parseFloat((res.risk_score / 100).toFixed(4)),
       severity: res.severity,
       classification: res.classification,
       recommended_action: res.action_taken === "BLOCKED" ? "BLOCK" : res.action_taken === "ALERTED" ? "ALERT" : "ALLOW",
@@ -1199,6 +1202,7 @@ export async function POST(request: NextRequest, { params }: { params: { path: s
         severity: f.severity,
         matched_text: f.matched_text,
         sample_match: f.matched_text,
+        matches_count: f.matches_count ?? 1,
         detail: f.detail,
       })),
       incident_id: incidentId,

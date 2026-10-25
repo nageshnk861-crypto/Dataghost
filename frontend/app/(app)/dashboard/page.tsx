@@ -199,18 +199,18 @@ export default function DashboardPage() {
     {
       label: "Sensitive Files",
       value: (stats?.sensitive_files ?? 0).toLocaleString(),
-      sub: "Risk score ≥ 30",
+      sub: "With findings detected",
       icon: "⚠",
       color: "#f59e0b",
       href: "/incidents",
     },
     {
-      label: "Blocked Transfers",
+      label: "Security Events",
       value: (stats?.blocked_transfers ?? 0).toLocaleString(),
-      sub: "Prevented leaks",
+      sub: "Blocked + Alerted",
       icon: "🚫",
       color: "#ef4444",
-      href: "/incidents?action_taken=BLOCKED",
+      href: "/incidents",
     },
     {
       label: "Critical Incidents",

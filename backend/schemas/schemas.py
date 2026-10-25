@@ -46,11 +46,23 @@ Finding = FindingSchema
 
 class ScanFinding(BaseModel):
     rule: str
+    # rule_name mirrors `rule` so the frontend can use either field name
+    rule_name: Optional[str] = None
     category: str
     severity: str
     start: Optional[int] = None
     end: Optional[int] = None
     matched_text: str      # Masked sensitive text
+    # sample_match mirrors matched_text for frontend ScanResult compatibility
+    sample_match: Optional[str] = None
+    matches_count: int = 1
+
+    def model_post_init(self, __context: Any) -> None:  # type: ignore[override]
+        """Populate alias fields so both old and new frontend consumers work."""
+        if self.rule_name is None:
+            object.__setattr__(self, 'rule_name', self.rule)
+        if self.sample_match is None:
+            object.__setattr__(self, 'sample_match', self.matched_text)
 
 
 class ScanRequest(BaseModel):
@@ -79,6 +91,8 @@ class ScanResponse(BaseModel):
     classification: str = "INTERNAL"          # PUBLIC | INTERNAL | CONFIDENTIAL | RESTRICTED
     confidence: float = 1.0
     risk_score: int = 0
+    # decision_score: normalised 0.0-1.0 score combining risk_score and confidence
+    decision_score: float = 0.0
     severity: str = "LOW"                 # LOW | MEDIUM | HIGH | CRITICAL
     recommended_action: str = "REVIEW"   # never default to ALLOW
     action_taken: str = "NOT_SCANNED"       # never default to ALLOWED

@@ -310,7 +310,7 @@ export default function ScannerPage() {
             rule_name: f.rule_name ?? f.rule ?? "UNKNOWN",
             category: f.category ?? "",
             severity: f.severity ?? "LOW",
-            matches_count: f.matches_count ?? 0,
+            matches_count: f.matches_count ?? 1,
             sample_match: f.sample_match ?? f.matched_text,
           })),
           incident_id: data.incident_id,
