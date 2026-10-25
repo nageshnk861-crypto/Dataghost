@@ -245,12 +245,13 @@ export default function DevicesPage() {
     setIsWakingUp(false);
     try {
       const data = await fetchDevices();
-      setDevices(data);
+      const deviceList = Array.isArray(data) ? data : (Array.isArray((data as any)?.items) ? (data as any).items : []);
+      setDevices(deviceList);
 
       // Concurrently fetch latest scan session for each device
       const scanMap: Record<string, ScanSession> = {};
       await Promise.allSettled(
-        (data || []).map(async (dev) => {
+        deviceList.map(async (dev: Device) => {
           const devId = dev.device_id || String(dev.id);
           try {
             const scan = await fetchLatestDeviceScan(devId);
@@ -1627,20 +1628,28 @@ export default function DevicesPage() {
                               )}
                             </p>
                           </div>
-                          {/* Progress bar */}
-                          <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "#0a1628" }}>
-                            <div
-                              className="h-full rounded-full transition-all duration-300"
-                              style={{
-                                width: autoScanTotal > 0 ? `${Math.round((autoScanIndex / autoScanTotal) * 100)}%` : "5%",
-                                background: "linear-gradient(90deg,#00d4ff,#34d058)",
-                              }}
-                            />
+                          {/* Progress bar with Starting & Ending Points */}
+                          <div className="space-y-1">
+                            <div className="h-2 rounded-full overflow-hidden" style={{ background: "#0a1628", border: "1px solid rgba(255,255,255,0.05)" }}>
+                              <div
+                                className="h-full rounded-full transition-all duration-300"
+                                style={{
+                                  width: autoScanTotal > 0 ? `${Math.max(5, Math.min(100, Math.round((autoScanIndex / autoScanTotal) * 100)))}%` : "5%",
+                                  background: "linear-gradient(90deg, #00d4ff 0%, #34d058 100%)",
+                                  boxShadow: "0 0 10px rgba(0,212,255,0.5)",
+                                }}
+                              />
+                            </div>
+                            <div className="flex justify-between items-center text-[10px] text-slate-400 font-mono px-0.5">
+                              <span>🟢 Start: File 1</span>
+                              <span className="text-cyan-400 font-semibold">{autoScanTotal > 0 ? `${Math.round((autoScanIndex / autoScanTotal) * 100)}%` : "0%"}</span>
+                              <span>🏁 End: File {autoScanTotal}</span>
+                            </div>
                           </div>
                           {/* Current file */}
                           {autoScanFile && (
-                            <p className="text-[10px] font-mono truncate text-left" style={{ color: "#475569" }}>
-                              ▶ {autoScanFile}
+                            <p className="text-[10px] font-mono truncate text-left px-1 py-0.5 rounded bg-slate-900/60 border border-slate-800 text-slate-300">
+                              ▶ Current: {autoScanFile}
                             </p>
                           )}
                         </div>

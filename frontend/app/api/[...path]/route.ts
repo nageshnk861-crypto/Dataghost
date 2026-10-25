@@ -446,10 +446,23 @@ async function tryProxyToBackend(
     return r.status === 502 || r.status === 503 || r.status === 504;
   }
 
+  function makeProxyResponse(r: Response): NextResponse {
+    const respHeaders = new Headers(r.headers);
+    // Remove headers that conflict when body is decompressed or piped by runtime
+    respHeaders.delete("content-encoding");
+    respHeaders.delete("content-length");
+    respHeaders.delete("transfer-encoding");
+    return new NextResponse(r.body, {
+      status: r.status,
+      statusText: r.statusText,
+      headers: respHeaders,
+    });
+  }
+
   // ── Attempt 1 ──
   try {
     const r = await attempt();
-    if (!isRetryable(r)) return new NextResponse(r.body, { status: r.status, headers: r.headers });
+    if (!isRetryable(r)) return makeProxyResponse(r);
   } catch {
     // Network error / timeout — fall through to retry.
   }
@@ -458,7 +471,7 @@ async function tryProxyToBackend(
   await new Promise<void>((resolve) => setTimeout(resolve, 1000));
   try {
     const r = await attempt();
-    if (!isRetryable(r)) return new NextResponse(r.body, { status: r.status, headers: r.headers });
+    if (!isRetryable(r)) return makeProxyResponse(r);
   } catch {
     // Still unreachable after retry.
   }

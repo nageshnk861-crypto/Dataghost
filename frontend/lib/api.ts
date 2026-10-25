@@ -253,15 +253,26 @@ export interface ScanTextPayload {
 // ─── Helper for handling API responses ─────────────────────────────────────────
 
 async function handleResponse<T>(res: Response, endpoint: string): Promise<T> {
+  const text = await res.text();
+  let data: any = null;
+  if (text && text.trim().length > 0) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      // not valid JSON
+    }
+  }
+
   if (res.ok) {
-    return res.json();
+    if (data !== null) return data as T;
+    // If 204 or empty response on 200, return empty object / array if expected
+    return (text as unknown) as T;
   }
   let detail = "";
-  try {
-    const data = await res.json();
+  if (data) {
     detail = data.detail || data.message || "";
-  } catch {
-    // Ignore JSON parsing failure
+  } else if (text && text.length < 200) {
+    detail = text;
   }
   const isDev = process.env.NODE_ENV !== "production";
   const devInfo = isDev ? ` [Endpoint: ${endpoint} | HTTP ${res.status}]` : "";
