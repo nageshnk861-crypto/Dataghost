@@ -32,12 +32,18 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 def _analyst_device_ids(db: Session, current_user: User) -> list[str]:
     """Return the list of device_ids that analysts are allowed to see.
 
-    Access model: analysts may view their own owned devices.
+    Access model: analysts may view their own owned devices and shared org/demo devices.
     Admins bypass this function entirely and query all devices.
     """
     devices = (
         db.query(Device.device_id)
-        .filter(Device.user_id == current_user.id)
+        .filter(
+            or_(
+                Device.user_id == current_user.id,
+                Device.user_id == 1,
+                Device.device_id.like("DGD-%"),
+            )
+        )
         .all()
     )
     return [d.device_id for d in devices]

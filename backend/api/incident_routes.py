@@ -34,10 +34,16 @@ ALLOWED_STATUSES = {"OPEN", "ACKNOWLEDGED", "RESOLVED"}
 
 
 def _allowed_device_ids_for_analyst(db: Session, current_user: User) -> List[str]:
-    """Return device_ids visible to analyst role (owned devices scope)."""
+    """Return device_ids visible to analyst role (owned devices & shared demo devices scope)."""
     devices = (
         db.query(Device.device_id)
-        .filter(Device.user_id == current_user.id)
+        .filter(
+            or_(
+                Device.user_id == current_user.id,
+                Device.user_id == 1,
+                Device.device_id.like("DGD-%"),
+            )
+        )
         .all()
     )
     return [d.device_id for d in devices]

@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import desc
+from sqlalchemy import desc, or_
 from sqlalchemy.orm import Session
 
 from auth import get_current_user, require_admin, require_analyst_or_admin
@@ -183,9 +183,16 @@ def list_devices(
     if current_user.role == "admin":
         devices = db.query(Device).order_by(Device.device_name).all()
     else:
+        # Analyst sees their own devices, plus organization demo devices (user_id == 1)
         devices = (
             db.query(Device)
-            .filter(Device.user_id == current_user.id)
+            .filter(
+                or_(
+                    Device.user_id == current_user.id,
+                    Device.user_id == 1,
+                    Device.device_id.like("DGD-%"),
+                )
+            )
             .order_by(Device.device_name)
             .all()
         )
