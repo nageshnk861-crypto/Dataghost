@@ -166,120 +166,157 @@ export default function EnrollPage() {
   const addLog = (msg: string) =>
     setLogLines((prev) => [...prev.slice(-60), msg]);
 
-  // ── Auto-start SSE stream on mount ──────────────────────────────────────────
-  useEffect(() => {
+  // ── Auto-start SSE stream on mount with intelligent retry ──────────────────
+  const [retryCount, setRetryCount] = useState(0);
+
+  const startStream = () => {
     if (!code) {
       setErrorMsg("No enrollment code in URL.");
       setPhase("error");
       return;
     }
 
-    const url = `${getApiBase()}/api/devices/auto-enroll-scan?code=${encodeURIComponent(code)}`;
-    addLog(`[00:00] Connecting to DataGhost server…`);
+    if (evtRef.current) {
+      evtRef.current.close();
+      evtRef.current = null;
+    }
 
-    const es = new EventSource(url);
-    evtRef.current = es;
+    setPhase("connecting");
+    setErrorMsg("");
+    const apiBase = getApiBase();
+    // In browser, try relative path first if same origin, or fallback to apiBase
+    const url = `${apiBase}/api/devices/auto-enroll-scan?code=${encodeURIComponent(code)}`;
+    addLog(`[${new Date().toLocaleTimeString()}] Connecting to DataGhost server…`);
 
-    es.onmessage = (ev) => {
-      let data: SseEvent;
-      try { data = JSON.parse(ev.data); } catch { return; }
+    let retryTimer: NodeJS.Timeout | null = null;
+    let attempts = 0;
+    const maxAttempts = 6;
 
-      const ts = new Date().toLocaleTimeString();
+    const connect = () => {
+      attempts++;
+      const es = new EventSource(url);
+      evtRef.current = es;
 
-      switch (data.type) {
-        case "connected":
-          addLog(`[${ts}] ✓ Connected`);
-          setPhase("enrolling");
-          break;
+      es.onmessage = (ev) => {
+        let data: SseEvent;
+        try { data = JSON.parse(ev.data); } catch { return; }
 
-        case "enrolling":
-          addLog(`[${ts}] ⟳ Validating code ${data.enrollment_code}…`);
-          setPhase("enrolling");
-          break;
+        const ts = new Date().toLocaleTimeString();
 
-        case "enrolled":
-        case "already_enrolled": {
-          const did = String(data.device_id ?? "");
-          const dn  = String(data.device_name ?? "");
-          const plt = String(data.platform ?? "");
-          setDeviceId(did);
-          setDeviceName(dn);
-          setPlatform(plt);
-          addLog(`[${ts}] ✓ Enrolled — ${dn} (${did})`);
-          setPhase("enrolled");
-          break;
+        switch (data.type) {
+          case "connected":
+            addLog(`[${ts}] ✓ Connected to server`);
+            setPhase("enrolling");
+            break;
+
+          case "enrolling":
+            addLog(`[${ts}] ⟳ Validating code ${data.enrollment_code}…`);
+            setPhase("enrolling");
+            break;
+
+          case "enrolled":
+          case "already_enrolled": {
+            const did = String(data.device_id ?? "");
+            const dn  = String(data.device_name ?? "");
+            const plt = String(data.platform ?? "");
+            setDeviceId(did);
+            setDeviceName(dn);
+            setPlatform(plt);
+            addLog(`[${ts}] ✓ Enrolled — ${dn} (${did})`);
+            setPhase("enrolled");
+            break;
+          }
+
+          case "scan_start": {
+            const tot = Number(data.total_files ?? 0);
+            setTotalFiles(tot);
+            addLog(`[${ts}] 🔍 Scan started — File 1 to File ${tot}`);
+            setPhase("scanning");
+            break;
+          }
+
+          case "scanning_file": {
+            const fn  = String(data.filename ?? "");
+            const idx = Number(data.index ?? 0);
+            const tot = Number(data.total ?? 0);
+            setCurrentFile(fn);
+            setFileIndex(idx);
+            setTotalFiles(tot);
+            if (idx % 10 === 0 || idx === 1 || idx === tot)
+              addLog(`[${ts}] [${idx}/${tot}] ${fn}`);
+            break;
+          }
+
+          case "finding": {
+            const f: FindingAlert = {
+              filename: String(data.filename ?? ""),
+              severity: String(data.severity ?? "LOW"),
+              category: String(data.category ?? ""),
+              description: String(data.description ?? ""),
+            };
+            setFindings((prev) => [f, ...prev].slice(0, 50));
+            addLog(`[${ts}] ⚠ ${f.severity}: ${f.filename} — ${f.category}`);
+            break;
+          }
+
+          case "scan_complete": {
+            const stats = {
+              files:     Number(data.files_scanned ?? 0),
+              findings:  Number(data.findings ?? 0),
+              incidents: Number(data.incidents ?? 0),
+            };
+            setFinalStats(stats);
+            addLog(`[${ts}] ✅ Done — ${stats.files} files, ${stats.findings} findings, ${stats.incidents} incidents`);
+            setPhase("done");
+            es.close();
+            break;
+          }
+
+          case "error":
+            setErrorMsg(String(data.message ?? "Unknown error"));
+            setPhase("error");
+            addLog(`[${ts}] ✗ Error: ${data.message}`);
+            es.close();
+            break;
+
+          case "expired":
+            setPhase("expired");
+            es.close();
+            break;
         }
+      };
 
-        case "scan_start": {
-          const tot = Number(data.total_files ?? 0);
-          setTotalFiles(tot);
-          addLog(`[${ts}] 🔍 Scan started — ${tot} files to check`);
-          setPhase("scanning");
-          break;
-        }
-
-        case "scanning_file": {
-          const fn  = String(data.filename ?? "");
-          const idx = Number(data.index ?? 0);
-          const tot = Number(data.total ?? 0);
-          setCurrentFile(fn);
-          setFileIndex(idx);
-          setTotalFiles(tot);
-          if (idx % 10 === 0 || idx === 1)
-            addLog(`[${ts}] [${idx}/${tot}] ${fn}`);
-          break;
-        }
-
-        case "finding": {
-          const f: FindingAlert = {
-            filename: String(data.filename ?? ""),
-            severity: String(data.severity ?? "LOW"),
-            category: String(data.category ?? ""),
-            description: String(data.description ?? ""),
-          };
-          setFindings((prev) => [f, ...prev].slice(0, 50));
-          addLog(`[${ts}] ⚠ ${f.severity}: ${f.filename} — ${f.category}`);
-          break;
-        }
-
-        case "scan_complete": {
-          const stats = {
-            files:     Number(data.files_scanned ?? 0),
-            findings:  Number(data.findings ?? 0),
-            incidents: Number(data.incidents ?? 0),
-          };
-          setFinalStats(stats);
-          addLog(`[${ts}] ✅ Done — ${stats.files} files, ${stats.findings} findings, ${stats.incidents} incidents`);
-          setPhase("done");
-          es.close();
-          break;
-        }
-
-        case "error":
-          setErrorMsg(String(data.message ?? "Unknown error"));
+      es.onerror = () => {
+        es.close();
+        if (attempts < maxAttempts) {
+          addLog(`[${new Date().toLocaleTimeString()}] Server waking up... auto-retrying (${attempts}/${maxAttempts})`);
+          retryTimer = setTimeout(connect, 4000);
+        } else {
+          setErrorMsg("Connection lost. The backend server may still be waking up. Click 'Retry' below.");
           setPhase("error");
-          addLog(`[${ts}] ✗ Error: ${data.message}`);
-          es.close();
-          break;
-
-        case "expired":
-          setPhase("expired");
-          es.close();
-          break;
-      }
+          addLog(`[${new Date().toLocaleTimeString()}] ✗ Connection failed after ${maxAttempts} attempts`);
+        }
+      };
     };
 
-    es.onerror = () => {
-      if (phase !== "done" && phase !== "error") {
-        setErrorMsg("Connection lost. The server may be starting up (Render free-tier). Retry in 30 s.");
-        setPhase("error");
-      }
-      es.close();
-    };
+    connect();
 
-    return () => { es.close(); };
+    return () => {
+      if (retryTimer) clearTimeout(retryTimer);
+      if (evtRef.current) {
+        evtRef.current.close();
+        evtRef.current = null;
+      }
+    };
+  };
+
+  useEffect(() => {
+    const cleanup = startStream();
+    return () => {
+      cleanup?.();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [code]);
+  }, [code, retryCount]);
 
   // Auto-scroll log
   useEffect(() => {
@@ -389,7 +426,7 @@ export default function EnrollPage() {
               </div>
             )}
 
-            {/* Progress bar */}
+            {/* Progress bar with Starting & Ending Points */}
             <div className="space-y-1.5">
               <div className="flex justify-between text-[11px]" style={{ color: "#475569" }}>
                 <span>Scanning files for sensitive data…</span>
@@ -397,15 +434,20 @@ export default function EnrollPage() {
                   {fileIndex}/{totalFiles} ({pct}%)
                 </span>
               </div>
-              <div className="h-2.5 rounded-full overflow-hidden" style={{ background: "#0a1628" }}>
+              <div className="h-2.5 rounded-full overflow-hidden" style={{ background: "#0a1628", border: "1px solid rgba(255,255,255,0.05)" }}>
                 <div
                   className="h-full rounded-full transition-all duration-300"
                   style={{
-                    width: `${pct}%`,
+                    width: `${Math.max(5, Math.min(100, pct))}%`,
                     background: "linear-gradient(90deg,#00d4ff,#34d058)",
                     boxShadow: "0 0 8px rgba(0,212,255,0.4)",
                   }}
                 />
+              </div>
+              <div className="flex justify-between items-center text-[10px] text-slate-400 font-mono px-0.5">
+                <span>🟢 Start: File 1</span>
+                <span className="text-cyan-400 font-semibold">{pct}%</span>
+                <span>🏁 End: File {totalFiles}</span>
               </div>
             </div>
 
@@ -570,11 +612,13 @@ export default function EnrollPage() {
             )}
 
             <button
-              onClick={() => window.location.reload()}
-              className="w-full py-2.5 rounded-xl text-sm font-semibold transition-all"
+              onClick={() => {
+                setRetryCount((c) => c + 1);
+              }}
+              className="w-full py-2.5 rounded-xl text-sm font-semibold transition-all hover:brightness-110 active:scale-98"
               style={{
-                background: "rgba(255,59,59,0.1)",
-                border: "1px solid rgba(255,59,59,0.25)",
+                background: "rgba(255,59,59,0.15)",
+                border: "1px solid rgba(255,59,59,0.3)",
                 color: "#ff3b3b",
                 cursor: "pointer",
               }}
