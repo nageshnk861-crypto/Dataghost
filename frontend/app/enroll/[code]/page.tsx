@@ -165,9 +165,80 @@ export default function EnrollPage() {
   const [finalStats, setFinalStats] = useState<{ files: number; findings: number; incidents: number } | null>(null);
   const [errorMsg, setErrorMsg] = useState("");
   const [logLines, setLogLines] = useState<string[]>([]);
+  const [isManualScanning, setIsManualScanning] = useState(false);
+  const [scannedFilesCount, setScannedFilesCount] = useState(0);
 
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const evtRef = useRef<EventSource | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
+
+  const handleManualScanFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    setIsManualScanning(true);
+    setPhase("scanning");
+    setTotalFiles(files.length);
+    setFileIndex(0);
+    const ts = new Date().toLocaleTimeString();
+    addLog(`[${ts}] 📂 Reading ${files.length} real files from your device…`);
+
+    const apiBase = getApiBase();
+    let currentFindings = 0;
+    let currentIncidents = 0;
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      setCurrentFile(file.name);
+      setFileIndex(i + 1);
+
+      try {
+        const text = await file.text();
+        const res = await fetch(`${apiBase}/api/scan/file`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            filename: file.name,
+            content: text,
+            device_id: deviceId || "android-device",
+            destination: "INTERNAL",
+            action: "SCAN",
+          }),
+        });
+
+        if (res.ok) {
+          const result = await res.json();
+          if (Array.isArray(result.findings) && result.findings.length > 0) {
+            for (const f of result.findings) {
+              currentFindings++;
+              const alert: FindingAlert = {
+                filename: file.name,
+                severity: f.severity || "MEDIUM",
+                category: f.category || "SENSITIVE_DATA",
+                description: f.detail || f.rule || "Sensitive pattern detected",
+              };
+              setFindings((prev) => [alert, ...prev].slice(0, 50));
+              addLog(`[${new Date().toLocaleTimeString()}] ⚠ ${alert.severity}: ${file.name} (${alert.category})`);
+            }
+          }
+          if (result.incident_id || (result.risk_score && result.risk_score >= 30)) {
+            currentIncidents++;
+          }
+        }
+      } catch (scanErr) {
+        // ignore read failures on binary or protected files
+      }
+    }
+
+    setFinalStats({
+      files: files.length,
+      findings: currentFindings,
+      incidents: currentIncidents,
+    });
+    setPhase("done");
+    setIsManualScanning(false);
+    addLog(`[${new Date().toLocaleTimeString()}] ✅ Real device file scan completed!`);
+  };
 
   const addLog = (msg: string) =>
     setLogLines((prev) => [...prev.slice(-60), msg]);
@@ -187,12 +258,36 @@ export default function EnrollPage() {
       evtRef.current = null;
     }
 
-    setPhase("connecting");
-    setErrorMsg("");
     const apiBase = getApiBase();
-    // In browser, try relative path first if same origin, or fallback to apiBase
-    const url = `${apiBase}/api/devices/auto-enroll-scan?code=${encodeURIComponent(code)}`;
-    addLog(`[${new Date().toLocaleTimeString()}] Connecting to DataGhost server…`);
+    // Detect platform and device name from navigator
+    let detectedPlatform = "Windows";
+    let detectedDeviceName = "";
+    if (typeof navigator !== "undefined") {
+      const ua = navigator.userAgent.toLowerCase();
+      if (ua.includes("android")) {
+        detectedPlatform = "Android";
+        const match = navigator.userAgent.match(/;\s*([^;]+?)\s*Build\//i);
+        detectedDeviceName = match ? `Android-${match[1].trim()}` : "Android-Phone";
+      } else if (ua.includes("iphone")) {
+        detectedPlatform = "iOS";
+        detectedDeviceName = "Apple-iPhone";
+      } else if (ua.includes("ipad")) {
+        detectedPlatform = "iOS";
+        detectedDeviceName = "Apple-iPad";
+      } else if (ua.includes("macintosh") || ua.includes("mac os x")) {
+        detectedPlatform = "macOS";
+        detectedDeviceName = "MacBook";
+      } else if (ua.includes("linux")) {
+        detectedPlatform = "Linux";
+        detectedDeviceName = "Linux-Endpoint";
+      } else {
+        detectedPlatform = "Windows";
+        detectedDeviceName = "Windows-PC";
+      }
+    }
+
+    const url = `${apiBase}/api/devices/auto-enroll-scan?code=${encodeURIComponent(code)}&platform=${encodeURIComponent(detectedPlatform)}${detectedDeviceName ? `&device_name=${encodeURIComponent(detectedDeviceName)}` : ""}`;
+    addLog(`[${new Date().toLocaleTimeString()}] Connecting as ${detectedPlatform} device…`);
 
     let retryTimer: NodeJS.Timeout | null = null;
     let attempts = 0;
@@ -548,6 +643,32 @@ export default function EnrollPage() {
                 </div>
               </div>
             )}
+
+            {/* Scan Real Device Files Button */}
+            <div className="pt-2">
+              <input
+                type="file"
+                multiple
+                ref={fileInputRef}
+                onChange={handleManualScanFiles}
+                className="hidden"
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isManualScanning}
+                className="w-full py-2.5 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all mb-2 cursor-pointer hover:brightness-110 active:scale-98"
+                style={{
+                  background: "rgba(0,212,255,0.12)",
+                  border: "1px solid rgba(0,212,255,0.4)",
+                  color: "#00d4ff",
+                  boxShadow: "0 0 12px rgba(0,212,255,0.15)",
+                }}
+              >
+                <span>📁</span>
+                <span>{isManualScanning ? "Scanning Device Files…" : "Scan Real Files from this Device (Upload / Pick)"}</span>
+              </button>
+            </div>
 
             <a
               href={dashboardUrl}

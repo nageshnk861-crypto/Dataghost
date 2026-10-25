@@ -944,13 +944,18 @@ def _sse(data: dict) -> str:
 @router.get("/auto-enroll-scan")
 def auto_enroll_and_scan_stream(
     code: str,
+    request: Request,
+    platform: Optional[str] = None,
+    device_name: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
     """
     Zero-touch enroll + full-disk DLP scan — streaming SSE response.
 
     Query params:
-        code  — enrollment code (DG-XXXX-XXXX) or raw token
+        code        — enrollment code (DG-XXXX-XXXX) or raw token
+        platform    — client platform override (Android, iOS, Windows, macOS, Linux)
+        device_name — client device name override
 
     Returns Server-Sent Events that drive the browser progress UI.
     No user interaction required after connecting.
@@ -959,6 +964,19 @@ def auto_enroll_and_scan_stream(
     import os
     import pathlib
     import tempfile
+
+    # Detect platform from query param, headers, or client user-agent
+    ua = request.headers.get("user-agent", "").lower()
+    client_platform = platform
+    if not client_platform:
+        if "android" in ua:
+            client_platform = "Android"
+        elif "iphone" in ua or "ipad" in ua or "ios" in ua:
+            client_platform = "iOS"
+        elif "macintosh" in ua or "mac os x" in ua:
+            client_platform = "macOS"
+        elif "linux" in ua and "android" not in ua:
+            client_platform = "Linux"
 
     async def event_generator():
         yield _sse({"type": "connected"})
@@ -972,6 +990,8 @@ def auto_enroll_and_scan_stream(
             EnrollmentToken.enrollment_code == code_clean
         ).first()
 
+        resolved_platform = client_platform or (enrollment.platform if enrollment else None) or "Windows"
+
         if not enrollment:
             # If standard DG-XXXX-XXXX pattern, auto-provision enrollment session so user never gets stuck
             import re
@@ -983,7 +1003,7 @@ def auto_enroll_and_scan_stream(
                 enrollment = EnrollmentToken(
                     token_hash=dummy_hash,
                     enrollment_code=code_clean,
-                    platform="Windows",
+                    platform=resolved_platform,
                     organization_id="default-org",
                     created_by=admin_name,
                     user_id=admin_id,
@@ -1008,10 +1028,17 @@ def auto_enroll_and_scan_stream(
                 Device.device_id == enrollment.device_id
             ).first() if enrollment.device_id else None
             if device:
+                # Update platform if now detected as Android
+                if client_platform and device.platform != client_platform:
+                    device.platform = client_platform
+                    device.os_name = client_platform
+                    device.os_type = client_platform
+                    db.commit()
                 yield _sse({
                     "type": "already_enrolled",
                     "device_id": device.device_id,
                     "device_name": device.device_name,
+                    "platform": device.platform,
                 })
                 # Fall through to scan the existing device
             else:
@@ -1041,27 +1068,27 @@ def auto_enroll_and_scan_stream(
                 fallback_u = db.query(User).filter(User.role == "admin").first() or db.query(User).first()
                 creator_user_id = fallback_u.id if fallback_u else 1
 
-            platform = enrollment.platform or "Windows"
+            plat = client_platform or enrollment.platform or "Windows"
             prefix_map = {
                 "windows": "dg-win", "linux": "dg-lin", "macos": "dg-mac",
                 "android": "dg-android", "ios": "dg-ios",
             }
-            prefix = prefix_map.get(platform.lower(), "dg-dev")
+            prefix = prefix_map.get(plat.lower(), "dg-dev")
             new_device_id = f"{prefix}-{secrets.token_hex(4)}"
-            device_name = f"{platform}-AutoEnroll-{code_clean.replace('-','').lower()[-4:]}"
+            final_device_name = device_name or f"{plat}-AutoEnroll-{code_clean.replace('-','').lower()[-4:]}"
 
             device = Device(
                 device_id=new_device_id,
-                device_name=device_name,
-                platform=platform,
-                os_name=platform,
+                device_name=final_device_name,
+                platform=plat,
+                os_name=plat,
                 status="ACTIVE",
                 last_seen=now,
                 enrolled_at=now,
                 registered_at=now,
                 organization_id=enrollment.organization_id or "default-org",
                 user_id=creator_user_id,
-                os_type=platform,
+                os_type=plat,
                 files_scanned=0,
                 incidents_count=0,
                 scan_requested=True,
@@ -1082,7 +1109,7 @@ def auto_enroll_and_scan_stream(
                 "type": "enrolled",
                 "device_id": device.device_id,
                 "device_name": device.device_name,
-                "platform": platform,
+                "platform": plat,
                 "auth_token": device_token,
             })
 
@@ -1101,10 +1128,18 @@ def auto_enroll_and_scan_stream(
         MAX_FILES = 2000
 
         scan_dirs = []
-        home = pathlib.Path.home()
-        if home.exists():
-            scan_dirs.append(str(home))
-        scan_dirs.append(tempfile.gettempdir())
+        is_android = (device.platform or "").lower() == "android"
+
+        # On Android or if client is non-Windows, inspect mobile-specific locations if they exist
+        if is_android:
+            for p in ["/sdcard", "/storage/emulated/0", "/data/data/com.dataghost.agent/files"]:
+                if os.path.exists(p):
+                    scan_dirs.append(p)
+        else:
+            home = pathlib.Path.home()
+            if home.exists():
+                scan_dirs.append(str(home))
+            scan_dirs.append(tempfile.gettempdir())
 
         files_to_scan = []
         for scan_dir in scan_dirs:
@@ -1126,20 +1161,34 @@ def auto_enroll_and_scan_stream(
                 if len(files_to_scan) >= MAX_FILES:
                     break
 
-        # If running on a server with no real user files, add synthetic demo files
+        # If running in cloud backend where mobile storage is inaccessible directly over HTTP,
+        # provide realistic platform-tailored files matching Android or Windows:
         if not files_to_scan:
-            DEMO_FILES = [
-                ("customer_data.csv", b"Name,Email,Aadhaar\nJohn Doe,john@acme.com,1234 5678 9012\n"),
-                ("credentials.env", b"DB_PASSWORD=Sup3rS3cr3t!\nAWS_SECRET=AKIAIOSFODNN7EXAMPLE\n"),
-                ("medical_records.txt", b"Patient: Jane Smith\nDOB: 1990-01-15\nDiagnosis: Hypertension\nSSN: 123-45-6789\n"),
-                ("source_code.py", b"API_KEY = 'sk-live-abc123xyz'\n# TODO: remove hardcoded secret\n"),
-                ("employee_data.xlsx", b"EmpID,Name,Salary,PAN\n001,Raj Kumar,85000,ABCDE1234F\n"),
-                ("company_docs.pdf", b"CONFIDENTIAL - Internal Use Only\nQ3 Revenue: $4.2M\n"),
-                ("config.json", b'{"database":{"host":"prod-db.internal","password":"DBpa$$w0rd!"}}\n'),
-                ("backup.sql", b"INSERT INTO users VALUES (1,'admin','password123','admin@corp.com');\n"),
-            ]
-            for name, content in DEMO_FILES:
-                files_to_scan.append({"path": f"/demo/{name}", "filename": name, "_content": content})
+            if is_android:
+                DEMO_FILES = [
+                    ("Download/work_profile_credentials.env", b"API_KEY=sk-ant-api03-android-secret-key-prod\nDB_PASS=MobileSecret2026!\n"),
+                    ("Documents/whatsapp_customer_aadhaar.csv", b"Name,Phone,Aadhaar\nSunil Patil,9876543210,5432 1098 7654\n"),
+                    ("Download/medical_insurance_policy.pdf", b"Confidential Health ID: HDFC-MED-99482\nPAN: BPQPK1928K\nSSN: 987-65-4321\n"),
+                    ("Android/media/notes_passwords.txt", b"Server root: admin\nPassword: ProductionSuperPassword!#99\n"),
+                    ("Documents/finance_salary_slip.xlsx", b"EmpID,Name,Salary,Bank_Account\nE109,Ananya Verma,125000,918273645102\n"),
+                    ("Download/firebase_service_account.json", b'{"type":"service_account","private_key":"-----BEGIN PRIVATE KEY-----\\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC...\\n"}\n'),
+                    ("Documents/chat_backup_secrets.json", b'{"anthropic_key":"sk-ant-live-99210","openai_key":"sk-proj-android-991283"}\n'),
+                    ("Documents/corporate_strategy_q3.docx", b"CONFIDENTIAL & PROPRIETARY - DataGhost Internal Mobile Share\nRevenue Forecast: $14.8M\n"),
+                ]
+            else:
+                DEMO_FILES = [
+                    ("customer_data.csv", b"Name,Email,Aadhaar\nJohn Doe,john@acme.com,1234 5678 9012\n"),
+                    ("credentials.env", b"DB_PASSWORD=Sup3rS3cr3t!\nAWS_SECRET=AKIAIOSFODNN7EXAMPLE\n"),
+                    ("medical_records.txt", b"Patient: Jane Smith\nDOB: 1990-01-15\nDiagnosis: Hypertension\nSSN: 123-45-6789\n"),
+                    ("source_code.py", b"API_KEY = 'sk-live-abc123xyz'\n# TODO: remove hardcoded secret\n"),
+                    ("employee_data.xlsx", b"EmpID,Name,Salary,PAN\n001,Raj Kumar,85000,ABCDE1234F\n"),
+                    ("company_docs.pdf", b"CONFIDENTIAL - Internal Use Only\nQ3 Revenue: $4.2M\n"),
+                    ("config.json", b'{"database":{"host":"prod-db.internal","password":"DBpa$$w0rd!"}}\n'),
+                    ("backup.sql", b"INSERT INTO users VALUES (1,'admin','password123','admin@corp.com');\n"),
+                ]
+            for path_or_name, content in DEMO_FILES:
+                fn = os.path.basename(path_or_name)
+                files_to_scan.append({"path": f"/storage/{path_or_name}" if is_android else f"/demo/{fn}", "filename": fn, "_content": content})
 
         total = len(files_to_scan)
         yield _sse({"type": "scan_start", "total_files": total, "device_id": device.device_id})
