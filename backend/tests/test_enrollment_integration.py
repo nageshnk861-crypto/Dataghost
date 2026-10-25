@@ -11,9 +11,6 @@ Covers end-to-end enrollment flow:
 - Configuration retrieval
 - Heartbeat functionality
 """
-import hashlib
-import secrets
-from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -22,7 +19,7 @@ from sqlalchemy.orm import Session
 from main import app
 from database import SessionLocal
 from models import (
-    EnrollmentToken, Device, DeviceIdentity, DeviceProvisioning, User
+    Device, DeviceIdentity, User
 )
 from auth import get_password_hash, create_access_token
 
@@ -45,12 +42,12 @@ def db_session() -> Session:
 def admin_user(db_session: Session) -> User:
     """Create admin user for provisioning."""
     db = db_session
-    
+
     existing = db.query(User).filter(User.username == "int_admin").first()
     if existing:
         db.delete(existing)
         db.commit()
-    
+
     user = User(
         username="int_admin",
         email="int_admin@test.local",
@@ -77,7 +74,7 @@ def admin_token(admin_user: User) -> str:
 def test_full_enrollment_pipeline_windows(client: TestClient, admin_token: str, db_session: Session):
     """
     Integration test: Full Windows enrollment pipeline.
-    
+
     Flow:
     1. Create provisioning record
     2. Bootstrap with token
@@ -89,7 +86,7 @@ def test_full_enrollment_pipeline_windows(client: TestClient, admin_token: str, 
     """
     db = db_session
     org_id = "e2e-test-org"
-    
+
     # Step 1: Create provisioning record
     prov_response = client.post(
         "/api/v1/device-provisioning/create",
@@ -104,7 +101,7 @@ def test_full_enrollment_pipeline_windows(client: TestClient, admin_token: str, 
     assert prov_response.status_code == 200
     prov_data = prov_response.json()
     bootstrap_token = prov_data["bootstrap_token"]
-    
+
     # Step 2: Bootstrap device
     bootstrap_response = client.post(
         "/api/v1/device-enrollment/bootstrap",
@@ -115,7 +112,7 @@ def test_full_enrollment_pipeline_windows(client: TestClient, admin_token: str, 
     bootstrap_data = bootstrap_response.json()
     assert bootstrap_data["organization_id"] == org_id
     assert bootstrap_data["bootstrap_status"] == "ACCEPTED"
-    
+
     # Step 3: Attest device
     attest_response = client.post(
         "/api/v1/device-enrollment/attest",
@@ -129,7 +126,7 @@ def test_full_enrollment_pipeline_windows(client: TestClient, admin_token: str, 
     assert attest_response.status_code == 200
     attest_data = attest_response.json()
     device_token = attest_data["device_token"]
-    
+
     # Step 4: Complete enrollment
     complete_response = client.post(
         "/api/v1/device-enrollment/complete",
@@ -147,7 +144,7 @@ def test_full_enrollment_pipeline_windows(client: TestClient, admin_token: str, 
     complete_data = complete_response.json()
     device_id = complete_data["device_id"]
     assert device_id.startswith("dg-win-")
-    
+
     # Step 5: Verify device in database
     device = db.query(Device).filter(Device.device_id == device_id).first()
     assert device is not None
@@ -156,14 +153,14 @@ def test_full_enrollment_pipeline_windows(client: TestClient, admin_token: str, 
     assert device.device_name == "E2E-WORKSTATION-001"
     assert device.organization_id == org_id
     assert device.attestation_status == "VALID"
-    
+
     # Verify DeviceIdentity was created
     identity = db.query(DeviceIdentity).filter(
         DeviceIdentity.device_id == device_id
     ).first()
     assert identity is not None
     assert "windows_e2e_key" in identity.public_key
-    
+
     # Step 6: Query configuration
     config_response = client.get(
         "/api/v1/device-enrollment/configuration",
@@ -175,7 +172,7 @@ def test_full_enrollment_pipeline_windows(client: TestClient, admin_token: str, 
     assert config_data["organization_id"] == org_id
     assert "dlp_rules" in config_data
     assert "heartbeat_interval" in config_data
-    
+
     # Step 7: Query policy
     policy_response = client.get(
         "/api/v1/device-enrollment/policy",
@@ -193,7 +190,7 @@ def test_full_enrollment_pipeline_android(client: TestClient, admin_token: str, 
     """Integration test: Full Android enrollment pipeline."""
     db = db_session
     org_id = "e2e-android-org"
-    
+
     # Create provisioning for Android
     prov_response = client.post(
         "/api/v1/device-provisioning/create",
@@ -207,7 +204,7 @@ def test_full_enrollment_pipeline_android(client: TestClient, admin_token: str, 
     )
     assert prov_response.status_code == 200
     bootstrap_token = prov_response.json()["bootstrap_token"]
-    
+
     # Bootstrap
     bootstrap_response = client.post(
         "/api/v1/device-enrollment/bootstrap",
@@ -215,7 +212,7 @@ def test_full_enrollment_pipeline_android(client: TestClient, admin_token: str, 
         headers={"Authorization": f"Bearer {bootstrap_token}"},
     )
     assert bootstrap_response.status_code == 200
-    
+
     # Attest
     attest_response = client.post(
         "/api/v1/device-enrollment/attest",
@@ -228,7 +225,7 @@ def test_full_enrollment_pipeline_android(client: TestClient, admin_token: str, 
     )
     assert attest_response.status_code == 200
     device_token = attest_response.json()["device_token"]
-    
+
     # Complete
     complete_response = client.post(
         "/api/v1/device-enrollment/complete",
@@ -243,12 +240,12 @@ def test_full_enrollment_pipeline_android(client: TestClient, admin_token: str, 
     )
     assert complete_response.status_code == 200
     device_id = complete_response.json()["device_id"]
-    
+
     # Verify Android device
     device = db.query(Device).filter(Device.device_id == device_id).first()
     assert device.platform == "Android"
     assert device.device_name == "Samsung Galaxy S22"
-    
+
     # Query policy and config
     policy_response = client.get(
         "/api/v1/device-enrollment/policy",
@@ -262,7 +259,7 @@ def test_full_enrollment_pipeline_ios(client: TestClient, admin_token: str, db_s
     """Integration test: Full iOS enrollment pipeline."""
     db = db_session
     org_id = "e2e-ios-org"
-    
+
     # Create provisioning for iOS
     prov_response = client.post(
         "/api/v1/device-provisioning/create",
@@ -275,7 +272,7 @@ def test_full_enrollment_pipeline_ios(client: TestClient, admin_token: str, db_s
     )
     assert prov_response.status_code == 200
     bootstrap_token = prov_response.json()["bootstrap_token"]
-    
+
     # Full flow
     bootstrap_response = client.post(
         "/api/v1/device-enrollment/bootstrap",
@@ -283,7 +280,7 @@ def test_full_enrollment_pipeline_ios(client: TestClient, admin_token: str, db_s
         headers={"Authorization": f"Bearer {bootstrap_token}"},
     )
     assert bootstrap_response.status_code == 200
-    
+
     attest_response = client.post(
         "/api/v1/device-enrollment/attest",
         json={
@@ -295,7 +292,7 @@ def test_full_enrollment_pipeline_ios(client: TestClient, admin_token: str, db_s
     )
     assert attest_response.status_code == 200
     device_token = attest_response.json()["device_token"]
-    
+
     complete_response = client.post(
         "/api/v1/device-enrollment/complete",
         json={
@@ -308,7 +305,7 @@ def test_full_enrollment_pipeline_ios(client: TestClient, admin_token: str, db_s
     )
     assert complete_response.status_code == 200
     device_id = complete_response.json()["device_id"]
-    
+
     # Verify
     device = db.query(Device).filter(Device.device_id == device_id).first()
     assert device.platform == "iOS"
@@ -320,8 +317,7 @@ def test_full_enrollment_pipeline_ios(client: TestClient, admin_token: str, db_s
 
 def test_enrolled_device_appears_in_device_list(client: TestClient, admin_token: str, db_session: Session):
     """Test that newly enrolled device appears in device list."""
-    db = db_session
-    
+
     # Complete a device enrollment
     complete_response = client.post(
         "/api/v1/device-enrollment/complete",
@@ -333,14 +329,14 @@ def test_enrolled_device_appears_in_device_list(client: TestClient, admin_token:
         headers={"Authorization": "Bearer test_token"},
     )
     assert complete_response.status_code == 200
-    device_id = complete_response.json()["device_id"]
-    
+    complete_response.json()["device_id"]
+
     # List devices
     list_response = client.get(
         "/api/v1/devices",
         headers={"Authorization": f"Bearer {admin_token}"},
     )
-    
+
     # Should be accessible (may or may not be in /devices endpoint)
     assert list_response.status_code in (200, 401)
 
@@ -351,8 +347,7 @@ def test_enrolled_device_appears_in_device_list(client: TestClient, admin_token:
 
 def test_enrolled_device_heartbeat(client: TestClient, db_session: Session):
     """Test that enrolled device can send heartbeat."""
-    db = db_session
-    
+
     # Create a device
     complete_response = client.post(
         "/api/v1/device-enrollment/complete",
@@ -365,7 +360,7 @@ def test_enrolled_device_heartbeat(client: TestClient, db_session: Session):
     )
     assert complete_response.status_code == 200
     device_id = complete_response.json()["device_id"]
-    
+
     # Send heartbeat
     heartbeat_response = client.post(
         f"/api/v1/devices/{device_id}/heartbeat",
@@ -375,7 +370,7 @@ def test_enrolled_device_heartbeat(client: TestClient, db_session: Session):
             "files_scanned": 1000,
         },
     )
-    
+
     # Should accept heartbeat (even if auth required, endpoint should exist)
     assert heartbeat_response.status_code in (200, 401)
 
@@ -390,7 +385,7 @@ def test_multiple_devices_enrollment_in_same_organization(
     """Test enrolling multiple devices in the same organization."""
     db = db_session
     org_id = "multi-device-org"
-    
+
     # Create provisioning
     prov_response = client.post(
         "/api/v1/device-provisioning/create",
@@ -402,7 +397,7 @@ def test_multiple_devices_enrollment_in_same_organization(
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     token1 = prov_response.json()["bootstrap_token"]
-    
+
     # Create second provisioning
     prov_response2 = client.post(
         "/api/v1/device-provisioning/create",
@@ -414,7 +409,7 @@ def test_multiple_devices_enrollment_in_same_organization(
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     token2 = prov_response2.json()["bootstrap_token"]
-    
+
     # Enroll first device
     device_ids = []
     for token in [token1, token2]:
@@ -424,7 +419,7 @@ def test_multiple_devices_enrollment_in_same_organization(
             headers={"Authorization": f"Bearer {token}"},
         )
         assert bootstrap_response.status_code == 200
-        
+
         complete_response = client.post(
             "/api/v1/device-enrollment/complete",
             json={
@@ -436,11 +431,11 @@ def test_multiple_devices_enrollment_in_same_organization(
         )
         assert complete_response.status_code == 200
         device_ids.append(complete_response.json()["device_id"])
-    
+
     # Verify both devices exist
     assert len(device_ids) == 2
     assert device_ids[0] != device_ids[1]
-    
+
     for device_id in device_ids:
         device = db.query(Device).filter(Device.device_id == device_id).first()
         assert device is not None
@@ -454,7 +449,7 @@ def test_multiple_devices_enrollment_in_same_organization(
 def test_device_transitions_through_enrollment_states(client: TestClient, db_session: Session):
     """Test that device goes through proper enrollment state transitions."""
     db = db_session
-    
+
     # Complete enrollment
     complete_response = client.post(
         "/api/v1/device-enrollment/complete",
@@ -466,7 +461,7 @@ def test_device_transitions_through_enrollment_states(client: TestClient, db_ses
         headers={"Authorization": "Bearer test_token"},
     )
     device_id = complete_response.json()["device_id"]
-    
+
     # Device should be ACTIVE after complete
     device = db.query(Device).filter(Device.device_id == device_id).first()
     assert device.status == "ACTIVE"
@@ -480,7 +475,7 @@ def test_device_transitions_through_enrollment_states(client: TestClient, db_ses
 def test_enrollment_recovery_after_failed_attest(client: TestClient, admin_token: str):
     """Test that device can recover from failed attestation."""
     org_id = "recovery-org"
-    
+
     # Create provisioning
     prov_response = client.post(
         "/api/v1/device-provisioning/create",
@@ -492,7 +487,7 @@ def test_enrollment_recovery_after_failed_attest(client: TestClient, admin_token
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     bootstrap_token = prov_response.json()["bootstrap_token"]
-    
+
     # Bootstrap
     bootstrap_response = client.post(
         "/api/v1/device-enrollment/bootstrap",
@@ -500,7 +495,7 @@ def test_enrollment_recovery_after_failed_attest(client: TestClient, admin_token
         headers={"Authorization": f"Bearer {bootstrap_token}"},
     )
     assert bootstrap_response.status_code == 200
-    
+
     # Attest (may fail, but should not crash)
     attest_response = client.post(
         "/api/v1/device-enrollment/attest",

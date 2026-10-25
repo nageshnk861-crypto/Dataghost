@@ -153,7 +153,7 @@ class TestEndpointScanSummary:
         }
         scan_res = client.post(f"/api/devices/{dev_id}/scan", json=scan_payload, headers=headers)
         assert scan_res.status_code == 200
-        scan_data = scan_res.json()
+        scan_res.json()
 
         # 1. Verify findings are persisted in the database
         db = SessionLocal()
@@ -168,7 +168,7 @@ class TestEndpointScanSummary:
                 .filter(ScanLog.device_id == dev_id)
                 .all()
             )
-            persisted_incidents = (
+            (
                 db.query(Incident)
                 .filter(Incident.device_id == dev_id)
                 .all()

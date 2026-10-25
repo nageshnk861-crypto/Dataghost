@@ -84,7 +84,7 @@ class TestIncidentCreationAndFormat:
     def test_incident_persists_across_sessions(self):
         """Incident record remains fully readable in a completely new database session."""
         inc_id = f"DG-{datetime.now(timezone.utc).year}-9999"
-        
+
         # Session 1: Create
         db1 = SessionLocal()
         try:
@@ -155,7 +155,7 @@ class TestIncidentStatusWorkflow:
             db.commit()
             db.refresh(inc)
             yield inc_id
-            
+
             # Teardown
             db.query(Incident).filter(Incident.incident_id == inc_id).delete()
             db.commit()
@@ -202,7 +202,7 @@ class TestIncidentListAndFiltering:
         db = SessionLocal()
         created_ids = []
         try:
-            year = datetime.now(timezone.utc).year
+            datetime.now(timezone.utc).year
             test_specs = [
                 ("DG-TEST-0001", "CRITICAL", "OPEN", "RESTRICTED", "EXTERNAL", "BLOCK"),
                 ("DG-TEST-0002", "HIGH", "ACKNOWLEDGED", "CONFIDENTIAL", "CLOUD", "ALERT"),

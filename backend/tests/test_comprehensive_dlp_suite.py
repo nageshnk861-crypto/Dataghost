@@ -5,9 +5,7 @@ and negative test cases specified in the checklist.
 """
 import io
 import zipfile
-import pytest
 from scanner.dlp_scanner import scan_text
-from scanner.dlp_rules import DLP_RULES, DLP_RULES_BY_NAME
 from scanner.sensitive_scanner import SensitiveScanner
 from scanner.text_extractor import extract_text
 from scanner.masking import mask_sensitive_text

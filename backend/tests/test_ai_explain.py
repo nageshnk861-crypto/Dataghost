@@ -10,7 +10,6 @@ Covers:
 
 from __future__ import annotations
 
-import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -39,7 +38,8 @@ def client():
 @pytest.fixture()
 def auth_token(client):
     """Create a test admin user and return a JWT token."""
-    import os, sys
+    import os
+    import sys
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
     from database import SessionLocal
     from models import User

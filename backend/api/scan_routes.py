@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from auth import get_optional_current_user
 from database import get_db
 from models import Incident, ScanLog, Device, User, Finding as FindingModel
-from schemas.schemas import ScanRequest, ScanResponse, ScanFinding, FindingSchema
+from schemas.schemas import ScanRequest, ScanResponse, ScanFinding
 from services.audit_service import log_audit_event
 from scanner.text_extractor import extract_text
 from scanner.dlp_scanner import scan_text as dlp_scan_text

@@ -4,14 +4,13 @@ Tests for Firebase token verification, Firebase Admin initialization, and FastAP
 Updated to mock google.oauth2.id_token.verify_firebase_token (the new primary
 verification path that does not require a service-account private key).
 """
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
 from main import app
 from firebase_auth import initialize_firebase_admin, verify_firebase_token
-from database import SessionLocal, init_db
-from models import User
+from database import init_db
 
 
 @pytest.fixture

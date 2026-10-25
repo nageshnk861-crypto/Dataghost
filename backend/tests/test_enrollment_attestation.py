@@ -49,7 +49,7 @@ def test_attest_android_valid(client: TestClient):
         },
         headers={"Authorization": "Bearer test_device_token"},
     )
-    
+
     assert response.status_code == 200
     data = response.json()
     assert data["attestation_valid"] is True
@@ -71,7 +71,7 @@ def test_attest_ios_valid(client: TestClient):
         },
         headers={"Authorization": "Bearer test_device_token"},
     )
-    
+
     assert response.status_code == 200
     data = response.json()
     assert data["attestation_valid"] is True
@@ -92,7 +92,7 @@ def test_attest_windows_valid(client: TestClient):
         },
         headers={"Authorization": "Bearer test_device_token"},
     )
-    
+
     assert response.status_code == 200
     data = response.json()
     assert data["attestation_valid"] is True
@@ -113,7 +113,7 @@ def test_attest_macos_valid(client: TestClient):
         },
         headers={"Authorization": "Bearer test_device_token"},
     )
-    
+
     assert response.status_code == 200
     data = response.json()
     assert data["attestation_valid"] is True
@@ -134,7 +134,7 @@ def test_attest_missing_required_fields(client: TestClient):
         },
         headers={"Authorization": "Bearer test_device_token"},
     )
-    
+
     # Should return 422 or similar validation error
     assert response.status_code in (400, 422)
 
@@ -149,7 +149,7 @@ def test_attest_missing_device_token(client: TestClient):
             "public_key": "test",
         },
     )
-    
+
     # Should require Authorization or device_token
     assert response.status_code == 401
 
@@ -161,7 +161,7 @@ def test_attest_missing_device_token(client: TestClient):
 def test_complete_sets_valid_attestation_status(client: TestClient, db_session: Session):
     """Test that complete endpoint sets attestationStatus to VALID."""
     db = db_session
-    
+
     response = client.post(
         "/api/v1/device-enrollment/complete",
         json={
@@ -170,10 +170,10 @@ def test_complete_sets_valid_attestation_status(client: TestClient, db_session: 
         },
         headers={"Authorization": "Bearer test_token"},
     )
-    
+
     assert response.status_code == 200
     device_id = response.json()["device_id"]
-    
+
     device = db.query(Device).filter(Device.device_id == device_id).first()
     assert device is not None
     assert device.attestation_status == "VALID"
@@ -182,7 +182,7 @@ def test_complete_sets_valid_attestation_status(client: TestClient, db_session: 
 def test_attestation_status_pending_on_creation(client: TestClient, db_session: Session):
     """Test that new devices can start with PENDING attestation status."""
     db = db_session
-    
+
     # Create a device with PENDING status
     device = Device(
         device_id="dg-test-pending",
@@ -193,7 +193,7 @@ def test_attestation_status_pending_on_creation(client: TestClient, db_session: 
     )
     db.add(device)
     db.commit()
-    
+
     # Verify status is PENDING
     retrieved = db.query(Device).filter(Device.device_id == "dg-test-pending").first()
     assert retrieved.attestation_status == "PENDING"
@@ -213,7 +213,7 @@ def test_complete_without_attestation_data_accepted(client: TestClient):
         },
         headers={"Authorization": "Bearer test_token"},
     )
-    
+
     # Should accept even without attestation (fallback behavior)
     assert response.status_code == 200
     assert "device_id" in response.json()
@@ -230,7 +230,7 @@ def test_attest_empty_attestation_data_accepted(client: TestClient):
         },
         headers={"Authorization": "Bearer test_device_token"},
     )
-    
+
     # Should accept with fallback behavior
     assert response.status_code == 200
     assert response.json()["attestation_valid"] is True
@@ -251,7 +251,7 @@ def test_attest_returns_platform_specific_details(client: TestClient):
         },
         headers={"Authorization": "Bearer test_token"},
     )
-    
+
     assert response.status_code == 200
     data = response.json()
     assert "attestation_details" in data
@@ -269,7 +269,7 @@ def test_attest_returns_next_step(client: TestClient):
         },
         headers={"Authorization": "Bearer test_token"},
     )
-    
+
     assert response.status_code == 200
     data = response.json()
     assert "next_step" in data
@@ -291,7 +291,7 @@ def test_attest_unknown_platform_accepted(client: TestClient):
         },
         headers={"Authorization": "Bearer test_token"},
     )
-    
+
     # Should accept unknown platform for future extensibility
     assert response.status_code == 200
     data = response.json()
@@ -305,7 +305,7 @@ def test_attest_unknown_platform_accepted(client: TestClient):
 def test_multiple_attestation_calls_accepted(client: TestClient):
     """Test that device can call attest multiple times."""
     device_token = "multi_attest_token"
-    
+
     # First call
     response1 = client.post(
         "/api/v1/device-enrollment/attest",
@@ -317,7 +317,7 @@ def test_multiple_attestation_calls_accepted(client: TestClient):
         headers={"Authorization": f"Bearer {device_token}"},
     )
     assert response1.status_code == 200
-    
+
     # Second call with updated data
     response2 = client.post(
         "/api/v1/device-enrollment/attest",
@@ -329,7 +329,7 @@ def test_multiple_attestation_calls_accepted(client: TestClient):
         headers={"Authorization": f"Bearer {device_token}"},
     )
     assert response2.status_code == 200
-    
+
     # Both should be valid
     assert response1.json()["attestation_valid"] is True
     assert response2.json()["attestation_valid"] is True
@@ -350,7 +350,7 @@ def test_attest_malformed_public_key_still_accepted_at_stub(client: TestClient):
         },
         headers={"Authorization": "Bearer test_token"},
     )
-    
+
     # At stub stage, should accept for testing
     # Production would validate PEM format
     assert response.status_code == 200

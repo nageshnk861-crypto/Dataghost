@@ -18,10 +18,12 @@ import hmac
 import json
 import logging
 import secrets
+import uuid as _uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import desc, or_
 from sqlalchemy.orm import Session
 
@@ -44,7 +46,6 @@ from schemas.schemas import (
     EnrollmentRegisterResponse,
     EnrollmentStatusResponse,
     IncidentResponse,
-    AgentFindingItem,
     AgentFindingsUploadRequest,
     AgentFindingsUploadResponse,
     ScanSessionStartRequest,
@@ -994,8 +995,6 @@ def device_heartbeat_body(
 #   {"type":"finding","filename":"...","severity":"HIGH","category":"...","description":"..."}
 #   {"type":"scan_complete","device_id":"...","files_scanned":N,"findings":M,"incidents":K}
 #   {"type":"error","message":"..."}
-# ---------------------------------------------------------------------------
-from fastapi.responses import StreamingResponse
 
 
 def _sse(data: dict) -> str:
@@ -1526,7 +1525,6 @@ def update_device(
 # ===========================================================================
 # Scan Session endpoints  (agent <-> backend lifecycle, analyst read-only)
 # ===========================================================================
-import uuid as _uuid
 
 
 def _find_device_by_int_or_str(device_id_or_id: str, db: Session) -> Device | None:
@@ -2033,7 +2031,6 @@ def trigger_device_scan(
     import os
 
     files_to_scan = []
-    source_type = "live_filesystem"
     is_simulated = False
 
     # Check for explicit DEMO flag:
@@ -2047,7 +2044,6 @@ def trigger_device_scan(
 
     # Case 1: Custom text/payload provided by the client
     if payload and payload.custom_content:
-        source_type = "custom_payload"
         files_to_scan.append({
             "filename": payload.filename or f"{device.device_name.lower().replace(' ', '_')}_active_scan.txt",
             "content": payload.custom_content.encode("utf-8"),
@@ -2057,7 +2053,6 @@ def trigger_device_scan(
         })
     # Case 2: Specific file path requested
     elif payload and payload.file_path:
-        source_type = "live_filesystem"
         target_path = os.path.abspath(payload.file_path)
         SCAN_EXTENSIONS = {
             ".txt", ".csv", ".json", ".xml", ".log", ".md",
@@ -2213,12 +2208,7 @@ def trigger_device_scan(
 
     # Simulation fallback gated strictly behind explicit DEMO flag
     if not files_to_scan and is_demo:
-        backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        sample_files = [
-            ("high_risk.txt", "EXTERNAL", "UPLOAD"),
-            ("medium_risk.txt", "LOCAL", "READ"),
-            ("low_risk.txt", "INTERNAL", "COPY"),
-        ]
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         # If files don't exist on disk, use synthetic demo content so demo mode is always self-contained
         if not files_to_scan:
             files_to_scan.extend([
@@ -2407,7 +2397,7 @@ def upload_device_findings(
 ):
     """
     Ingest scan results uploaded directly by an enrolled DataGhost Endpoint Agent.
-    
+
     Security & Privacy:
       - Authenticated via device.auth_token in Authorization: Bearer <token> or valid JWT.
       - Never accepts raw file contents or unredacted secrets.
@@ -2460,7 +2450,7 @@ def upload_device_findings(
                 from auth import verify_token
                 username = verify_token(token)
                 if username:
-                    user = db.query(User).filter(User.username == username, User.is_active == True).first()
+                    user = db.query(User).filter(User.username == username, User.is_active is True).first()
                     if user and (user.role == "admin" or user.id == device.user_id):
                         is_authenticated = True
             except Exception:
@@ -2480,7 +2470,6 @@ def upload_device_findings(
         device.status = "ACTIVE"
 
     # Compute deterministic risk score and severity using backend/risk_engine
-    from risk_engine.risk_calculator import RiskCalculator
     # Compute unified deterministic risk score and severity for findings
     max_risk, risk_level = calculate_findings_risk(payload.findings)
     classification = "RESTRICTED" if risk_level == "CRITICAL" else "CONFIDENTIAL" if payload.findings else "PUBLIC"

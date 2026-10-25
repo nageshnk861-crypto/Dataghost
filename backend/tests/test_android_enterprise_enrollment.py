@@ -12,15 +12,13 @@ Comprehensive test suite for automatic Android Enterprise DPC provisioning:
 
 import pytest
 import json
-import hashlib
 from datetime import datetime, timedelta, timezone
 from fastapi.testclient import TestClient
-from sqlalchemy.orm import Session
 
 from models import Device, EnrollmentToken, User
-from database import Base, engine, get_db
+from database import Base, get_db
 from main import app
-from auth import get_password_hash, get_current_user
+from auth import get_password_hash
 
 
 @pytest.fixture
@@ -222,7 +220,7 @@ class TestEnrollmentTokenValidation:
             }
         )
         assert register_response_1.status_code == 200
-        device_id_1 = register_response_1.json()["device_id"]
+        register_response_1.json()["device_id"]
 
         # Second registration with same token should fail (token already used)
         register_response_2 = client.post(
@@ -429,7 +427,7 @@ class TestEnrollmentStatusPolling:
         assert status_data["status"] == "PENDING"
         assert status_data["platform"] == "Android"
         assert status_data["device_id"] is None
-        assert status_data["is_expired"] == False
+        assert status_data["is_expired"] is False
 
     def test_enrollment_status_used_after_registration(self, client, auth_token):
         """Verify enrollment status shows USED and device_name after registration."""

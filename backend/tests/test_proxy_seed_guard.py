@@ -9,7 +9,6 @@ Tests for:
 """
 import os
 import pytest
-from unittest.mock import patch, MagicMock
 
 # ---------------------------------------------------------------------------
 # 1. Proxy retry / wakeup-message contract tests
@@ -104,8 +103,6 @@ def test_proxy_wakeup_message_contract():
 
 def test_production_guard_raises_on_default_password():
     """lifespan must raise RuntimeError when RENDER is set and password is default."""
-    import asyncio
-    from contextlib import asynccontextmanager
 
     _DEFAULT = "dataghost123"
 

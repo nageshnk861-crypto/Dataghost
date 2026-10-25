@@ -16,14 +16,13 @@ import hashlib
 import json
 import logging
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status, Header
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from auth import get_current_user
 from config import settings
 from database import get_db
 from models import (
@@ -31,7 +30,6 @@ from models import (
     EnrollmentToken,
     DeviceProvisioning,
     DeviceIdentity,
-    EnrollmentState,
     User,
 )
 
@@ -131,7 +129,7 @@ def _generate_device_id(platform: str, db: Session) -> str:
     Format: DG-DEVICE-XXXXXXXX where XXXXXXXX is random hex.
     """
     platform_lower = platform.lower()
-    
+
     # Map platform to short prefix
     prefix_map = {
         "windows": "dg-win",
@@ -142,13 +140,13 @@ def _generate_device_id(platform: str, db: Session) -> str:
         "ios": "dg-ios",
     }
     pfx = prefix_map.get(platform_lower, "dg-dev")
-    
+
     # Generate unique ID with entropy
     for attempt in range(5):
         candidate = f"{pfx}-{secrets.token_hex(4)}"
         if not db.query(Device).filter(Device.device_id == candidate).first():
             return candidate
-    
+
     # Fallback: include timestamp entropy
     return f"{pfx}-{int(_utc_now().timestamp())}-{secrets.token_hex(2)}"
 
@@ -158,20 +156,20 @@ def _validate_attestation(
 ) -> dict:
     """
     Validate platform-specific device attestation.
-    
+
     Returns:
         {"valid": bool, "platform": str, "details": str}
-    
+
     Currently implemented as stub. Production would implement:
     - Android: SafetyNet/Play Integrity API verification
     - iOS: DeviceCheck API verification
     - Windows: TPM attestation verification
     """
     platform_lower = platform.lower()
-    
+
     # Stub implementation: Accept attestation for now
     # Production: Implement actual platform-specific verification
-    
+
     if platform_lower == "android":
         # TODO: Verify SafetyNet/Play Integrity response
         logger.debug("Android attestation validation (stub implementation)")
@@ -218,13 +216,13 @@ def _consume_provisioning_token(token_hash: str, db: Session):
     """
     Find and validate a device provisioning bootstrap token.
     Supports both DeviceProvisioning records and EnrollmentToken records.
-    
+
     Enforces single-use: token can only be consumed once (status transitions
     from ACTIVE/PENDING to CONSUMED_BOOTSTRAP on first use).
-    
+
     Raises:
         HTTPException 401 if token invalid, expired, revoked, or already used
-    
+
     Returns:
         DeviceProvisioning or EnrollmentToken record
     """
@@ -232,12 +230,12 @@ def _consume_provisioning_token(token_hash: str, db: Session):
     prov = db.query(DeviceProvisioning).filter(
         DeviceProvisioning.bootstrap_token_hash == token_hash
     ).first()
-    
+
     if prov:
         exp = prov.expires_at
         if exp and exp.tzinfo is None:
             exp = exp.replace(tzinfo=timezone.utc)
-        
+
         # Check if token has expired
         if exp and now > exp:
             prov.status = "EXPIRED"
@@ -247,7 +245,7 @@ def _consume_provisioning_token(token_hash: str, db: Session):
                 detail="Provisioning bootstrap token has expired",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        
+
         # Check if provisioning record is revoked
         if prov.status == "REVOKED":
             raise HTTPException(
@@ -255,7 +253,7 @@ def _consume_provisioning_token(token_hash: str, db: Session):
                 detail="Invalid token: provisioning bootstrap token has been revoked",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        
+
         # Check if token already been consumed (single-use enforcement)
         if prov.status == "CONSUMED_BOOTSTRAP":
             raise HTTPException(
@@ -263,7 +261,7 @@ def _consume_provisioning_token(token_hash: str, db: Session):
                 detail="Provisioning bootstrap token has already been used (single-use only)",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        
+
         # Mark token as consumed on first use
         prov.status = "CONSUMED_BOOTSTRAP"
         prov.last_used_at = now
@@ -332,7 +330,7 @@ def _get_bootstrap_token(
             detail="Missing Authorization header",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
+
     parts = authorization.split()
     if len(parts) != 2 or parts[0].lower() != "bearer":
         raise HTTPException(
@@ -340,7 +338,7 @@ def _get_bootstrap_token(
             detail="Invalid authorization header format. Expected: Bearer <token>",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
+
     return parts[1]
 
 
@@ -351,7 +349,7 @@ def _extract_provisioning_id_from_token(authorization_token: str, db: Session) -
     """
     if not authorization_token:
         return None
-    
+
     # Try device session token format first (dg_prov_<prov_id>_<random>)
     if authorization_token.startswith("dg_prov_"):
         parts = authorization_token.split("_")
@@ -360,7 +358,7 @@ def _extract_provisioning_id_from_token(authorization_token: str, db: Session) -
                 return int(parts[2])
             except (ValueError, IndexError):
                 pass
-    
+
     # Try raw bootstrap token (look it up in database)
     token_hash = _hash_token(authorization_token)
     prov = db.query(DeviceProvisioning).filter(
@@ -368,7 +366,7 @@ def _extract_provisioning_id_from_token(authorization_token: str, db: Session) -
     ).first()
     if prov:
         return prov.id
-    
+
     enrollment = db.query(EnrollmentToken).filter(
         EnrollmentToken.token_hash == token_hash
     ).first()
@@ -392,19 +390,19 @@ def bootstrap_enrollment(
 ):
     """
     Initialize enrollment with a single-use bootstrap token.
-    
+
     Device provides bootstrap token via Authorization: Bearer <token> header.
     Server validates token, returns configuration and device identity key material.
-    
+
     Request headers:
         Authorization: Bearer <provisioning-bootstrap-token>
-    
+
     Request body (JSON) OR query params:
         device_platform: "Windows|Android|macOS|iOS" (required)
         device_model: "optional"
         os_version: "optional"
         serial_number: "optional"
-    
+
     Response:
         {
             "server_url": "https://...",
@@ -421,11 +419,11 @@ def bootstrap_enrollment(
             detail="Missing Authorization header with bootstrap token",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
+
     # Extract Bearer token
     token = _get_bootstrap_token(authorization)
     token_hash = _hash_token(token)
-    
+
     # Validate provisioning bootstrap token
     prov = _consume_provisioning_token(token_hash, db)
 
@@ -433,21 +431,15 @@ def bootstrap_enrollment(
     if req is not None and req.device_platform:
         plat = req.device_platform
         model = req.device_model
-        os_ver = req.os_version
-        serial = req.serial_number
     elif device_platform:
         plat = device_platform
         model = None
-        os_ver = None
-        serial = None
     elif getattr(prov, "platform", None):
         plat = prov.platform
         model = None
-        os_ver = None
-        serial = None
     else:
         plat = "Windows"
-    
+
     logger.info(
         "Bootstrap enrollment initiated: platform=%s, model=%s, org_id=%s, prov_id=%d",
         plat,
@@ -455,18 +447,18 @@ def bootstrap_enrollment(
         prov.organization_id,
         prov.id,
     )
-    
+
     # Server-generated public key for device identity
     # In production, this would be a real RSA public key or certificate
     # For now, use a placeholder that device stores and uses for future attestation
     device_public_key = f"-----BEGIN PUBLIC KEY-----\n{secrets.token_urlsafe(256)}\n-----END PUBLIC KEY-----"
-    
+
     # Create a device session token that encodes the provisioning record ID
     # This allows us to retrieve the provisioning context in complete()
     device_session_token = f"dg_prov_{prov.id}_{secrets.token_urlsafe(16)}"
-    
+
     server_url = getattr(settings, "SERVER_PUBLIC_URL", "http://localhost:8000")
-    
+
     return {
         "server_url": server_url,
         "organization_id": prov.organization_id,
@@ -495,13 +487,13 @@ def attest_device(
 ):
     """
     Validate device attestation (platform-specific cryptographic proof).
-    
+
     Device provides attestation data signed by device OS security feature
     (Android SafetyNet, iOS DeviceCheck, Windows TPM, etc).
-    
+
     Request headers:
         Authorization: Bearer <bootstrap-token-or-device-token>
-    
+
     Request body (JSON):
         {
             "device_platform": "Android|iOS|Windows|macOS",
@@ -509,7 +501,7 @@ def attest_device(
             "public_key": "-----BEGIN PUBLIC KEY...",
             "device_token": "optional"
         }
-    
+
     Response:
         {
             "attestation_valid": true,
@@ -524,7 +516,7 @@ def attest_device(
             detail="Missing device token (Authorization header or device_token parameter)",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
+
     # Extract token from authorization header
     token_from_header = None
     if authorization:
@@ -532,7 +524,7 @@ def attest_device(
             token_from_header = _get_bootstrap_token(authorization)
         except HTTPException:
             pass
-    
+
     # If this is a raw bootstrap token (not a device session token),
     # validate it has not been revoked or expired
     if token_from_header and not token_from_header.startswith("dg_"):
@@ -544,7 +536,7 @@ def attest_device(
             prov = db.query(EnrollmentToken).filter(
                 EnrollmentToken.token_hash == token_hash
             ).first()
-        
+
         if prov:
             # Check if token is marked as consumed and disallowed for re-use
             if prov.status == "CONSUMED_BOOTSTRAP" and getattr(prov, "organization_id", None) == "consume-org":
@@ -566,14 +558,14 @@ def attest_device(
                     detail="Bootstrap token has expired",
                     headers={"WWW-Authenticate": "Bearer"},
                 )
-    
+
     # Validate attestation based on platform
     attestation_result = _validate_attestation(
         req.device_platform,
         req.attestation_data,
         req.public_key,
     )
-    
+
     if not attestation_result.get("valid"):
         logger.warning(
             "Device attestation failed: platform=%s, reason=%s",
@@ -584,24 +576,24 @@ def attest_device(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Device attestation validation failed: {attestation_result.get('details')}",
         )
-    
+
     # Issue refreshed device token for next step
     # Preserve provisioning ID if present in the original token
     prov_id = None
     if token_from_header:
         prov_id = _extract_provisioning_id_from_token(token_from_header, db)
-    
+
     if prov_id:
         new_device_token = f"dg_prov_{prov_id}_{secrets.token_urlsafe(16)}"
     else:
         new_device_token = f"dg_dev_{secrets.token_urlsafe(32)}"
-    
+
     logger.info(
         "Device attestation validated: platform=%s, attestation_details=%s",
         req.device_platform,
         attestation_result.get("details"),
     )
-    
+
     return {
         "attestation_valid": True,
         "platform": req.device_platform,
@@ -622,18 +614,18 @@ def complete_enrollment(
 ):
     """
     Complete device enrollment and create permanent Device record.
-    
+
     Device provides validated attestation and enrollment details.
     Server creates Device, assigns permanent DG-DEVICE-XXXXXXXX ID,
     stores public key fingerprint for future authentication,
     transitions device to ENROLLED/ACTIVE state.
-    
+
     This endpoint is idempotent: calling multiple times with the same
     token returns the same device_id (no duplicates created).
-    
+
     Request headers:
         Authorization: Bearer <device-session-token>
-    
+
     Request body (JSON):
         {
             "device_platform": "Windows|Android|macOS|iOS",
@@ -645,7 +637,7 @@ def complete_enrollment(
             "hostname": "optional",
             "ip_address": "optional"
         }
-    
+
     Response:
         {
             "device_id": "DG-DEVICE-XXXXXXXX",
@@ -661,12 +653,12 @@ def complete_enrollment(
             detail="Missing Authorization header",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
+
     # Extract device session token
     token = _get_bootstrap_token(authorization)
     prov_id = _extract_provisioning_id_from_token(token, db)
     token_hash = _hash_token(token)
-    
+
     # Get provisioning context to retrieve organization_id
     prov = None
     organization_id = "default-org"
@@ -684,7 +676,7 @@ def complete_enrollment(
     if prov:
         organization_id = prov.organization_id
         logger.debug("Using organization from provisioning record: %s", organization_id)
-    
+
     # IDEMPOTENCY CHECK: Look for existing device created with this same token
     # Device table stores provisioning info in device_metadata JSON
     existing_devices = db.query(Device).filter(
@@ -692,7 +684,7 @@ def complete_enrollment(
         Device.platform == req.device_platform,
         Device.public_key_fingerprint == hashlib.sha256(req.public_key.encode("utf-8")).hexdigest(),
     ).all()
-    
+
     # If a device exists with the same organization, platform, and public key fingerprint,
     # return the existing device (idempotency)
     if existing_devices:
@@ -710,17 +702,17 @@ def complete_enrollment(
             "download_configuration": True,
             "server_url": getattr(settings, "SERVER_PUBLIC_URL", "http://localhost:8000"),
         }
-    
+
     now = _utc_now()
-    
+
     # Generate permanent, unique device ID
     device_id = _generate_device_id(req.device_platform, db)
-    
+
     # Compute public key fingerprint (SHA-256 of PEM-encoded key)
     public_key_fingerprint = hashlib.sha256(
         req.public_key.encode("utf-8")
     ).hexdigest()
-    
+
     # Create Device record
     device = Device(
         device_id=device_id,
@@ -753,7 +745,7 @@ def complete_enrollment(
     db.add(device)
     db.commit()
     db.refresh(device)
-    
+
     # Store device public key and identity
     # Generate unique enrollment code if not provided
     if req.enrollment_code:
@@ -761,7 +753,7 @@ def complete_enrollment(
     else:
         # Generate with higher entropy to ensure uniqueness
         enrollment_code_upper = f"DG-{secrets.token_hex(4).upper()}-{secrets.token_hex(4).upper()}"
-    
+
     device_identity = DeviceIdentity(
         device_id=device_id,
         platform=req.device_platform,
@@ -772,14 +764,14 @@ def complete_enrollment(
     db.add(device_identity)
     db.commit()
     db.refresh(device_identity)
-    
+
     logger.info(
         "Device enrollment completed: device_id=%s, platform=%s, org_id=%s",
         device_id,
         req.device_platform,
         device.organization_id,
     )
-    
+
     return {
         "device_id": device_id,
         "status": "ENROLLED",
@@ -802,16 +794,16 @@ def get_device_configuration(
 ):
     """
     Retrieve device configuration after enrollment.
-    
+
     Device queries configuration including organization, policies,
     heartbeat settings, and agent configuration.
-    
+
     Request headers:
         Authorization: Bearer <device-token>
-    
+
     Query params:
         device_id: Optional[str]
-    
+
     Response:
         {
             "organization_id": "org-xyz",
@@ -827,7 +819,7 @@ def get_device_configuration(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing device authentication",
         )
-    
+
     # In production, use device_id from token claims or parameter
     # For now, use provided device_id
     if not device_id:
@@ -835,14 +827,14 @@ def get_device_configuration(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="device_id required in query parameters",
         )
-    
+
     device = db.query(Device).filter(Device.device_id == device_id).first()
     if not device:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Device {device_id} not found",
         )
-    
+
     return {
         "organization_id": device.organization_id,
         "policy_id": "default-policy",
@@ -873,16 +865,16 @@ def get_dlp_policy(
 ):
     """
     Retrieve DLP policy for device to execute locally.
-    
+
     Device downloads full DLP policy rules to enforce client-side.
-    
+
     Request headers:
         Authorization: Bearer <device-token>
-    
+
     Query params:
         device_id: Optional[str]
         policy_id: Optional[str]
-    
+
     Response:
         {
             "policy_id": "policy-abc",
@@ -897,20 +889,20 @@ def get_dlp_policy(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing device authentication",
         )
-    
+
     if not device_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="device_id required in query parameters",
         )
-    
+
     device = db.query(Device).filter(Device.device_id == device_id).first()
     if not device:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Device {device_id} not found",
         )
-    
+
     return {
         "policy_id": policy_id or "default-policy",
         "version": "1.0",

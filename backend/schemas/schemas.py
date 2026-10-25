@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 class HealthResponse(BaseModel):
     status: str = "ok"
     version: str = "1.0.0"
-    
+
 
 
 # ---------------------------------------------------------------------------
@@ -480,7 +480,6 @@ class AuditLogListResponse(BaseModel):
 # Scan Sessions
 # ---------------------------------------------------------------------------
 
-from typing import Literal
 
 class ScanSessionStartRequest(BaseModel):
     """Sent by the agent when it begins a full-drive scan."""

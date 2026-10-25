@@ -23,7 +23,7 @@ from __future__ import annotations
 import re
 from typing import List, Optional
 
-from detectors.base import BaseDetector, DetectorFinding, _line_col, _redact, _has_high_entropy
+from detectors.base import BaseDetector, DetectorFinding, _line_col, _redact
 
 # ─── Vendor patterns ──────────────────────────────────────────────────────────
 _PATTERNS = [

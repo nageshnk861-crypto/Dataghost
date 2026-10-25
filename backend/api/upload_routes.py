@@ -226,7 +226,7 @@ async def upload_and_scan(
         if total_bytes > MAX_TOTAL_SIZE_BYTES:
             raise HTTPException(
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                detail=f"Total upload size exceeds the 50 MB limit.",
+                detail="Total upload size exceeds the 50 MB limit.",
             )
 
         # Extension + magic validation

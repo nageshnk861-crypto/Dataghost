@@ -101,7 +101,6 @@ class DataGhostClassifier:
         built so that approximate probabilities are available for callers
         that need them.  The wrapper uses sigmoid calibration.
         """
-        from sklearn.model_selection import train_test_split
 
         # Build and fit the core TF-IDF + LinearSVC pipeline.
         self.pipeline = Pipeline(
@@ -133,7 +132,6 @@ class DataGhostClassifier:
         # Build calibrated wrapper for approximate probability output.
         # Use cv=5 cross-validated calibration — works on all sklearn versions.
         try:
-            from sklearn.preprocessing import LabelEncoder
             # CalibratedClassifierCV with cv=5 refits the base estimator
             # internally and builds sigmoid-calibrated probability estimates.
             # We use a fresh LinearSVC (not the already-fitted one) so that

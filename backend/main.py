@@ -11,26 +11,27 @@ import os
 import random
 from datetime import datetime, timedelta, timezone
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
+from sqlalchemy import or_
 
 from api.router import router as api_router
 from api.scan_routes import router as scan_router
 from api.incident_routes import router as incident_router
 from auth import get_password_hash
 from config import settings
-from database import Base, SessionLocal, engine, init_db
+from database import SessionLocal, init_db
+from firebase_auth import initialize_firebase_admin
 from models import Device, Incident, ScanLog, User
 from schemas.schemas import HealthResponse
-from sqlalchemy import or_
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:     %(message)s")
 logger = logging.getLogger(__name__)
 
-from contextlib import asynccontextmanager
 
-from firebase_auth import initialize_firebase_admin
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -415,7 +416,7 @@ def _seed_demo_data(db):
         findings = random.choice(_SAMPLE_FINDINGS)
         cats = sorted(list(set(f.get("category", "") for f in findings if f.get("category"))))
         rules = sorted(list(set(f.get("rule", f.get("rule_name", "")) for f in findings if f.get("rule") or f.get("rule_name"))))
-        
+
         inc = Incident(
             incident_id=f"DG-{year}-{idx+1:04d}",
             timestamp=_rand_timestamp(7),

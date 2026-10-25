@@ -2,7 +2,6 @@
 DataGhost – SQLAlchemy database setup.
 Uses a synchronous engine; compatible with both SQLite (dev) and PostgreSQL (prod).
 """
-import os
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 from config import settings
@@ -59,7 +58,6 @@ def init_db():
     # PostgreSQL relies on Alembic migrations.
     is_sqlite = engine.dialect.name == "sqlite" or str(settings.DATABASE_URL).startswith("sqlite")
     if is_sqlite:
-        bool_false_default = "0"
         with engine.connect() as conn:
             # 1. Migrate incidents table if needed
             try:
@@ -115,7 +113,7 @@ def init_db():
                         conn.execute(text("ALTER TABLE devices ADD COLUMN created_at DATETIME"))
                     if "updated_at" not in dev_cols:
                         conn.execute(text("ALTER TABLE devices ADD COLUMN updated_at DATETIME"))
-                    
+
                     # New enrollment system columns
                     if "public_key_fingerprint" not in dev_cols:
                         conn.execute(text("ALTER TABLE devices ADD COLUMN public_key_fingerprint VARCHAR(64)"))
@@ -134,25 +132,25 @@ def init_db():
 
                     # Backfill platform for existing devices
                     conn.execute(text("""
-                        UPDATE devices SET platform = 'Windows' 
+                        UPDATE devices SET platform = 'Windows'
                         WHERE (platform IS NULL OR platform = '') AND (os_type = 'win32' OR os_type = 'Windows')
                     """))
                     conn.execute(text("""
-                        UPDATE devices SET platform = 'Linux' 
+                        UPDATE devices SET platform = 'Linux'
                         WHERE (platform IS NULL OR platform = '') AND (os_type = 'linux' OR os_type = 'Linux')
                     """))
                     conn.execute(text("""
-                        UPDATE devices SET platform = 'macOS' 
+                        UPDATE devices SET platform = 'macOS'
                         WHERE (platform IS NULL OR platform = '') AND (os_type = 'darwin' OR os_type = 'macOS')
                     """))
                     conn.execute(text("""
-                        UPDATE devices SET platform = 'Windows' 
+                        UPDATE devices SET platform = 'Windows'
                         WHERE platform IS NULL OR platform = ''
                     """))
 
                     # Backfill user_id for existing devices if NULL or empty
                     conn.execute(text("""
-                        UPDATE devices SET user_id = 1 
+                        UPDATE devices SET user_id = 1
                         WHERE user_id IS NULL OR user_id = ''
                     """))
                     conn.execute(text("""

@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from config import settings
 from database import get_db
+from firebase_auth import verify_firebase_token
 from models import User
 
 # ---------------------------------------------------------------------------
@@ -58,7 +59,6 @@ def verify_token(token: str) -> Optional[str]:
         return None
 
 
-from firebase_auth import verify_firebase_token
 
 
 def _resolve_firebase_user(firebase_claims: dict, db: Session) -> Optional[User]:
@@ -159,7 +159,7 @@ def get_current_user(
     # 1. Attempt standard DataGhost JWT verification
     username = verify_token(raw_token)
     if username is not None:
-        user = db.query(User).filter(User.username == username, User.is_active == True).first()
+        user = db.query(User).filter(User.username == username, User.is_active is True).first()
         if user is not None:
             return user
 
@@ -189,7 +189,7 @@ def get_optional_current_user(
     # 1. Check custom JWT
     username = verify_token(raw_token)
     if username is not None:
-        user = db.query(User).filter(User.username == username, User.is_active == True).first()
+        user = db.query(User).filter(User.username == username, User.is_active is True).first()
         if user is not None:
             return user
 

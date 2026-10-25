@@ -3,7 +3,6 @@ Tests for DataGhost DLP Scanning Layer (Phase 1).
 Validates all 16 DLP rules, context-awareness, finding structures, and false positive rejection.
 All test credentials and PII samples are fake mock values.
 """
-import pytest
 from scanner.dlp_scanner import scan_text
 from scanner.dlp_rules import DLP_RULES, DLP_RULES_BY_NAME
 from scanner.sensitive_scanner import SensitiveScanner
@@ -182,7 +181,7 @@ class TestFinancialRules:
         from pathlib import Path
         backend_dir = Path(__file__).resolve().parent.parent
         sys.path.insert(0, str(backend_dir.parent / "agent"))
-        from dataghost_agent import _redact_evidence, scan_file_for_findings
+        from dataghost_agent import scan_file_for_findings
 
         file_content = b"CRITICAL FILE CONTENT\nSECRET KEY IS password=SuperSecretPassword1234\nCARD 4111 1111 1111 1111 END"
         findings = scan_file_for_findings("confidential_doc.txt", file_content, "dg-test-dev")

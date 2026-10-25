@@ -58,7 +58,6 @@ _firebase_admin_available = False
 
 try:
     import firebase_admin
-    from firebase_admin import auth as _fb_auth
     from firebase_admin import credentials as _fb_creds
 
     _firebase_admin_available = True

@@ -11,7 +11,7 @@ import os
 import sys
 import logging
 from pathlib import Path
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, inspect
 from alembic.config import Config
 from alembic import command
 
@@ -47,7 +47,7 @@ def run_safe_migrations(db_url: str = None) -> None:
             # Detect which revision corresponds to the current schema
             dev_cols = {c["name"] for c in insp.get_columns("devices")} if "devices" in table_names else set()
             sl_cols = {c["name"] for c in insp.get_columns("scan_logs")} if "scan_logs" in table_names else set()
-            f_cols = {c["name"] for c in insp.get_columns("findings")} if "findings" in table_names else set()
+            {c["name"] for c in insp.get_columns("findings")} if "findings" in table_names else set()
 
             if "scan_sessions" in table_names:
                 stamp_rev = "d4e5f6a7b8c9"

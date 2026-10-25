@@ -4,7 +4,6 @@ Supports plain text, PDF, DOCX, and falls back to UTF-8 decode for unknown types
 """
 import io
 import logging
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 

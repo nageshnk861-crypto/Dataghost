@@ -19,7 +19,7 @@ def _utc_now():
 class EnrollmentState(str, Enum):
     """
     Enrollment state machine for device provisioning and enrollment.
-    
+
     Success states:
     - NEW: Device record created, awaiting enrollment initiation
     - DISCOVERING_CONFIGURATION: Device discovering organization configuration
@@ -31,7 +31,7 @@ class EnrollmentState(str, Enum):
     - CONFIGURING_AGENT: Agent configuration download in progress
     - POLICY_DOWNLOADED: DLP policy successfully downloaded
     - ACTIVE: Device protection active and operational
-    
+
     Failure states:
     - CONFIGURATION_NOT_FOUND: Organization/enrollment configuration not found
     - AUTHENTICATION_FAILED: Device authentication failed
@@ -52,7 +52,7 @@ class EnrollmentState(str, Enum):
     CONFIGURING_AGENT = "CONFIGURING_AGENT"
     POLICY_DOWNLOADED = "POLICY_DOWNLOADED"
     ACTIVE = "ACTIVE"
-    
+
     # Failure states
     CONFIGURATION_NOT_FOUND = "CONFIGURATION_NOT_FOUND"
     AUTHENTICATION_FAILED = "AUTHENTICATION_FAILED"
@@ -105,13 +105,13 @@ class Device(Base):
     agent_version = Column(String(32), nullable=True)
     files_scanned = Column(Integer, default=0)
     incidents_count = Column(Integer, default=0)
-    
+
     # New enrollment system columns (optional for existing devices)
     public_key_fingerprint = Column(String(64), nullable=True)       # SHA-256 hash of public key
     attestation_status = Column(String(32), default="PENDING")       # PENDING | VALID | INVALID | NOT_SUPPORTED
     identity_provided_by = Column(String(32), nullable=True)         # TPM | KEYSTORE | KEYCHAIN | MANUAL
     crypto_algorithm = Column(String(32), default="RSA-2048")        # RSA-2048 | RSA-4096 | EC-P256
-    
+
     # Device security and remote command coordination
     device_token_hash = Column(String(64), nullable=True, index=True) # SHA-256 hash of device auth token
     auth_token = Column(String(128), nullable=True, index=True)      # Legacy/compat token field
@@ -145,12 +145,12 @@ class EnrollmentToken(Base):
 class DeviceProvisioning(Base):
     """
     Bulk device provisioning records created by administrators.
-    
+
     Stores hashed bootstrap tokens (never plaintext) for secure device provisioning.
     Administrators create provisioning records before deploying devices.
     Devices discover their organization and enrollment configuration through
     these records using MDM, enrollment metadata, or device identity.
-    
+
     Bootstrap tokens are:
     - Generated securely (server-side, 32+ bytes entropy)
     - SHA-256 hashed before storage
@@ -166,10 +166,10 @@ class DeviceProvisioning(Base):
     platform = Column(String(32), nullable=False)                     # Windows | Android | macOS | iOS
     status = Column(String(16), default="ACTIVE", index=True)         # ACTIVE | REVOKED | EXPIRED
     provisioning_method = Column(String(32), default="AUTOMATIC_ENROLLMENT")  # AUTOMATIC_ENROLLMENT | QR_ENROLLMENT | MANUAL_CODE
-    
+
     # Bootstrap token: hashed (never plaintext)
     bootstrap_token_hash = Column(String(64), unique=True, index=True, nullable=False)
-    
+
     # Provisioning tracking
     device_count = Column(Integer, default=0)                         # Number of devices using this provisioning
     created_by = Column(String(64), nullable=True)
@@ -178,7 +178,7 @@ class DeviceProvisioning(Base):
     revoked_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=_utc_now)
     updated_at = Column(DateTime, default=_utc_now, onupdate=_utc_now)
-    
+
     # Indexes for common queries
     __table_args__ = (
         Index("ix_device_provisioning_org_id_status", organization_id, status),
@@ -189,22 +189,22 @@ class DeviceProvisioning(Base):
 class DeviceIdentity(Base):
     """
     Unique cryptographic device identity and attestation records.
-    
+
     Each enrolled device receives a unique DataGhost device identity in format:
     DG-DEVICE-XXXXXXXX (where XXXXXXXX is hex entropy).
-    
+
     Device identity workflow:
     1. Device generates or receives cryptographic keypair
     2. Public key registered with server during enrollment
     3. Private key stored in OS-secure storage (TPM, Keystore, Keychain)
     4. Server stores public key fingerprint and attestation data
     5. Device proves identity by signing challenges with private key
-    
+
     Attestation (where supported):
     - Android: Device attestation via Android API
     - iOS/macOS: Certificate-based or Secure Enclave identity
     - Windows: TPM-backed attestation
-    
+
     No private keys are ever transmitted to or stored on the server.
     """
     __tablename__ = "device_identity"
@@ -212,19 +212,19 @@ class DeviceIdentity(Base):
     id = Column(Integer, primary_key=True, index=True)
     device_id = Column(String(32), unique=True, index=True, nullable=False)  # Format: DG-DEVICE-XXXXXXXX
     platform = Column(String(32), nullable=False)                              # Windows | Android | macOS | iOS
-    
+
     # Public key (PEM-encoded, never private key)
     public_key = Column(Text, nullable=False)                                  # PEM-encoded public key
-    
+
     # Attestation data (platform-specific)
     attestation_data = Column(JSON, nullable=True)                             # Platform attestation response
-    
+
     # Enrollment code for user-friendly reference
     enrollment_code = Column(String(16), unique=True, index=True, nullable=False)  # Format: DG-XXXX-XXXX
-    
+
     created_at = Column(DateTime, default=_utc_now)
     updated_at = Column(DateTime, default=_utc_now, onupdate=_utc_now)
-    
+
     # Indexes for common queries
     __table_args__ = (
         Index("ix_device_identity_platform", platform),
@@ -244,7 +244,7 @@ class Incident(Base):
     user = Column(String(64), nullable=True, index=True)        # user triggering the event
     filename = Column(String(512), nullable=True)
     file_hash = Column(String(128), nullable=True)
-    
+
     # Classification & Risk Metrics
     classification = Column(String(32), nullable=True, index=True) # PUBLIC | INTERNAL | CONFIDENTIAL | RESTRICTED
     confidence = Column(Float, default=1.0)
@@ -252,11 +252,11 @@ class Incident(Base):
     severity = Column(String(16), default="LOW", index=True)       # LOW | MEDIUM | HIGH | CRITICAL
     recommended_action = Column(String(16), default="ALLOW", index=True) # ALLOW | ALERT | BLOCK
     action_taken = Column(String(16), default="ALLOWED")           # ALLOWED | ALERTED | BLOCKED
-    
+
     # Destination & Event Action
     destination = Column(String(32), default="INTERNAL", index=True) # LOCAL | INTERNAL | CLOUD | USB | EXTERNAL
     action = Column(String(32), default="READ")                     # READ | COPY | SHARE | EMAIL | UPLOAD
-    
+
     # Incident Workflow Status (OPEN | ACKNOWLEDGED | RESOLVED)
     status = Column(String(16), default="OPEN", index=True, nullable=False)
 
@@ -267,7 +267,7 @@ class Incident(Base):
     findings_json = Column(Text, nullable=True)         # JSON-serialised list of masked findings
     categories_json = Column(Text, nullable=True)       # JSON-serialised list of detected categories
     triggered_rules_json = Column(Text, nullable=True)  # JSON-serialised list of triggered rules
-    
+
     device_id = Column(String(64), nullable=True, index=True)
     created_at = Column(DateTime, default=_utc_now)
     updated_at = Column(DateTime, default=_utc_now, onupdate=_utc_now)

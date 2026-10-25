@@ -5,11 +5,9 @@ and OpenAPI / Swagger doc availability.
 All test samples use mock/fake data.
 """
 import io
-import pytest
 from fastapi.testclient import TestClient
 
 from main import app
-from schemas.schemas import ScanResponse, HealthResponse
 
 client = TestClient(app)
 

@@ -17,7 +17,6 @@ Test priorities:
 5. Cross-user isolation:
    - User A cannot view User B's enrolled device, scan sessions, or findings (403/404).
 """
-import uuid
 import secrets
 from datetime import datetime, timezone, timedelta
 import pytest
@@ -25,7 +24,7 @@ from fastapi.testclient import TestClient
 
 from main import app
 from database import SessionLocal, init_db
-from models import Device, Finding, User, EnrollmentToken, ScanSession
+from models import Device, Finding, User, EnrollmentToken
 from auth import create_access_token, get_password_hash
 
 client = TestClient(app)

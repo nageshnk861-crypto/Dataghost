@@ -22,7 +22,7 @@ from __future__ import annotations
 import re
 from typing import List, Optional
 
-from detectors.base import BaseDetector, DetectorFinding, _line_col, _redact
+from detectors.base import BaseDetector, DetectorFinding, _line_col
 
 # ─── Patterns ─────────────────────────────────────────────────────────────────
 

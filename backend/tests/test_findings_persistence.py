@@ -10,17 +10,15 @@ Covers:
   6. Findings API: GET /findings, GET /findings/stats, GET /findings/{id}, PATCH /findings/{id}.
   7. RBAC & IDOR protection (analysts restricted to their own findings/devices).
 """
-import json
 import uuid
 import pytest
-from datetime import datetime, timezone
 from fastapi.testclient import TestClient
 
 
 from main import app
 from database import SessionLocal, init_db
 from auth import create_access_token, get_password_hash
-from models import Finding, AuditLog, ScanLog, Incident, User, Device
+from models import Finding, AuditLog, ScanLog, User, Device
 
 client = TestClient(app)
 

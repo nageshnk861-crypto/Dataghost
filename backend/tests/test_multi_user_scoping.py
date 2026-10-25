@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 
 from main import app
 from database import SessionLocal, init_db
-from models import Device, Finding, Incident, ScanLog, User, EnrollmentToken
+from models import Device, Finding, Incident, User
 from auth import create_access_token, get_password_hash
 
 client = TestClient(app)

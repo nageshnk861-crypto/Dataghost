@@ -62,7 +62,8 @@ FAKE_EC_KEY_HEADER   = "-----BEGIN EC PRIVATE KEY-----"
 FAKE_SSH_KEY_HEADER  = "-----BEGIN OPENSSH PRIVATE KEY-----"
 
 # Synthetic JWT (nonfunctional – fabricated header/payload/signature)
-import base64, json as _json
+import base64
+import json as _json
 def _make_fake_jwt() -> str:
     header  = base64.urlsafe_b64encode(_json.dumps({"alg": "HS256", "typ": "JWT"}).encode()).rstrip(b"=").decode()
     payload = base64.urlsafe_b64encode(_json.dumps({"sub": "test-user", "role": "analyst"}).encode()).rstrip(b"=").decode()
@@ -572,7 +573,7 @@ class TestDetectorRegistry:
     def test_failing_detector_does_not_break_others(self):
         """If one detector throws, others should still produce findings."""
         from detectors.registry import DetectorRegistry
-        from detectors.base import BaseDetector, DetectorFinding
+        from detectors.base import BaseDetector
 
         class BrokenDetector(BaseDetector):
             detector_id = "broken"
@@ -614,7 +615,7 @@ class TestDetectorRegistry:
         registry = self._registry()
         binary_text = "\x00\x01\x02\xff\xfe binary data \x80\x81"
         try:
-            findings = registry.scan(binary_text)
+            registry.scan(binary_text)
         except Exception as e:
             pytest.fail(f"Registry crashed on binary-like text: {e}")
 

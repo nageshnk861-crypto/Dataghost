@@ -11,7 +11,7 @@ if str(backend_dir) not in sys.path:
 try:
     from config import settings
     from database import Base
-    import models  # registers models
+    import models  # noqa: F401  # registers models with Alembic metadata
     db_url = settings.DATABASE_URL
 except ImportError:
     from app.core.config import settings

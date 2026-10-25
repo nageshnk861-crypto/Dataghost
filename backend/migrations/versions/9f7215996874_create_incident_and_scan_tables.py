@@ -1,7 +1,7 @@
 """create_incident_and_scan_tables
 
 Revision ID: 9f7215996874
-Revises: 
+Revises:
 """
 from alembic import op
 import sqlalchemy as sa

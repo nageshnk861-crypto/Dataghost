@@ -8,11 +8,8 @@ import hashlib
 import os
 import secrets
 import sys
-import tempfile
-import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Generator
 
 # Ensure agent directory is in sys.path
 _repo_root = Path(__file__).resolve().parent.parent.parent
@@ -20,10 +17,8 @@ _agent_dir = str(_repo_root / "agent")
 if _agent_dir not in sys.path:
     sys.path.insert(0, _agent_dir)
 
-import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Bootstrap the app with a throw-away in-memory DB
@@ -31,9 +26,7 @@ from sqlalchemy.orm import Session, sessionmaker
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-scan-sessions")
 
-from database import Base, get_db  # noqa: E402
-from main import app               # noqa: E402
-from models import Device, ScanSession, User  # noqa: E402
+from models import Device, User  # noqa: E402
 
 
 
@@ -255,7 +248,7 @@ class TestScanSessionOwnership:
         assert r_list.status_code == 404
 
     def test_admin_sees_any_device_sessions(self, client: TestClient, db: Session):
-        admin = _make_user(db, "scan_admin_user", role="admin")
+        _make_user(db, "scan_admin_user", role="admin")
         analyst = _make_user(db, "scan_analyst_for_admin")
         device, token = _make_device(db, analyst, "AdminViewDev")
 

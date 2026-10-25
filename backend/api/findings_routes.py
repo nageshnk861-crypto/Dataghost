@@ -18,9 +18,9 @@ SECURITY:
 """
 import math
 from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import or_, func, desc, asc
 from sqlalchemy.orm import Session
 

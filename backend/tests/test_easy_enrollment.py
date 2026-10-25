@@ -33,7 +33,7 @@ def test_create_easy_enrollment_endpoint(auth_headers):
     assert data["enrollment_code"].startswith("DG-")
     assert "qr_data" in data
     assert data["platform"] == "Android"
-    
+
     # QR data should be a direct web URL to /enroll/{code}
     assert "/enroll/" in data["qr_data"]
     assert data["enrollment_code"] in data["qr_data"]

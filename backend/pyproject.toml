@@ -1,0 +1,16 @@
+[tool.ruff]
+line-length = 200
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+ignore = [
+    "E501",   # Line too long — long lines exist in data structures and regex patterns
+    "E712",   # SQLAlchemy ORM requires `== True` / `== False` in .filter() clauses
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Test files and scripts must do sys.path.insert() before importing project modules
+"tests/**" = ["E402", "F401", "F841", "E722"]
+"scripts/**" = ["E402"]
+"migrations/**" = ["E402", "F401"]
+"classifier/train_classifier.py" = ["E402"]

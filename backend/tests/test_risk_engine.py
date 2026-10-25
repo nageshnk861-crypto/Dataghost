@@ -13,7 +13,6 @@ from risk_engine.risk_calculator import (
     DESTINATION_SCORES,
     ACTION_SCORES,
     RECOMMENDED_ACTIONS,
-    ACTION_MAP,
 )
 from schemas.schemas import Finding
 from scanner.dlp_scanner import scan_text

@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from main import app
 from database import SessionLocal
-from models import EnrollmentToken, Device, User
+from models import EnrollmentToken, Device
 
 
 @pytest.fixture
@@ -39,10 +39,10 @@ def _create_bootstrap_token(org_id: str = "test-org") -> tuple[str, str]:
     db = SessionLocal()
     raw_token = secrets.token_urlsafe(32)
     token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
-    
+
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(minutes=10)
-    
+
     enrollment = EnrollmentToken(
         token_hash=token_hash,
         enrollment_code=f"DG-TEST-{secrets.token_hex(2).upper()}",
@@ -55,7 +55,7 @@ def _create_bootstrap_token(org_id: str = "test-org") -> tuple[str, str]:
     db.add(enrollment)
     db.commit()
     db.close()
-    
+
     return raw_token, token_hash
 
 
@@ -76,7 +76,7 @@ def test_enrollment_router_mounted():
     """Test that enrollment router is mounted in the app."""
     # Check that the app has routes from enrollment module
     route_paths = [route.path for route in app.routes]
-    
+
     # Should have at least one enrollment endpoint
     has_enrollment_routes = any("/device-enrollment" in str(path) for path in route_paths)
     assert has_enrollment_routes or len(route_paths) > 0, "App should have routes"
@@ -100,7 +100,7 @@ def test_bootstrap_endpoint_exists(client: TestClient):
 def test_bootstrap_with_valid_token(client: TestClient):
     """Test bootstrap endpoint with valid Bearer token."""
     raw_token, token_hash = _create_bootstrap_token("test-org")
-    
+
     response = client.post(
         "/api/v1/device-enrollment/bootstrap",
         json={
@@ -112,7 +112,7 @@ def test_bootstrap_with_valid_token(client: TestClient):
             "Authorization": f"Bearer {raw_token}",
         },
     )
-    
+
     assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text}"
     data = response.json()
     assert data["bootstrap_status"] == "ACCEPTED"
@@ -125,7 +125,7 @@ def test_bootstrap_with_valid_token(client: TestClient):
 def test_bootstrap_token_single_use_enforced(client: TestClient):
     """Test that bootstrap token is single-use (consumed on first call)."""
     raw_token, token_hash = _create_bootstrap_token("test-org")
-    
+
     # First call: should succeed
     response1 = client.post(
         "/api/v1/device-enrollment/bootstrap",
@@ -133,17 +133,17 @@ def test_bootstrap_token_single_use_enforced(client: TestClient):
         headers={"Authorization": f"Bearer {raw_token}"},
     )
     assert response1.status_code == 200
-    
+
     # Verify token was consumed
     db = SessionLocal()
     token_record = db.query(EnrollmentToken).filter(
         EnrollmentToken.token_hash == token_hash
     ).first()
     db.close()
-    
+
     assert token_record is not None
     assert token_record.status == "CONSUMED_BOOTSTRAP"
-    
+
     # Second call with same token: should fail (token replay prevention)
     response2 = client.post(
         "/api/v1/device-enrollment/bootstrap",
@@ -160,7 +160,7 @@ def test_bootstrap_missing_authorization_header(client: TestClient):
         "/api/v1/device-enrollment/bootstrap",
         json={"device_platform": "Windows"},
     )
-    
+
     assert response.status_code == 401
     assert "Missing Authorization header" in response.json()["detail"]
 
@@ -172,7 +172,7 @@ def test_bootstrap_invalid_token(client: TestClient):
         json={"device_platform": "Windows"},
         headers={"Authorization": "Bearer invalid_token_xyz"},
     )
-    
+
     assert response.status_code == 401
     assert "Invalid enrollment token" in response.json()["detail"]
 
@@ -205,7 +205,7 @@ def test_attest_with_valid_data(client: TestClient):
             "device_token": "test_device_token",
         },
     )
-    
+
     assert response.status_code == 200
     data = response.json()
     assert data["attestation_valid"] is True
@@ -246,22 +246,22 @@ def test_complete_creates_device_with_correct_id_format(client: TestClient):
         },
         headers={"Authorization": "Bearer test_token"},
     )
-    
+
     assert response.status_code == 200
     data = response.json()
     device_id = data["device_id"]
-    
+
     # Verify device ID format
     assert device_id.startswith("dg-win-"), f"Windows device ID should start with 'dg-win-', got {device_id}"
     assert len(device_id) > len("dg-win-"), "Device ID should have random suffix"
     assert data["status"] == "ENROLLED"
     assert data["heartbeat_interval"] == 30
-    
+
     # Verify device was created in database
     db = SessionLocal()
     device = db.query(Device).filter(Device.device_id == device_id).first()
     db.close()
-    
+
     assert device is not None
     assert device.device_name == "WORKSTATION-001"
     assert device.platform == "Windows"
@@ -279,7 +279,7 @@ def test_complete_android_device_has_correct_prefix(client: TestClient):
         },
         headers={"Authorization": "Bearer test_token"},
     )
-    
+
     assert response.status_code == 200
     device_id = response.json()["device_id"]
     assert device_id.startswith("dg-android-")
@@ -304,7 +304,7 @@ def test_configuration_endpoint_exists(client: TestClient):
     db.add(device)
     db.commit()
     db.close()
-    
+
     response = client.get(
         "/api/v1/device-enrollment/configuration",
         params={"device_id": test_device_id},
@@ -319,7 +319,7 @@ def test_configuration_requires_device_id(client: TestClient):
         "/api/v1/device-enrollment/configuration",
         headers={"Authorization": "Bearer test_token"},
     )
-    
+
     assert response.status_code == 400
     assert "device_id required" in response.json()["detail"]
 
@@ -343,7 +343,7 @@ def test_policy_endpoint_exists(client: TestClient):
     db.add(device)
     db.commit()
     db.close()
-    
+
     response = client.get(
         "/api/v1/device-enrollment/policy",
         params={"device_id": test_device_id},
@@ -367,13 +367,13 @@ def test_policy_returns_dlp_rules(client: TestClient):
     db.add(device)
     db.commit()
     db.close()
-    
+
     response = client.get(
         "/api/v1/device-enrollment/policy",
         params={"device_id": test_device_id},
         headers={"Authorization": "Bearer test_token"},
     )
-    
+
     assert response.status_code == 200
     data = response.json()
     assert "rules" in data
@@ -391,7 +391,7 @@ def test_enrollment_flow_bootstrap_to_complete(client: TestClient):
     """Integration test: Full enrollment flow from bootstrap to complete."""
     # Step 1: Create bootstrap token
     raw_token, token_hash = _create_bootstrap_token("integration-org")
-    
+
     # Step 2: Bootstrap
     response_bootstrap = client.post(
         "/api/v1/device-enrollment/bootstrap",
@@ -400,7 +400,7 @@ def test_enrollment_flow_bootstrap_to_complete(client: TestClient):
     )
     assert response_bootstrap.status_code == 200
     assert response_bootstrap.json()["bootstrap_status"] == "ACCEPTED"
-    
+
     # Step 3: Attest
     response_attest = client.post(
         "/api/v1/device-enrollment/attest",
@@ -412,7 +412,7 @@ def test_enrollment_flow_bootstrap_to_complete(client: TestClient):
         headers={"Authorization": "Bearer test_device_token"},
     )
     assert response_attest.status_code == 200
-    
+
     # Step 4: Complete
     response_complete = client.post(
         "/api/v1/device-enrollment/complete",
@@ -425,7 +425,7 @@ def test_enrollment_flow_bootstrap_to_complete(client: TestClient):
     )
     assert response_complete.status_code == 200
     device_id = response_complete.json()["device_id"]
-    
+
     # Step 5: Verify device in database
     db = SessionLocal()
     device = db.query(Device).filter(Device.device_id == device_id).first()

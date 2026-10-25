@@ -18,11 +18,8 @@ Tests:
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
-from sqlalchemy import text
 
 from auth import create_access_token, get_password_hash
-from database import get_db
-from main import app
 from models import Device, User
 
 

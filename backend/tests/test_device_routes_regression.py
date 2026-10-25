@@ -38,12 +38,12 @@ def db_session() -> Session:
 def admin_user(db_session: Session) -> User:
     """Create test admin user."""
     db = db_session
-    
+
     existing = db.query(User).filter(User.username == "regression_admin").first()
     if existing:
         db.delete(existing)
         db.commit()
-    
+
     user = User(
         username="regression_admin",
         email="regression@test.local",
@@ -85,10 +85,10 @@ def cleanup_test_devices(db_session: Session):
 def test_device(db_session: Session) -> Device:
     """Create a test device."""
     db = db_session
-    
+
     import uuid
     device_id = f"legacy-device-{uuid.uuid4().hex[:8]}"
-    
+
     device = Device(
         device_id=device_id,
         device_name="Legacy Test Device",
@@ -119,7 +119,7 @@ def test_legacy_device_registration_endpoint(client: TestClient, admin_token: st
         },
         headers={"Authorization": f"Bearer {admin_token}"},
     )
-    
+
     # Endpoint should still exist (may be 200 or other status)
     assert response.status_code != 404
 
@@ -127,7 +127,7 @@ def test_legacy_device_registration_endpoint(client: TestClient, admin_token: st
 def test_device_creation_with_legacy_fields(client: TestClient, db_session: Session):
     """Test that Device can still be created with legacy fields."""
     db = db_session
-    
+
     device = Device(
         device_id="legacy-fields-001",
         device_name="Legacy Fields Device",
@@ -140,7 +140,7 @@ def test_device_creation_with_legacy_fields(client: TestClient, db_session: Sess
     )
     db.add(device)
     db.commit()
-    
+
     # Verify device was created
     retrieved = db.query(Device).filter(Device.device_id == "legacy-fields-001").first()
     assert retrieved is not None
@@ -158,7 +158,7 @@ def test_device_post_endpoint_still_works(client: TestClient):
             "platform": "Windows",
         },
     )
-    
+
     # Endpoint may require auth, return 405, or may not exist
     assert response.status_code in (200, 201, 401, 404, 405)
 
@@ -173,7 +173,7 @@ def test_get_devices_list_still_works(client: TestClient, admin_token: str, test
         "/api/v1/devices",
         headers={"Authorization": f"Bearer {admin_token}"},
     )
-    
+
     # Should not 404
     assert response.status_code != 404
 
@@ -181,12 +181,12 @@ def test_get_devices_list_still_works(client: TestClient, admin_token: str, test
 def test_get_device_by_id_still_works(client: TestClient, admin_token: str, test_device: Device):
     """Test that GET /devices/{id} endpoint still works."""
     device_id = test_device.device_id
-    
+
     response = client.get(
         f"/api/v1/devices/{device_id}",
         headers={"Authorization": f"Bearer {admin_token}"},
     )
-    
+
     # Should either return device or require auth
     assert response.status_code in (200, 401, 404)
 
@@ -194,12 +194,12 @@ def test_get_device_by_id_still_works(client: TestClient, admin_token: str, test
 def test_get_device_by_numeric_id_still_works(client: TestClient, admin_token: str, test_device: Device):
     """Test that GET /devices/{numeric_id} endpoint still works."""
     numeric_id = test_device.id
-    
+
     response = client.get(
         f"/api/v1/devices/{numeric_id}",
         headers={"Authorization": f"Bearer {admin_token}"},
     )
-    
+
     # Should either return device or require auth
     assert response.status_code in (200, 401, 404)
 
@@ -211,7 +211,7 @@ def test_get_device_by_numeric_id_still_works(client: TestClient, admin_token: s
 def test_device_heartbeat_endpoint_still_works(client: TestClient, test_device: Device):
     """Test that POST /devices/{id}/heartbeat endpoint still works."""
     device_id = test_device.device_id
-    
+
     response = client.post(
         f"/api/v1/devices/{device_id}/heartbeat",
         json={
@@ -219,7 +219,7 @@ def test_device_heartbeat_endpoint_still_works(client: TestClient, test_device: 
             "last_scan_time": "2024-01-01T00:00:00Z",
         },
     )
-    
+
     # Should not 404
     assert response.status_code != 404
 
@@ -242,7 +242,7 @@ def test_legacy_heartbeat_body_field_endpoint(client: TestClient, db_session: Se
             "status": "ACTIVE",
         },
     )
-    
+
     # Should not 404
     assert response.status_code != 404
 
@@ -254,7 +254,7 @@ def test_legacy_heartbeat_body_field_endpoint(client: TestClient, db_session: Se
 def test_patch_device_endpoint_still_works(client: TestClient, admin_token: str, test_device: Device):
     """Test that PATCH /devices/{id} endpoint still works."""
     device_id = test_device.device_id
-    
+
     response = client.patch(
         f"/api/v1/devices/{device_id}",
         json={
@@ -263,7 +263,7 @@ def test_patch_device_endpoint_still_works(client: TestClient, admin_token: str,
         },
         headers={"Authorization": f"Bearer {admin_token}"},
     )
-    
+
     # Should either update or require auth
     assert response.status_code in (200, 401, 404)
 
@@ -271,7 +271,7 @@ def test_patch_device_endpoint_still_works(client: TestClient, admin_token: str,
 def test_device_name_update_preserved(client: TestClient, db_session: Session):
     """Test that device name updates are preserved."""
     db = db_session
-    
+
     device = Device(
         device_id="update-test-001",
         device_name="Original Name",
@@ -280,11 +280,11 @@ def test_device_name_update_preserved(client: TestClient, db_session: Session):
     db.add(device)
     db.commit()
     device_id = device.id
-    
+
     # Update device name
     device.device_name = "Updated Name"
     db.commit()
-    
+
     # Verify update
     retrieved = db.query(Device).filter(Device.id == device_id).first()
     assert retrieved.device_name == "Updated Name"
@@ -293,7 +293,7 @@ def test_device_name_update_preserved(client: TestClient, db_session: Session):
 def test_device_status_update_preserved(client: TestClient, db_session: Session):
     """Test that device status updates are preserved."""
     db = db_session
-    
+
     device = Device(
         device_id="status-test-001",
         device_name="Status Test",
@@ -303,11 +303,11 @@ def test_device_status_update_preserved(client: TestClient, db_session: Session)
     db.add(device)
     db.commit()
     device_id = device.id
-    
+
     # Update status
     device.status = "OFFLINE"
     db.commit()
-    
+
     # Verify update
     retrieved = db.query(Device).filter(Device.id == device_id).first()
     assert retrieved.status == "OFFLINE"
@@ -320,12 +320,12 @@ def test_device_status_update_preserved(client: TestClient, db_session: Session)
 def test_delete_device_endpoint_still_works(client: TestClient, admin_token: str, test_device: Device):
     """Test that DELETE /devices/{id} endpoint still works."""
     device_id = test_device.device_id
-    
+
     response = client.delete(
         f"/api/v1/devices/{device_id}",
         headers={"Authorization": f"Bearer {admin_token}"},
     )
-    
+
     # Should not 404
     assert response.status_code != 404
 
@@ -333,7 +333,7 @@ def test_delete_device_endpoint_still_works(client: TestClient, admin_token: str
 def test_device_deletion_in_database(client: TestClient, db_session: Session):
     """Test that devices can be deleted from database."""
     db = db_session
-    
+
     device = Device(
         device_id="delete-test-001",
         device_name="To Be Deleted",
@@ -342,11 +342,11 @@ def test_device_deletion_in_database(client: TestClient, db_session: Session):
     db.add(device)
     db.commit()
     device_id = device.id
-    
+
     # Delete
     db.delete(device)
     db.commit()
-    
+
     # Verify deletion
     retrieved = db.query(Device).filter(Device.id == device_id).first()
     assert retrieved is None
@@ -359,13 +359,13 @@ def test_device_deletion_in_database(client: TestClient, db_session: Session):
 def test_device_with_legacy_metadata_fields(client: TestClient, db_session: Session):
     """Test that Device can store and retrieve legacy metadata fields."""
     db = db_session
-    
+
     metadata = {
         "agent_version": "1.2.3",
         "hardware_id": "hw-12345",
         "serial_number": "SN-98765",
     }
-    
+
     device = Device(
         device_id="metadata-test-001",
         device_name="Metadata Test",
@@ -375,11 +375,11 @@ def test_device_with_legacy_metadata_fields(client: TestClient, db_session: Sess
     )
     db.add(device)
     db.commit()
-    
+
     # Retrieve
     retrieved = db.query(Device).filter(Device.device_id == "metadata-test-001").first()
     assert retrieved.agent_version == "1.2.3"
-    
+
     if retrieved.device_metadata:
         retrieved_metadata = json.loads(retrieved.device_metadata)
         assert retrieved_metadata["agent_version"] == "1.2.3"
@@ -388,7 +388,7 @@ def test_device_with_legacy_metadata_fields(client: TestClient, db_session: Sess
 def test_device_incidents_tracking_still_works(client: TestClient, db_session: Session):
     """Test that device incident counts are tracked."""
     db = db_session
-    
+
     device = Device(
         device_id="incidents-test-001",
         device_name="Incidents Test",
@@ -398,7 +398,7 @@ def test_device_incidents_tracking_still_works(client: TestClient, db_session: S
     )
     db.add(device)
     db.commit()
-    
+
     # Retrieve and verify
     retrieved = db.query(Device).filter(Device.device_id == "incidents-test-001").first()
     assert retrieved.incidents_count == 5
@@ -412,7 +412,7 @@ def test_device_incidents_tracking_still_works(client: TestClient, db_session: S
 def test_windows_device_registration_still_works(client: TestClient, db_session: Session):
     """Test that Windows devices can still be registered."""
     db = db_session
-    
+
     device = Device(
         device_id="regression-windows-001",
         device_name="Regression Windows",
@@ -420,7 +420,7 @@ def test_windows_device_registration_still_works(client: TestClient, db_session:
     )
     db.add(device)
     db.commit()
-    
+
     retrieved = db.query(Device).filter(Device.device_id == "regression-windows-001").first()
     assert retrieved.platform == "Windows"
 
@@ -428,7 +428,7 @@ def test_windows_device_registration_still_works(client: TestClient, db_session:
 def test_linux_device_registration_still_works(client: TestClient, db_session: Session):
     """Test that Linux devices can still be registered."""
     db = db_session
-    
+
     device = Device(
         device_id="regression-linux-001",
         device_name="Regression Linux",
@@ -436,7 +436,7 @@ def test_linux_device_registration_still_works(client: TestClient, db_session: S
     )
     db.add(device)
     db.commit()
-    
+
     retrieved = db.query(Device).filter(Device.device_id == "regression-linux-001").first()
     assert retrieved.platform == "Linux"
 
@@ -444,7 +444,7 @@ def test_linux_device_registration_still_works(client: TestClient, db_session: S
 def test_android_device_registration_still_works(client: TestClient, db_session: Session):
     """Test that Android devices can still be registered."""
     db = db_session
-    
+
     device = Device(
         device_id="regression-android-001",
         device_name="Regression Android",
@@ -452,7 +452,7 @@ def test_android_device_registration_still_works(client: TestClient, db_session:
     )
     db.add(device)
     db.commit()
-    
+
     retrieved = db.query(Device).filter(Device.device_id == "regression-android-001").first()
     assert retrieved.platform == "Android"
 
@@ -460,7 +460,7 @@ def test_android_device_registration_still_works(client: TestClient, db_session:
 def test_ios_device_registration_still_works(client: TestClient, db_session: Session):
     """Test that iOS devices can still be registered."""
     db = db_session
-    
+
     device = Device(
         device_id="regression-ios-001",
         device_name="Regression iOS",
@@ -468,7 +468,7 @@ def test_ios_device_registration_still_works(client: TestClient, db_session: Ses
     )
     db.add(device)
     db.commit()
-    
+
     retrieved = db.query(Device).filter(Device.device_id == "regression-ios-001").first()
     assert retrieved.platform == "iOS"
 
@@ -476,7 +476,7 @@ def test_ios_device_registration_still_works(client: TestClient, db_session: Ses
 def test_macos_device_registration_still_works(client: TestClient, db_session: Session):
     """Test that macOS devices can still be registered."""
     db = db_session
-    
+
     device = Device(
         device_id="regression-macos-001",
         device_name="Regression macOS",
@@ -484,7 +484,7 @@ def test_macos_device_registration_still_works(client: TestClient, db_session: S
     )
     db.add(device)
     db.commit()
-    
+
     retrieved = db.query(Device).filter(Device.device_id == "regression-macos-001").first()
     assert retrieved.platform == "macOS"
 
@@ -496,7 +496,7 @@ def test_macos_device_registration_still_works(client: TestClient, db_session: S
 def test_device_organization_id_still_tracked(client: TestClient, db_session: Session):
     """Test that device organization_id is still tracked."""
     db = db_session
-    
+
     device = Device(
         device_id="org-test-001",
         device_name="Org Test",
@@ -505,7 +505,7 @@ def test_device_organization_id_still_tracked(client: TestClient, db_session: Se
     )
     db.add(device)
     db.commit()
-    
+
     retrieved = db.query(Device).filter(Device.device_id == "org-test-001").first()
     assert retrieved.organization_id == "regression-org-001"
 
@@ -513,7 +513,7 @@ def test_device_organization_id_still_tracked(client: TestClient, db_session: Se
 def test_device_user_id_still_tracked(client: TestClient, db_session: Session):
     """Test that device user_id is still tracked."""
     db = db_session
-    
+
     device = Device(
         device_id="user-test-001",
         device_name="User Test",
@@ -522,7 +522,7 @@ def test_device_user_id_still_tracked(client: TestClient, db_session: Session):
     )
     db.add(device)
     db.commit()
-    
+
     retrieved = db.query(Device).filter(Device.device_id == "user-test-001").first()
     assert retrieved.user_id == "regression-user-001"
 
@@ -534,7 +534,7 @@ def test_device_user_id_still_tracked(client: TestClient, db_session: Session):
 def test_device_timestamps_still_tracked(client: TestClient, db_session: Session):
     """Test that device timestamps are still tracked."""
     db = db_session
-    
+
     device = Device(
         device_id="timestamp-test-001",
         device_name="Timestamp Test",
@@ -542,7 +542,7 @@ def test_device_timestamps_still_tracked(client: TestClient, db_session: Session
     )
     db.add(device)
     db.commit()
-    
+
     retrieved = db.query(Device).filter(Device.device_id == "timestamp-test-001").first()
     assert retrieved.created_at is not None
     assert retrieved.updated_at is not None
@@ -553,7 +553,7 @@ def test_device_timestamps_still_tracked(client: TestClient, db_session: Session
 def test_device_last_seen_still_tracked(client: TestClient, db_session: Session):
     """Test that device last_seen timestamp is still tracked."""
     db = db_session
-    
+
     device = Device(
         device_id="lastseen-test-001",
         device_name="Last Seen Test",
@@ -561,6 +561,6 @@ def test_device_last_seen_still_tracked(client: TestClient, db_session: Session)
     )
     db.add(device)
     db.commit()
-    
+
     retrieved = db.query(Device).filter(Device.device_id == "lastseen-test-001").first()
     assert retrieved.last_seen is not None
