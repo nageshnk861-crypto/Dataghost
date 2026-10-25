@@ -132,7 +132,7 @@ export default function DevicesPage() {
 
   // ── Auto-scan SSE state (zero-touch) ──────────────────────────────────────
   const sseRef = useRef<EventSource | null>(null);
-  const [autoScanPhase, setAutoScanPhase] = useState<"idle" | "enrolling" | "scanning" | "done" | "error">("idle");
+  const [autoScanPhase, setAutoScanPhase] = useState<"idle" | "enrolling" | "waiting" | "scanning" | "done" | "error">("idle");
   const [autoScanFile, setAutoScanFile] = useState("");
   const [autoScanIndex, setAutoScanIndex] = useState(0);
   const [autoScanTotal, setAutoScanTotal] = useState(0);
@@ -346,6 +346,9 @@ export default function DevicesPage() {
           case "already_enrolled":
             setEnrolledDeviceName(String(data.device_name ?? "New Device"));
             setEnrollmentStatus("USED");
+            break;
+          case "waiting_for_agent":
+            setAutoScanPhase("waiting");
             break;
           case "scan_start":
             setAutoScanPhase("scanning");
@@ -1640,7 +1643,14 @@ export default function DevicesPage() {
                         <div className="flex items-center gap-2 py-2 px-3 rounded-lg"
                           style={{ background: "rgba(0,212,255,0.06)", border: "1px solid rgba(0,212,255,0.15)" }}>
                           <div className="w-4 h-4 rounded-full border-2 border-t-cyan-400 border-cyan-400/20 animate-spin flex-shrink-0" />
-                          <p className="text-xs font-semibold" style={{ color: "#00d4ff" }}>Registering device automatically…</p>
+                          <p className="text-xs font-semibold" style={{ color: "#00d4ff" }}>Registering device securely…</p>
+                        </div>
+                      )}
+                      {autoScanPhase === "waiting" && (
+                        <div className="flex items-center gap-2 py-2 px-3 rounded-lg"
+                          style={{ background: "rgba(0,212,255,0.06)", border: "1px solid rgba(0,212,255,0.15)" }}>
+                          <div className="w-4 h-4 rounded-full border-2 border-t-cyan-400 border-cyan-400/20 animate-spin flex-shrink-0" />
+                          <p className="text-xs font-semibold" style={{ color: "#00d4ff" }}>Waiting for DataGhost Agent to connect</p>
                         </div>
                       )}
                       {autoScanPhase === "scanning" && (

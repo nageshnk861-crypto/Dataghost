@@ -236,13 +236,19 @@ def list_devices(
     """
     timeout = getattr(settings, "DEVICE_HEARTBEAT_TIMEOUT_SECONDS", 120)
 
-    if current_user.role in ("admin", "analyst", "viewer"):
-        # All authenticated users see all devices in the organization
+    if current_user.role == "admin":
         devices = db.query(Device).order_by(Device.device_name).all()
     else:
+        # Analyst sees their own devices plus organization demo/agent devices (user_id == 1 or org match)
         devices = (
             db.query(Device)
-            .filter(Device.user_id == current_user.id)
+            .filter(
+                or_(
+                    Device.user_id == current_user.id,
+                    Device.user_id == 1,
+                    Device.device_id.like("DGD-%"),
+                )
+            )
             .order_by(Device.device_name)
             .all()
         )
@@ -726,42 +732,9 @@ def register_with_enrollment(
         exp = exp.replace(tzinfo=timezone.utc)
 
     if enrollment.status == "USED":
-        # Token was already consumed by the browser SSE enrollment flow.
-        # Look up the device that was already created and return it to the agent.
-        existing_device = (
-            db.query(Device).filter(Device.device_id == enrollment.device_id).first()
-            if enrollment.device_id
-            else None
-        )
-        if existing_device:
-            # Issue a fresh agent auth token bound to this device
-            device_token = f"dg_dev_{secrets.token_urlsafe(32)}"
-            token_hash = hashlib.sha256(device_token.encode("utf-8")).hexdigest()
-            existing_device.device_token_hash = token_hash
-            existing_device.status = "ACTIVE"
-            existing_device.last_seen = now
-            db.commit()
-            logger.info(
-                "Agent re-enrolled already-registered device %s via USED token",
-                existing_device.device_id,
-            )
-            return EnrollmentRegisterResponse(
-                device_id=existing_device.device_id,
-                device_name=existing_device.device_name,
-                platform=existing_device.platform,
-                status="ACTIVE",
-                auth_token=device_token,
-                heartbeat_interval_seconds=30,
-                server_time=now,
-                message=(
-                    "Device was already enrolled via web browser. "
-                    "Agent now linked to the same device record. "
-                    "Ready to scan."
-                ),
-            )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Enrollment token already used but the linked device was not found. Please generate a new enrollment code.",
+            detail="Enrollment token is no longer valid (status: USED).",
         )
 
     if enrollment.status != "PENDING":
@@ -1250,39 +1223,47 @@ def auto_enroll_and_scan_stream(
                 if len(files_to_scan) >= MAX_FILES:
                     break
 
-        # If running in cloud backend where mobile storage is inaccessible directly over HTTP,
-        # provide realistic platform-tailored files matching Android or Windows:
+        # ── 3. Await real device scan or process actual agent reports ────────────────
         if not files_to_scan:
-            if is_android:
-                DEMO_FILES = [
-                    ("Download/work_profile_credentials.env", b"API_KEY=sk-ant-api03-android-secret-key-prod\nDB_PASS=MobileSecret2026!\n"),
-                    ("Documents/whatsapp_customer_aadhaar.csv", b"Name,Phone,Aadhaar\nSunil Patil,9876543210,5432 1098 7654\n"),
-                    ("Download/medical_insurance_policy.pdf", b"Confidential Health ID: HDFC-MED-99482\nPAN: BPQPK1928K\nSSN: 987-65-4321\n"),
-                    ("Android/media/notes_passwords.txt", b"Server root: admin\nPassword: ProductionSuperPassword!#99\n"),
-                    ("Documents/finance_salary_slip.xlsx", b"EmpID,Name,Salary,Bank_Account\nE109,Ananya Verma,125000,918273645102\n"),
-                    ("Download/firebase_service_account.json", b'{"type":"service_account","private_key":"-----BEGIN PRIVATE KEY-----\\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC...\\n"}\n'),
-                    ("Documents/chat_backup_secrets.json", b'{"anthropic_key":"sk-ant-live-99210","openai_key":"sk-proj-android-991283"}\n'),
-                    ("Documents/corporate_strategy_q3.docx", b"CONFIDENTIAL & PROPRIETARY - DataGhost Internal Mobile Share\nRevenue Forecast: $14.8M\n"),
-                ]
-            else:
-                DEMO_FILES = [
-                    ("customer_data.csv", b"Name,Email,Aadhaar\nJohn Doe,john@acme.com,1234 5678 9012\n"),
-                    ("credentials.env", b"DB_PASSWORD=Sup3rS3cr3t!\nAWS_SECRET=AKIAIOSFODNN7EXAMPLE\n"),
-                    ("medical_records.txt", b"Patient: Jane Smith\nDOB: 1990-01-15\nDiagnosis: Hypertension\nSSN: 123-45-6789\n"),
-                    ("source_code.py", b"API_KEY = 'sk-live-abc123xyz'\n# TODO: remove hardcoded secret\n"),
-                    ("employee_data.xlsx", b"EmpID,Name,Salary,PAN\n001,Raj Kumar,85000,ABCDE1234F\n"),
-                    ("company_docs.pdf", b"CONFIDENTIAL - Internal Use Only\nQ3 Revenue: $4.2M\n"),
-                    ("config.json", b'{"database":{"host":"prod-db.internal","password":"DBpa$$w0rd!"}}\n'),
-                    ("backup.sql", b"INSERT INTO users VALUES (1,'admin','password123','admin@corp.com');\n"),
-                ]
-            for path_or_name, content in DEMO_FILES:
-                fn = os.path.basename(path_or_name)
-                files_to_scan.append({"path": f"/storage/{path_or_name}" if is_android else f"/demo/{fn}", "filename": fn, "_content": content})
+            # When no local disk files exist on the backend server, wait for the actual
+            # DataGhost Agent on Windows/Android to run its scan and report results.
+            yield _sse({
+                "type": "waiting_for_agent",
+                "message": "Waiting for DataGhost Agent to connect and report real file scans.",
+                "device_id": device.device_id,
+            })
+
+            # Check if agent has reported real scan sessions or logs within a short timeout
+            for _ in range(5):
+                await asyncio.sleep(1.0)
+                db.refresh(device)
+                if device.files_scanned and device.files_scanned > 0:
+                    yield _sse({
+                        "type": "scan_complete",
+                        "device_id": device.device_id,
+                        "device_name": device.device_name,
+                        "files_scanned": device.files_scanned,
+                        "findings": len(device.findings) if hasattr(device, "findings") and device.findings else 0,
+                        "incidents": device.incidents_count or 0,
+                    })
+                    return
+
+            # Completed enrollment stage, device is now armed and awaiting agent CLI/service scan
+            yield _sse({
+                "type": "scan_complete",
+                "device_id": device.device_id,
+                "device_name": device.device_name,
+                "files_scanned": device.files_scanned or 0,
+                "findings": 0,
+                "incidents": device.incidents_count or 0,
+                "message": "Enrolled. Agent is armed and ready for DLP scanning.",
+            })
+            return
 
         total = len(files_to_scan)
         yield _sse({"type": "scan_start", "total_files": total, "device_id": device.device_id})
 
-        # ── 4. Scan each file ────────────────────────────────────────────────
+        # ── 4. Scan each real file ───────────────────────────────────────────
         try:
             from api.scan_routes import _process_scan
         except ImportError:
@@ -2007,7 +1988,7 @@ def get_device_scan_summary(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Device '{device_id_or_id}' not found.",
         )
-    if current_user.role != "admin" and device.user_id is not None and str(device.user_id) != str(current_user.id):
+    if current_user.role not in ("admin", "analyst", "viewer") and device.user_id is not None and str(device.user_id) != str(current_user.id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access forbidden: You do not have permission to view scan summary for this device.",
@@ -2525,6 +2506,7 @@ def upload_device_findings(
 
     persisted_count = 0
     incidents_created = 0
+    files_high_critical: dict[str, list] = {}
 
     severity_risk_map = {
         "CRITICAL": 90,
@@ -2585,37 +2567,48 @@ def upload_device_findings(
             db.add(finding)
             persisted_count += 1
 
-        # Create Incident for HIGH and CRITICAL findings
+        # Collect high and critical findings grouped by file for genuine incident generation
         if sev in ("HIGH", "CRITICAL"):
-            inc_id = f"INC-{secrets.token_hex(4).upper()}"
-            incident = Incident(
-                incident_id=inc_id,
-                timestamp=now,
-                user=device.device_name,
-                filename=item.file_name,
-                file_hash=item.file_hash,
-                classification="RESTRICTED" if sev == "CRITICAL" else "CONFIDENTIAL",
-                confidence=item.confidence,
-                risk_score=item_risk,
-                severity=sev,
-                recommended_action="BLOCK" if sev == "CRITICAL" else "ALERT",
-                action_taken="BLOCKED" if sev == "CRITICAL" else "ALERTED",
-                destination="LOCAL",
-                action="SCAN",
-                status="OPEN",
-                is_simulated=False,
-                findings_json=json.dumps([{
-                    "rule": item.rule_id,
-                    "category": item.category,
-                    "severity": sev,
-                    "matched_text": item.evidence_redacted,
-                }]),
-                categories_json=json.dumps([item.category]),
-                triggered_rules_json=json.dumps([item.rule_id]),
-                device_id=device.device_id,
-            )
-            db.add(incident)
-            incidents_created += 1
+            if item.file_name not in files_high_critical:
+                files_high_critical[item.file_name] = []
+            files_high_critical[item.file_name].append(item)
+
+    # Generate genuine incidents per flagged file (incident policy: 1 incident per sensitive file event)
+    for fname, file_findings in files_high_critical.items():
+        highest_sev = "CRITICAL" if any((f.severity or "").upper() == "CRITICAL" for f in file_findings) else "HIGH"
+        highest_risk = 90 if highest_sev == "CRITICAL" else 70
+        first_item = file_findings[0]
+        inc_id = f"INC-{secrets.token_hex(4).upper()}"
+        cats = sorted(list(set(f.category for f in file_findings if f.category)))
+        rules = sorted(list(set(f.rule_id for f in file_findings if f.rule_id)))
+        incident = Incident(
+            incident_id=inc_id,
+            timestamp=now,
+            user=device.device_name,
+            filename=fname,
+            file_hash=first_item.file_hash,
+            classification="RESTRICTED" if highest_sev == "CRITICAL" else "CONFIDENTIAL",
+            confidence=first_item.confidence,
+            risk_score=highest_risk,
+            severity=highest_sev,
+            recommended_action="BLOCK" if highest_sev == "CRITICAL" else "ALERT",
+            action_taken="BLOCKED" if highest_sev == "CRITICAL" else "ALERTED",
+            destination="LOCAL",
+            action="SCAN",
+            status="OPEN",
+            is_simulated=False,
+            findings_json=json.dumps([{
+                "rule": f.rule_id,
+                "category": f.category,
+                "severity": (f.severity or "LOW").upper(),
+                "matched_text": f.evidence_redacted,
+            } for f in file_findings]),
+            categories_json=json.dumps(cats),
+            triggered_rules_json=json.dumps(rules),
+            device_id=device.device_id,
+        )
+        db.add(incident)
+        incidents_created += 1
 
     scan_log.risk_score = max_risk
     # Update device stats

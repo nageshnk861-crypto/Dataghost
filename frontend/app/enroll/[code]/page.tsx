@@ -328,6 +328,11 @@ export default function EnrollPage() {
             break;
           }
 
+          case "waiting_for_agent": {
+            addLog(`[${ts}] ⏳ Waiting for DataGhost Agent to connect`);
+            break;
+          }
+
           case "scan_start": {
             const tot = Number(data.total_files ?? 0);
             setTotalFiles(tot);
