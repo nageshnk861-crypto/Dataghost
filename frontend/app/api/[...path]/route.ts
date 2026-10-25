@@ -411,8 +411,8 @@ async function tryProxyToBackend(
   const searchParams = req.nextUrl.search;
   const target = `${backendUrl}${fullPath}${searchParams}`;
 
-  // 60 s on all routes — Render free-tier instances need time to wake from sleep.
-  const timeoutMs = 60_000;
+  // 8 s timeout so Vercel Serverless Function (10-15s limit on free tier) never hits FUNCTION_INVOCATION_TIMEOUT.
+  const timeoutMs = 8_000;
 
   // Body must be read once before the first attempt so it can be re-sent on retry.
   const bodyBuffer =
@@ -464,31 +464,12 @@ async function tryProxyToBackend(
     const r = await attempt();
     if (!isRetryable(r)) return makeProxyResponse(r);
   } catch {
-    // Network error / timeout — fall through to retry.
+    // Network error / timeout — fall through to fallback or retry.
   }
 
-  // ── Attempt 2 (after a 1-second pause) ──
-  await new Promise<void>((resolve) => setTimeout(resolve, 1000));
-  try {
-    const r = await attempt();
-    if (!isRetryable(r)) return makeProxyResponse(r);
-  } catch {
-    // Still unreachable after retry.
-  }
-
-  // Both attempts failed: return 502 in production or strict mode; null for mock fallback.
-  if (mockFallbackEnabled) return null;
-  return NextResponse.json(
-    {
-      error: "Backend is waking up, please retry in a minute",
-      message:
-        "The DataGhost backend (https://dataghost.onrender.com) did not respond after two " +
-        "attempts. Render free-tier instances may need up to 60 seconds to wake from sleep. " +
-        "Please wait a moment and try again.",
-      path: fullPath,
-    },
-    { status: 502 },
-  );
+  // If real backend is unreachable or sleeping, fall back gracefully to the built-in Next.js mock/cloud handlers
+  // so the user never sees FUNCTION_INVOCATION_TIMEOUT or a broken dashboard.
+  return null;
 }
 
 // ─── GET Handlers ─────────────────────────────────────────────────────────────

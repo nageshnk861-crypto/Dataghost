@@ -3,5 +3,10 @@
   "installCommand": "if [ -d frontend ]; then cd frontend; fi && npm install",
   "buildCommand": "if [ -d frontend ]; then cd frontend; fi && npm run build",
   "outputDirectory": "frontend/.next",
-  "framework": "nextjs"
+  "framework": "nextjs",
+  "functions": {
+    "frontend/app/api/[...path]/route.ts": {
+      "maxDuration": 60
+    }
+  }
 }
