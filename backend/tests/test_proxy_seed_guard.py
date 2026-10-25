@@ -1,4 +1,4 @@
-﻿"""
+"""
 Tests for:
   1. Frontend proxy: 60-second timeout, one retry, 502 wakeup message.
      (Simulated in Python — validates the logic contract, not the TS code directly.)
@@ -81,7 +81,7 @@ def test_proxy_wakeup_message_contract():
     function embeds.  This is a contract test — if the message changes here,
     update the TS source too.
     """
-    expected_error = "Backend is waking up, please retry in a minute"
+    expected_error = "Backend is waking up, please retry in a moment"
     # The actual TS function is not importable; we assert the string is correct
     # by checking it is defined in the route.ts source.
     route_path = os.path.join(
@@ -94,7 +94,7 @@ def test_proxy_wakeup_message_contract():
         f"Expected wakeup message '{expected_error}' not found in route.ts"
     )
     assert "attempt()" in content, "retry attempt() function not found in route.ts"
-    assert "60_000" in content, "60-second timeout constant not found in route.ts"
+    assert "25_000" in content, "25-second timeout constant not found in route.ts"
 
 
 # ---------------------------------------------------------------------------

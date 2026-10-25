@@ -159,7 +159,7 @@ def get_current_user(
     # 1. Attempt standard DataGhost JWT verification
     username = verify_token(raw_token)
     if username is not None:
-        user = db.query(User).filter(User.username == username, User.is_active is True).first()
+        user = db.query(User).filter(User.username == username, User.is_active == True).first()
         if user is not None:
             return user
 
@@ -189,7 +189,7 @@ def get_optional_current_user(
     # 1. Check custom JWT
     username = verify_token(raw_token)
     if username is not None:
-        user = db.query(User).filter(User.username == username, User.is_active is True).first()
+        user = db.query(User).filter(User.username == username, User.is_active == True).first()
         if user is not None:
             return user
 

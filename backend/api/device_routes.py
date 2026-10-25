@@ -2450,7 +2450,7 @@ def upload_device_findings(
                 from auth import verify_token
                 username = verify_token(token)
                 if username:
-                    user = db.query(User).filter(User.username == username, User.is_active is True).first()
+                    user = db.query(User).filter(User.username == username, User.is_active == True).first()
                     if user and (user.role == "admin" or user.id == device.user_id):
                         is_authenticated = True
             except Exception:
