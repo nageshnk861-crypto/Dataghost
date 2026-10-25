@@ -765,6 +765,20 @@ export default function DevicesPage() {
               <span className="text-sm font-bold">+</span> Add Device
             </button>
 
+            <button
+              onClick={handleAutoEnrollThisDevice}
+              disabled={batchEnrolling}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold text-white transition-all shadow-md hover:brightness-110 active:scale-95 disabled:opacity-50"
+              style={{
+                background: "linear-gradient(135deg, #10b981, #059669)",
+                border: "1px solid rgba(16,185,129,0.4)",
+              }}
+              title="Automatically enroll this browser/workstation into DataGhost"
+            >
+              <span>{batchEnrolling ? "⏳" : "⚡"}</span>
+              <span>{batchEnrolling ? "Enrolling..." : "Enroll This Device"}</span>
+            </button>
+
 
 
             <button
@@ -923,16 +937,29 @@ export default function DevicesPage() {
                   Connect a DataGhost agent to start monitoring endpoints across your organization.
                 </p>
               </div>
-              <button
-                onClick={() => setShowAddModal(true)}
-                className="px-5 py-2 rounded-lg text-xs font-semibold text-white transition-all shadow-md hover:brightness-110 active:scale-95"
-                style={{
-                  background: "linear-gradient(135deg, #0089b2, #00d4ff)",
-                  border: "1px solid rgba(0,212,255,0.4)",
-                }}
-              >
-                + Add Device
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setShowAddModal(true)}
+                  className="px-5 py-2 rounded-lg text-xs font-semibold text-white transition-all shadow-md hover:brightness-110 active:scale-95"
+                  style={{
+                    background: "linear-gradient(135deg, #0089b2, #00d4ff)",
+                    border: "1px solid rgba(0,212,255,0.4)",
+                  }}
+                >
+                  + Add Device
+                </button>
+                <button
+                  onClick={handleAutoEnrollThisDevice}
+                  disabled={batchEnrolling}
+                  className="px-5 py-2 rounded-lg text-xs font-semibold text-white transition-all shadow-md hover:brightness-110 active:scale-95 disabled:opacity-50"
+                  style={{
+                    background: "linear-gradient(135deg, #10b981, #059669)",
+                    border: "1px solid rgba(16,185,129,0.4)",
+                  }}
+                >
+                  {batchEnrolling ? "⏳ Enrolling..." : "⚡ Enroll This Device"}
+                </button>
+              </div>
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -1764,6 +1791,19 @@ export default function DevicesPage() {
                           Waiting for device...
                         </span>
                       </div>
+
+                      <button
+                        type="button"
+                        onClick={handleAutoEnrollCurrentModal}
+                        disabled={modalAutoEnrolling}
+                        className="mt-3 px-3.5 py-1.5 rounded-lg text-xs font-semibold text-white transition-all shadow hover:brightness-110 active:scale-95 disabled:opacity-50"
+                        style={{
+                          background: "linear-gradient(135deg, #10b981, #059669)",
+                          border: "1px solid rgba(16,185,129,0.3)",
+                        }}
+                      >
+                        {modalAutoEnrolling ? "⏳ Enrolling & Activating..." : "⚡ Instantly Activate This Device Now"}
+                      </button>
 
                     </div>
                   )}
