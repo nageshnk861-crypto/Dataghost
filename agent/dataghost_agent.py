@@ -30,6 +30,7 @@ from watchdog.observers import Observer
 # Global counters for heartbeat metrics
 SCANNED_FILES_COUNT = 0
 INCIDENTS_COUNT = 0
+IS_PAUSED = False
 _COUNTERS_LOCK = threading.Lock()
 
 # Ensure UTF-8 output on Windows consoles to prevent UnicodeEncodeError
@@ -71,6 +72,9 @@ def load_config() -> Dict[str, Any]:
         cfg["user"] = os.environ["DATAGHOST_USER"]
     if "DATAGHOST_WATCH_DIRS" in os.environ:
         cfg["watch_dirs"] = [p.strip() for p in os.environ["DATAGHOST_WATCH_DIRS"].split(",") if p.strip()]
+
+    # NOTE: No automatic URL fallback. The api_url must be set manually in
+    # config.json or supplied via --api-url on the command line.
 
     # Default to standard user personal directories: Documents, Desktop, Downloads
     if not cfg.get("watch_dirs"):
@@ -900,6 +904,11 @@ def run_full_scan(cfg: Dict[str, Any], auth_token: Optional[str],
 
 def process_file_event(filepath: str, cfg: Dict[str, Any], auth_token: Optional[str]) -> None:
     """Handle a single file event: scan locally and upload redacted findings."""
+    global IS_PAUSED
+    if IS_PAUSED:
+        logger.debug("Scanning currently paused by policy or administrator. Skipping %s", filepath)
+        return
+
     device_id = cfg.get("device_id", "unknown")
     api_url = cfg["api_url"]
     excluded = set(cfg.get("excluded_extensions", []))
@@ -949,8 +958,9 @@ def process_file_event(filepath: str, cfg: Dict[str, Any], auth_token: Optional[
 
 
 def start_heartbeat_loop(cfg: Dict[str, Any], auth_token: Optional[str]) -> None:
-    """Background thread sending periodic heartbeats; triggers on-demand scans."""
+    """Background thread sending periodic heartbeats; triggers on-demand scans and checks pause status."""
     def _worker():
+        global IS_PAUSED
         api_url = cfg["api_url"]
         while True:
             try:
@@ -964,7 +974,7 @@ def start_heartbeat_loop(cfg: Dict[str, Any], auth_token: Optional[str]) -> None
                 payload = {
                     "device_id": device_id,
                     "agent_version": "2.0.0",
-                    "status": "ACTIVE",
+                    "status": "PAUSED" if IS_PAUSED else "ACTIVE",
                     "ip_address": socket.gethostbyname(socket.gethostname()),
                     "files_scanned": scanned,
                     "incidents_count": incidents,
@@ -978,8 +988,18 @@ def start_heartbeat_loop(cfg: Dict[str, Any], auth_token: Optional[str]) -> None
                 if resp.status_code == 200:
                     data = resp.json()
                     logger.debug("Heartbeat OK for %s", device_id)
-                    # Check if dashboard requested a scan
-                    if data.get("scan_requested"):
+                    # Check if policy or admin requested pause
+                    policy_status = data.get("policy_status") or data.get("status")
+                    if policy_status in ("PAUSED", "DISABLED", "INACTIVE"):
+                        if not IS_PAUSED:
+                            IS_PAUSED = True
+                            print(Fore.YELLOW + "\n  [!] Agent monitoring paused by administrator policy.")
+                    elif policy_status in ("ACTIVE", "COMPLIANT") and IS_PAUSED:
+                        IS_PAUSED = False
+                        print(Fore.GREEN + "\n  [+] Agent monitoring resumed by administrator policy.")
+
+                    # Check if dashboard requested an on-demand scan
+                    if data.get("scan_requested") and not IS_PAUSED:
                         logger.info("Dashboard requested scan -- starting full scan...")
                         print(Fore.CYAN + Style.BRIGHT + "\n  [*] On-demand scan requested by dashboard. Scanning now...")
                         run_full_scan(cfg, current_token, trigger="MANUAL")
@@ -1115,6 +1135,12 @@ def main() -> None:
 
     # Handle enrollment flag if specified
     if args.enroll:
+        # Require a valid api_url for enrollment
+        if not api_url:
+            print(Fore.RED + "\n  [-] No api_url configured.")
+            print(Fore.YELLOW + "      Set it in agent/config.json  OR  pass --api-url <URL>\n")
+            sys.exit(1)
+
         print_startup_banner(cfg.get("watch_dirs", []))
 
         # ── Privacy disclosure ─────────────────────────────────────────────
@@ -1131,19 +1157,17 @@ def main() -> None:
         assigned_id = enroll_device(api_url, args.enroll.strip())
         if not assigned_id:
             sys.exit(1)
+
         # Reload updated config with assigned device_id and auth_token
         cfg = load_config()
         if args.api_url:
             cfg["api_url"] = args.api_url
 
-        # ── Immediate post-enrollment scan ────────────────────────────────
-        print(Fore.CYAN + Style.BRIGHT + "\n  [*] Starting initial enrollment scan (full drive)...")
-        enroll_token = cfg.get("auth_token")
-        run_full_scan(cfg, enroll_token, trigger="ENROLLMENT")
-
-        # ── Start 24h recurring scan loop ─────────────────────────────────
-        scan_interval_h = float(cfg.get("scan_interval_hours", 24))
-        _start_scheduled_scan_loop(cfg, enroll_token, interval_hours=scan_interval_h)
+        # ── Enrollment complete — NO automatic scan ───────────────────────
+        print(Fore.GREEN + Style.BRIGHT + "\n  [+] Enrollment complete. Device registered successfully.")
+        print(Fore.WHITE + "      To start monitoring,  run:  python dataghost_agent.py")
+        print(Fore.WHITE + "      To run a manual scan, run:  python dataghost_agent.py --scan-now\n")
+        sys.exit(0)   # Exit cleanly — user chooses when to scan
 
     watch_dirs = cfg.get("watch_dirs", [])
     print_startup_banner(watch_dirs)
@@ -1158,6 +1182,10 @@ def main() -> None:
 
     # Start heartbeat loop (checks scan_requested flag every ~25 seconds)
     start_heartbeat_loop(cfg, auth_token)
+
+    # Start periodic reconciliation scan loop (default every 24 hours, configurable in config.json)
+    scan_interval_h = float(cfg.get("scan_interval_hours", 24))
+    _start_scheduled_scan_loop(cfg, auth_token, interval_hours=scan_interval_h)
 
     if args.scan_now:
         run_full_scan(cfg, auth_token, trigger="MANUAL")
