@@ -1,131 +1,85 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useParams } from "next/navigation";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-type DetectedOS = "Android" | "Windows" | "Linux" | "macOS" | "iOS" | "Unknown";
-type Step = "start" | "detecting" | "enrolling" | "scanning" | "done" | "error" | "expired";
+type Phase =
+  | "connecting"
+  | "enrolling"
+  | "enrolled"
+  | "scanning"
+  | "done"
+  | "error"
+  | "expired";
 
-interface EnrollmentStatus {
-  enrollment_code: string;
-  platform: string;
-  status: string;
-  device_id?: string;
-  device_name?: string;
-  is_expired: boolean;
+interface SseEvent {
+  type: string;
+  [key: string]: unknown;
 }
 
-interface RegisterResponse {
-  device_id: string;
-  device_name: string;
-  platform: string;
-  status: string;
-  auth_token?: string;
-  message: string;
+interface FindingAlert {
+  filename: string;
+  severity: string;
+  category: string;
+  description: string;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function getApiBase(): string {
   if (typeof window === "undefined") return "";
-  const envUrl = process.env.NEXT_PUBLIC_API_URL?.trim();
-  if (envUrl) return envUrl.replace(/\/+$/, "");
+  const env = process.env.NEXT_PUBLIC_API_URL?.trim();
+  if (env) return env.replace(/\/+$/, "");
   return "https://dataghost-1.onrender.com";
 }
 
-function detectOS(): DetectedOS {
-  if (typeof navigator === "undefined") return "Unknown";
-  const ua = navigator.userAgent;
-  if (/android/i.test(ua)) return "Android";
-  if (/iPad|iPhone|iPod/.test(ua)) return "iOS";
-  if (/Win/.test(ua)) return "Windows";
-  if (/Linux/.test(ua)) return "Linux";
-  if (/Mac/.test(ua)) return "macOS";
-  return "Unknown";
+function severityColor(sev: string) {
+  if (sev === "CRITICAL") return "#ff3b3b";
+  if (sev === "HIGH")     return "#ff9f0a";
+  if (sev === "MEDIUM")   return "#f59e0b";
+  return "#34d058";
 }
 
-const API_HEADERS = {
-  "Content-Type": "application/json",
-  "X-Tunnel-Skip-Anti-Phishing-Page": "true",
-  "bypass-tunnel-reminder": "true",
+// ─── Step Bar ─────────────────────────────────────────────────────────────────
+const STEPS = ["Connect", "Enroll", "Scan", "Done"] as const;
+const PHASE_STEP: Record<Phase, number> = {
+  connecting: 0, enrolling: 1, enrolled: 1, scanning: 2, done: 3, error: 1, expired: 0,
 };
 
-async function fetchStatus(code: string): Promise<EnrollmentStatus | null> {
-  try {
-    const res = await fetch(`${getApiBase()}/api/devices/enrollment/status/${encodeURIComponent(code)}`, {
-      headers: API_HEADERS,
-    });
-    if (!res.ok) return null;
-    return await res.json();
-  } catch { return null; }
-}
-
-async function registerDevice(code: string, platform: string): Promise<RegisterResponse> {
-  const deviceName = `${platform}-Node-${code.replace(/[^A-Z0-9]/g, "").slice(-4) || "01"}`;
-  const res = await fetch(`${getApiBase()}/api/devices/enrollment/register`, {
-    method: "POST",
-    headers: API_HEADERS,
-    body: JSON.stringify({
-      enrollment_code: code,
-      device_name: deviceName,
-      platform,
-      os_name: `${platform} Endpoint`,
-      hostname: `${platform.toUpperCase()}-${code.replace(/[^A-Z0-9]/g, "").slice(-4) || "01"}`,
-    }),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}: Enrollment failed`);
-  return data;
-}
-
-async function triggerScan(deviceId: string, authToken?: string): Promise<void> {
-  try {
-    await fetch(`${getApiBase()}/api/devices/${encodeURIComponent(deviceId)}/scan`, {
-      method: "POST",
-      headers: {
-        ...API_HEADERS,
-        ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
-      },
-      body: JSON.stringify({ demo: false }),
-    });
-  } catch { /* best-effort */ }
-}
-
-// ─── Step Indicator ───────────────────────────────────────────────────────────
-const STEPS = ["Verify", "Enroll", "Scan", "Done"] as const;
-const STEP_MAP: Record<Step, number> = {
-  start: 0, detecting: 0, enrolling: 1, scanning: 2, done: 3, error: 1, expired: 0,
-};
-
-function StepBar({ step }: { step: Step }) {
-  const active = STEP_MAP[step];
+function StepBar({ phase }: { phase: Phase }) {
+  const active = PHASE_STEP[phase];
   return (
-    <div className="flex items-center gap-0 mb-8">
+    <div className="flex items-start gap-0 mb-7">
       {STEPS.map((label, i) => (
         <div key={label} className="flex items-center flex-1">
-          <div className="flex flex-col items-center flex-shrink-0">
+          <div className="flex flex-col items-center flex-shrink-0" style={{ minWidth: 36 }}>
             <div
               className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-all duration-500"
               style={{
-                background: i < active
-                  ? "linear-gradient(135deg,#00d4ff,#0089b2)"
-                  : i === active
-                  ? "linear-gradient(135deg,#34d058,#00a83e)"
-                  : "rgba(30,58,95,0.5)",
-                color: i <= active ? "#fff" : "#475569",
-                boxShadow: i === active ? "0 0 16px rgba(52,208,88,0.4)" : "none",
+                background:
+                  i < active
+                    ? "linear-gradient(135deg,#00d4ff,#0089b2)"
+                    : i === active
+                    ? "linear-gradient(135deg,#34d058,#00a83e)"
+                    : "rgba(30,58,95,0.4)",
+                color: i <= active ? "#fff" : "#334155",
+                boxShadow: i === active ? "0 0 14px rgba(52,208,88,0.5)" : "none",
               }}
             >
               {i < active ? "✓" : i + 1}
             </div>
-            <span className="text-[10px] mt-1" style={{ color: i <= active ? "#94a3b8" : "#1e3a5f" }}>
+            <span className="text-[10px] mt-1" style={{ color: i <= active ? "#64748b" : "#1e3a5f" }}>
               {label}
             </span>
           </div>
           {i < STEPS.length - 1 && (
             <div
-              className="flex-1 h-0.5 mx-1 transition-all duration-700"
-              style={{ background: i < active ? "linear-gradient(90deg,#00d4ff,#34d058)" : "#1a2744" }}
+              className="flex-1 h-px mx-1 mt-[-10px] transition-all duration-700"
+              style={{
+                background: i < active
+                  ? "linear-gradient(90deg,#00d4ff,#34d058)"
+                  : "#1a2744",
+              }}
             />
           )}
         </div>
@@ -135,73 +89,55 @@ function StepBar({ step }: { step: Step }) {
 }
 
 // ─── Spinner ──────────────────────────────────────────────────────────────────
-function Spinner({ color = "#00d4ff" }: { color?: string }) {
+function Spinner({ color = "#00d4ff", size = 36 }: { color?: string; size?: number }) {
   return (
     <div
-      className="w-10 h-10 rounded-full border-2 animate-spin mx-auto"
-      style={{ borderColor: `${color}33`, borderTopColor: color }}
+      className="rounded-full border-2 animate-spin"
+      style={{
+        width: size,
+        height: size,
+        borderColor: `${color}30`,
+        borderTopColor: color,
+      }}
     />
   );
 }
 
-// ─── OS-specific instructions ──────────────────────────────────────────────────
-function OsInstructions({ os, code }: { os: DetectedOS; code: string }) {
-  const [copied, setCopied] = useState(false);
-  const apiUrl = "https://dataghost-1.onrender.com";
-  const cmd = `python dataghost_agent.py --api-url ${apiUrl} --enroll ${code}`;
-
-  const copy = (text: string) => {
-    navigator.clipboard.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); });
+// ─── File Scanner Row ─────────────────────────────────────────────────────────
+function FileRow({ filename, index, total }: { filename: string; index: number; total: number }) {
+  const ext = filename.split(".").pop()?.toLowerCase() ?? "";
+  const icons: Record<string, string> = {
+    csv: "📊", json: "📋", txt: "📄", py: "🐍", js: "⚡", ts: "⚡",
+    sql: "🗃️", pdf: "📕", doc: "📝", docx: "📝", env: "🔑",
+    key: "🔑", pem: "🔒", log: "📜", xml: "📐", yml: "⚙️", yaml: "⚙️",
   };
-
-  if (os === "Android") {
-    return (
-      <div className="space-y-3 text-sm">
-        <p style={{ color: "#94a3b8" }}>Scan detected: <strong style={{ color: "#34d058" }}>Android</strong></p>
-        <ol className="list-decimal list-inside space-y-2" style={{ color: "#64748b" }}>
-          <li>Tap <strong style={{ color: "#e2e8f0" }}>"Enroll This Device"</strong> below</li>
-          <li>DataGhost registers the device automatically</li>
-          <li>A full-disk DLP scan starts immediately</li>
-          <li>View results in the <strong style={{ color: "#00d4ff" }}>Devices</strong> dashboard</li>
-        </ol>
-      </div>
-    );
-  }
-
-  if (os === "Windows" || os === "Linux" || os === "macOS") {
-    const osLabel = { Windows: "PowerShell", Linux: "Terminal", macOS: "Terminal" }[os];
-    return (
-      <div className="space-y-3 text-sm">
-        <p style={{ color: "#94a3b8" }}>
-          Scan detected: <strong style={{ color: "#60a5fa" }}>{os}</strong> — open <strong style={{ color: "#e2e8f0" }}>{osLabel}</strong> and run:
-        </p>
-        <div
-          className="relative rounded-lg p-3 font-mono text-xs break-all"
-          style={{ background: "#040a17", border: "1px solid #1a2744", color: "#00d4ff" }}
-        >
-          {cmd}
-          <button
-            onClick={() => copy(cmd)}
-            className="absolute top-2 right-2 text-[10px] px-2 py-1 rounded transition-all"
-            style={{
-              background: copied ? "rgba(52,208,88,0.15)" : "rgba(0,212,255,0.1)",
-              border: `1px solid ${copied ? "#34d05840" : "#00d4ff30"}`,
-              color: copied ? "#34d058" : "#00d4ff",
-            }}
-          >
-            {copied ? "✓" : "Copy"}
-          </button>
-        </div>
-        <p className="text-xs" style={{ color: "#475569" }}>
-          Or tap <strong style={{ color: "#e2e8f0" }}>"Enroll This Device"</strong> to register directly from this browser.
-        </p>
-      </div>
-    );
-  }
+  const icon = icons[ext] ?? "📁";
+  const pct = Math.round((index / total) * 100);
 
   return (
-    <div className="text-sm" style={{ color: "#64748b" }}>
-      <p>Copy code <strong style={{ color: "#e2e8f0" }}>{code}</strong> into your DataGhost Agent app.</p>
+    <div className="flex items-center gap-2 text-xs animate-fade-up">
+      <span style={{ fontSize: 14 }}>{icon}</span>
+      <span className="font-mono truncate flex-1" style={{ color: "#94a3b8", maxWidth: 260 }}>
+        {filename}
+      </span>
+      <span style={{ color: "#475569" }}>{pct}%</span>
+    </div>
+  );
+}
+
+// ─── Finding Badge ────────────────────────────────────────────────────────────
+function FindingBadge({ f }: { f: FindingAlert }) {
+  const c = severityColor(f.severity);
+  return (
+    <div
+      className="rounded-lg px-3 py-2 text-xs animate-fade-up"
+      style={{ background: `${c}0d`, border: `1px solid ${c}30` }}
+    >
+      <div className="flex items-center gap-2">
+        <span className="font-bold" style={{ color: c }}>⚠ {f.severity}</span>
+        <span style={{ color: "#64748b" }}>{f.filename}</span>
+      </div>
+      <p className="mt-0.5" style={{ color: "#94a3b8" }}>{f.category} — {f.description}</p>
     </div>
   );
 }
@@ -212,277 +148,395 @@ export default function EnrollPage() {
   const rawCode = Array.isArray(params?.code) ? params.code[0] : (params?.code ?? "");
   const code = rawCode.trim().toUpperCase();
 
-  const [step, setStep] = useState<Step>("start");
-  const [os, setOs] = useState<DetectedOS>("Unknown");
-  const [status, setStatus] = useState<EnrollmentStatus | null>(null);
-  const [registerData, setRegisterData] = useState<RegisterResponse | null>(null);
+  const [phase, setPhase] = useState<Phase>("connecting");
+  const [deviceId, setDeviceId] = useState("");
+  const [deviceName, setDeviceName] = useState("");
+  const [platform, setPlatform] = useState("");
+  const [currentFile, setCurrentFile] = useState("");
+  const [fileIndex, setFileIndex] = useState(0);
+  const [totalFiles, setTotalFiles] = useState(0);
+  const [findings, setFindings] = useState<FindingAlert[]>([]);
+  const [finalStats, setFinalStats] = useState<{ files: number; findings: number; incidents: number } | null>(null);
   const [errorMsg, setErrorMsg] = useState("");
-  const [scanProgress, setScanProgress] = useState(0);
+  const [logLines, setLogLines] = useState<string[]>([]);
 
-  // Detect OS on mount + load initial status
-  const init = useCallback(async () => {
-    setStep("detecting");
-    const detectedOs = detectOS();
-    setOs(detectedOs);
-    if (!code) { setStep("error"); setErrorMsg("No enrollment code provided."); return; }
-    const data = await fetchStatus(code);
-    if (!data) { setStep("error"); setErrorMsg("Could not reach DataGhost server. Please try again."); return; }
-    if (data.is_expired || data.status === "EXPIRED") { setStep("expired"); setStatus(data); return; }
-    if (data.status === "USED") { setStep("done"); setStatus(data); return; }
-    setStatus(data);
-    setStep("start");
+  const evtRef = useRef<EventSource | null>(null);
+  const logRef = useRef<HTMLDivElement>(null);
+
+  const addLog = (msg: string) =>
+    setLogLines((prev) => [...prev.slice(-60), msg]);
+
+  // ── Auto-start SSE stream on mount ──────────────────────────────────────────
+  useEffect(() => {
+    if (!code) {
+      setErrorMsg("No enrollment code in URL.");
+      setPhase("error");
+      return;
+    }
+
+    const url = `${getApiBase()}/api/devices/auto-enroll-scan?code=${encodeURIComponent(code)}`;
+    addLog(`[00:00] Connecting to DataGhost server…`);
+
+    const es = new EventSource(url);
+    evtRef.current = es;
+
+    es.onmessage = (ev) => {
+      let data: SseEvent;
+      try { data = JSON.parse(ev.data); } catch { return; }
+
+      const ts = new Date().toLocaleTimeString();
+
+      switch (data.type) {
+        case "connected":
+          addLog(`[${ts}] ✓ Connected`);
+          setPhase("enrolling");
+          break;
+
+        case "enrolling":
+          addLog(`[${ts}] ⟳ Validating code ${data.enrollment_code}…`);
+          setPhase("enrolling");
+          break;
+
+        case "enrolled":
+        case "already_enrolled": {
+          const did = String(data.device_id ?? "");
+          const dn  = String(data.device_name ?? "");
+          const plt = String(data.platform ?? "");
+          setDeviceId(did);
+          setDeviceName(dn);
+          setPlatform(plt);
+          addLog(`[${ts}] ✓ Enrolled — ${dn} (${did})`);
+          setPhase("enrolled");
+          break;
+        }
+
+        case "scan_start": {
+          const tot = Number(data.total_files ?? 0);
+          setTotalFiles(tot);
+          addLog(`[${ts}] 🔍 Scan started — ${tot} files to check`);
+          setPhase("scanning");
+          break;
+        }
+
+        case "scanning_file": {
+          const fn  = String(data.filename ?? "");
+          const idx = Number(data.index ?? 0);
+          const tot = Number(data.total ?? 0);
+          setCurrentFile(fn);
+          setFileIndex(idx);
+          setTotalFiles(tot);
+          if (idx % 10 === 0 || idx === 1)
+            addLog(`[${ts}] [${idx}/${tot}] ${fn}`);
+          break;
+        }
+
+        case "finding": {
+          const f: FindingAlert = {
+            filename: String(data.filename ?? ""),
+            severity: String(data.severity ?? "LOW"),
+            category: String(data.category ?? ""),
+            description: String(data.description ?? ""),
+          };
+          setFindings((prev) => [f, ...prev].slice(0, 50));
+          addLog(`[${ts}] ⚠ ${f.severity}: ${f.filename} — ${f.category}`);
+          break;
+        }
+
+        case "scan_complete": {
+          const stats = {
+            files:     Number(data.files_scanned ?? 0),
+            findings:  Number(data.findings ?? 0),
+            incidents: Number(data.incidents ?? 0),
+          };
+          setFinalStats(stats);
+          addLog(`[${ts}] ✅ Done — ${stats.files} files, ${stats.findings} findings, ${stats.incidents} incidents`);
+          setPhase("done");
+          es.close();
+          break;
+        }
+
+        case "error":
+          setErrorMsg(String(data.message ?? "Unknown error"));
+          setPhase("error");
+          addLog(`[${ts}] ✗ Error: ${data.message}`);
+          es.close();
+          break;
+
+        case "expired":
+          setPhase("expired");
+          es.close();
+          break;
+      }
+    };
+
+    es.onerror = () => {
+      if (phase !== "done" && phase !== "error") {
+        setErrorMsg("Connection lost. The server may be starting up (Render free-tier). Retry in 30 s.");
+        setPhase("error");
+      }
+      es.close();
+    };
+
+    return () => { es.close(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code]);
 
-  useEffect(() => { init(); }, [init]);
+  // Auto-scroll log
+  useEffect(() => {
+    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+  }, [logLines]);
 
-  // Handle enroll + auto-scan
-  const handleEnroll = async () => {
-    if (!code) return;
-    setStep("enrolling");
-    setErrorMsg("");
-    try {
-      const detectedPlatform = os === "Unknown" ? (status?.platform || "Windows") : os;
-      const reg = await registerDevice(code, detectedPlatform);
-      setRegisterData(reg);
-      setStep("scanning");
-
-      // Animate scan progress (0→100 over ~6s) while actual scan runs in background
-      setScanProgress(0);
-      const start = Date.now();
-      const duration = 6000;
-      const interval = setInterval(() => {
-        const elapsed = Date.now() - start;
-        const pct = Math.min(Math.round((elapsed / duration) * 100), 95);
-        setScanProgress(pct);
-        if (elapsed >= duration) clearInterval(interval);
-      }, 100);
-
-      // Trigger actual scan on the backend
-      await triggerScan(reg.device_id, reg.auth_token);
-
-      // Wait for animation to finish then go to done
-      setTimeout(() => {
-        setScanProgress(100);
-        setTimeout(() => setStep("done"), 600);
-        clearInterval(interval);
-      }, duration);
-    } catch (err: unknown) {
-      setStep("error");
-      setErrorMsg(err instanceof Error ? err.message : "Enrollment failed. Please try again.");
-    }
-  };
-
+  const pct = totalFiles > 0 ? Math.round((fileIndex / totalFiles) * 100) : 0;
   const dashboardUrl = "https://dataghost-five.vercel.app/devices";
 
   // ─── Render ───────────────────────────────────────────────────────────────
   return (
     <div
       className="min-h-screen flex flex-col items-center justify-center p-4"
-      style={{ background: "linear-gradient(135deg, #040a17 0%, #0a0f1e 50%, #060d1f 100%)" }}
+      style={{ background: "linear-gradient(135deg,#040a17 0%,#0a0f1e 50%,#060d1f 100%)" }}
     >
       {/* Ambient glow */}
       <div
-        className="fixed top-0 left-1/2 -translate-x-1/2 w-[600px] h-96 rounded-full pointer-events-none"
-        style={{ background: "radial-gradient(circle, rgba(0,212,255,0.05) 0%, transparent 70%)", filter: "blur(60px)" }}
+        className="fixed top-0 left-1/2 -translate-x-1/2 w-[700px] h-96 pointer-events-none"
+        style={{
+          background: "radial-gradient(circle,rgba(0,212,255,0.06) 0%,transparent 70%)",
+          filter: "blur(60px)",
+        }}
       />
 
       <div
-        className="w-full max-w-md rounded-2xl shadow-2xl p-7 relative"
-        style={{ background: "rgba(10,15,30,0.97)", border: "1px solid #1a2744", backdropFilter: "blur(20px)" }}
+        className="w-full max-w-lg rounded-2xl shadow-2xl p-7 relative"
+        style={{ background: "rgba(9,15,29,0.98)", border: "1px solid #1a2744", backdropFilter: "blur(20px)" }}
       >
-        {/* Top accent */}
+        {/* Top gradient bar */}
         <div
           className="absolute top-0 left-0 right-0 h-0.5 rounded-t-2xl"
-          style={{ background: "linear-gradient(90deg, transparent, #00d4ff, #34d058, transparent)" }}
+          style={{ background: "linear-gradient(90deg,transparent,#00d4ff,#34d058,transparent)" }}
         />
 
-        {/* Logo */}
-        <div className="flex items-center gap-3 mb-6">
+        {/* Header */}
+        <div className="flex items-center gap-3 mb-5">
           <div
-            className="w-10 h-10 rounded-xl flex items-center justify-center text-sm font-black flex-shrink-0"
-            style={{ background: "linear-gradient(135deg, #0089b2, #00d4ff)", color: "#fff" }}
+            className="w-10 h-10 rounded-xl flex items-center justify-center font-black text-sm flex-shrink-0"
+            style={{ background: "linear-gradient(135deg,#0089b2,#00d4ff)", color: "#fff" }}
           >
             DG
           </div>
           <div>
             <h1 className="text-white font-bold text-base leading-tight">DataGhost</h1>
-            <p className="text-xs" style={{ color: "#475569" }}>Device Enrollment & DLP Setup</p>
+            <p className="text-xs" style={{ color: "#475569" }}>
+              Zero-Touch Enrollment &amp; DLP Scan
+            </p>
           </div>
           {code && (
             <span
               className="ml-auto font-mono text-xs px-2 py-1 rounded"
-              style={{ background: "rgba(0,212,255,0.08)", border: "1px solid rgba(0,212,255,0.2)", color: "#00d4ff" }}
+              style={{
+                background: "rgba(0,212,255,0.08)",
+                border: "1px solid rgba(0,212,255,0.2)",
+                color: "#00d4ff",
+              }}
             >
               {code}
             </span>
           )}
         </div>
 
-        <StepBar step={step} />
+        <StepBar phase={phase} />
 
-        {/* ── DETECTING ── */}
-        {step === "detecting" && (
+        {/* ── CONNECTING / ENROLLING ── */}
+        {(phase === "connecting" || phase === "enrolling" || phase === "enrolled") && (
           <div className="text-center py-6 space-y-4">
-            <Spinner />
-            <p className="text-sm" style={{ color: "#94a3b8" }}>Detecting your device…</p>
-          </div>
-        )}
-
-        {/* ── START ── */}
-        {step === "start" && status && (
-          <div className="space-y-5">
-            <div
-              className="rounded-xl p-4"
-              style={{ background: "rgba(0,212,255,0.04)", border: "1px solid rgba(0,212,255,0.12)" }}
-            >
-              <p className="text-xs uppercase tracking-wider mb-2" style={{ color: "#475569" }}>Enrollment Code</p>
-              <p className="text-2xl font-mono font-bold tracking-widest" style={{ color: "#00d4ff" }}>{code}</p>
-              <p className="text-xs mt-1" style={{ color: "#64748b" }}>
-                Platform: <span style={{ color: "#94a3b8" }}>{status.platform}</span>
+            <Spinner size={40} />
+            <p className="font-semibold" style={{ color: "#e2e8f0" }}>
+              {phase === "connecting" && "Connecting to DataGhost server…"}
+              {phase === "enrolling"  && `Validating enrollment code ${code}…`}
+              {phase === "enrolled"   && `Device registered — starting scan…`}
+            </p>
+            {deviceName && (
+              <p className="text-xs" style={{ color: "#64748b" }}>
+                {deviceName} · {deviceId}
               </p>
-            </div>
-
-            <OsInstructions os={os} code={code} />
-
-            <button
-              onClick={handleEnroll}
-              className="w-full py-3 rounded-xl font-bold text-sm transition-all duration-200 flex items-center justify-center gap-2"
-              style={{
-                background: "linear-gradient(135deg, #0089b2, #00d4ff)",
-                color: "#fff",
-                boxShadow: "0 4px 24px rgba(0,212,255,0.25)",
-              }}
-            >
-              🚀 Enroll This Device — Start DLP Protection
-            </button>
-            <p className="text-center text-xs" style={{ color: "#475569" }}>
-              This will register the device and begin an immediate full-disk scan.
-            </p>
-          </div>
-        )}
-
-        {/* ── ENROLLING ── */}
-        {step === "enrolling" && (
-          <div className="text-center py-8 space-y-4">
-            <Spinner color="#00d4ff" />
-            <p className="font-semibold" style={{ color: "#e2e8f0" }}>Registering device…</p>
-            <p className="text-sm" style={{ color: "#475569" }}>
-              Validating enrollment code and issuing device credentials.
-            </p>
+            )}
           </div>
         )}
 
         {/* ── SCANNING ── */}
-        {step === "scanning" && (
-          <div className="space-y-5">
-            <div className="text-center">
-              <div className="text-4xl mb-3">🔍</div>
-              <p className="font-bold text-lg" style={{ color: "#e2e8f0" }}>
-                {registerData?.device_name || "Device"} enrolled!
-              </p>
-              <p className="text-sm mt-1" style={{ color: "#94a3b8" }}>
-                Running initial full-disk DLP scan…
-              </p>
-            </div>
+        {phase === "scanning" && (
+          <div className="space-y-4">
+            {/* Device info */}
+            {deviceName && (
+              <div
+                className="flex items-center gap-3 px-3 py-2 rounded-lg"
+                style={{ background: "rgba(0,212,255,0.05)", border: "1px solid rgba(0,212,255,0.12)" }}
+              >
+                <span style={{ fontSize: 18 }}>
+                  {platform.toLowerCase().includes("win") ? "🪟" :
+                   platform.toLowerCase().includes("android") ? "🤖" :
+                   platform.toLowerCase().includes("mac") ? "🍎" :
+                   platform.toLowerCase().includes("linux") ? "🐧" : "🖥️"}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-semibold truncate" style={{ color: "#e2e8f0" }}>{deviceName}</p>
+                  <p className="text-[10px]" style={{ color: "#475569" }}>{deviceId}</p>
+                </div>
+                <span
+                  className="text-[10px] font-bold px-2 py-0.5 rounded"
+                  style={{ background: "rgba(52,208,88,0.1)", color: "#34d058", border: "1px solid #34d05830" }}
+                >
+                  ENROLLED
+                </span>
+              </div>
+            )}
 
             {/* Progress bar */}
-            <div className="space-y-2">
-              <div className="flex justify-between text-xs" style={{ color: "#475569" }}>
+            <div className="space-y-1.5">
+              <div className="flex justify-between text-[11px]" style={{ color: "#475569" }}>
                 <span>Scanning files for sensitive data…</span>
-                <span style={{ color: "#34d058" }}>{scanProgress}%</span>
+                <span style={{ color: "#00d4ff", fontWeight: 700 }}>
+                  {fileIndex}/{totalFiles} ({pct}%)
+                </span>
               </div>
-              <div className="h-2 rounded-full overflow-hidden" style={{ background: "rgba(30,58,95,0.5)" }}>
+              <div className="h-2.5 rounded-full overflow-hidden" style={{ background: "#0a1628" }}>
                 <div
-                  className="h-full rounded-full transition-all duration-200"
+                  className="h-full rounded-full transition-all duration-300"
                   style={{
-                    width: `${scanProgress}%`,
-                    background: "linear-gradient(90deg, #00d4ff, #34d058)",
-                    boxShadow: "0 0 8px rgba(52,208,88,0.5)",
+                    width: `${pct}%`,
+                    background: "linear-gradient(90deg,#00d4ff,#34d058)",
+                    boxShadow: "0 0 8px rgba(0,212,255,0.4)",
                   }}
                 />
               </div>
             </div>
 
-            {/* Scanning steps */}
-            {[
-              { label: "Enrolling device identity", done: scanProgress >= 10 },
-              { label: "Issuing DLP agent credentials", done: scanProgress >= 25 },
-              { label: "Queuing full-disk scan", done: scanProgress >= 40 },
-              { label: "Scanning file system…", done: scanProgress >= 75 },
-              { label: "Analysing findings", done: scanProgress >= 90 },
-            ].map(({ label, done }) => (
-              <div key={label} className="flex items-center gap-2 text-xs" style={{ color: done ? "#34d058" : "#475569" }}>
-                <span>{done ? "✓" : "◦"}</span>
-                <span>{label}</span>
+            {/* Current file */}
+            {currentFile && (
+              <FileRow filename={currentFile} index={fileIndex} total={totalFiles} />
+            )}
+
+            {/* Live findings */}
+            {findings.length > 0 && (
+              <div className="space-y-1.5">
+                <p className="text-[10px] uppercase tracking-wider" style={{ color: "#475569" }}>
+                  Live Findings ({findings.length})
+                </p>
+                <div className="space-y-1 max-h-32 overflow-y-auto">
+                  {findings.slice(0, 5).map((f, i) => (
+                    <FindingBadge key={i} f={f} />
+                  ))}
+                </div>
               </div>
-            ))}
+            )}
+
+            {/* Activity log */}
+            <div
+              ref={logRef}
+              className="rounded-lg p-2.5 font-mono text-[10px] max-h-28 overflow-y-auto"
+              style={{ background: "#040a17", border: "1px solid #1a2744", color: "#1e4d7f" }}
+            >
+              {logLines.map((l, i) => (
+                <div key={i} style={{ color: l.includes("⚠") ? "#ff9f0a" : l.includes("✓") || l.includes("✅") ? "#34d058" : "#1e4d7f" }}>
+                  {l}
+                </div>
+              ))}
+              <div style={{ color: "#00d4ff" }}>▋</div>
+            </div>
           </div>
         )}
 
         {/* ── DONE ── */}
-        {step === "done" && (
+        {phase === "done" && finalStats && (
           <div className="space-y-5">
             <div className="text-center">
-              <div className="text-5xl mb-3 animate-bounce">✅</div>
+              <div className="text-5xl mb-3">✅</div>
               <p className="text-xl font-bold" style={{ color: "#34d058" }}>
-                Device Protected!
+                Full-Disk Scan Complete!
               </p>
-              <p className="text-sm mt-2" style={{ color: "#94a3b8" }}>
-                {registerData?.device_name || status?.device_name || "Your device"} is now enrolled and actively monitored by DataGhost DLP.
+              <p className="text-sm mt-1" style={{ color: "#94a3b8" }}>
+                {deviceName} is now actively protected by DataGhost DLP.
               </p>
             </div>
 
-            {/* Summary */}
+            {/* Stats */}
             <div
-              className="rounded-xl p-4 space-y-2 text-sm"
+              className="grid grid-cols-3 gap-3 text-center rounded-xl p-4"
               style={{ background: "rgba(52,208,88,0.04)", border: "1px solid rgba(52,208,88,0.15)" }}
             >
               {[
-                ["Status", "ACTIVE — DLP monitoring enabled"],
-                ["Scan", "Full-disk scan queued (results in dashboard)"],
-                ["Code", code],
-                ["Device ID", registerData?.device_id || status?.device_id || "—"],
-              ].map(([k, v]) => (
-                <div key={k} className="flex justify-between gap-3">
-                  <span style={{ color: "#475569" }}>{k}</span>
-                  <span className="font-mono text-xs text-right" style={{ color: "#94a3b8" }}>{v}</span>
+                { label: "Files Scanned", value: finalStats.files, color: "#00d4ff" },
+                { label: "Findings", value: finalStats.findings, color: "#ff9f0a" },
+                { label: "Incidents", value: finalStats.incidents, color: "#ff3b3b" },
+              ].map((s) => (
+                <div key={s.label}>
+                  <p className="text-2xl font-bold" style={{ color: s.color }}>{s.value}</p>
+                  <p className="text-[10px] mt-0.5" style={{ color: "#475569" }}>{s.label}</p>
                 </div>
               ))}
             </div>
+
+            {/* Device info */}
+            <div className="text-xs space-y-1.5" style={{ color: "#475569" }}>
+              {[
+                ["Device", deviceName],
+                ["ID", deviceId],
+                ["Platform", platform],
+                ["Code", code],
+              ].map(([k, v]) => (
+                <div key={k} className="flex justify-between">
+                  <span>{k}</span>
+                  <span className="font-mono" style={{ color: "#94a3b8" }}>{v}</span>
+                </div>
+              ))}
+            </div>
+
+            {/* Findings list */}
+            {findings.length > 0 && (
+              <div className="space-y-1.5">
+                <p className="text-[10px] uppercase tracking-wider" style={{ color: "#475569" }}>
+                  Detected Findings
+                </p>
+                <div className="space-y-1 max-h-36 overflow-y-auto">
+                  {findings.map((f, i) => <FindingBadge key={i} f={f} />)}
+                </div>
+              </div>
+            )}
 
             <a
               href={dashboardUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="w-full py-3 rounded-xl font-bold text-sm text-center flex items-center justify-center gap-2 transition-all duration-200"
+              className="w-full py-3 rounded-xl font-bold text-sm text-center flex items-center justify-center gap-2 transition-all"
               style={{
                 background: "linear-gradient(135deg,#0a3320,#0d4f2c)",
                 border: "1px solid rgba(52,208,88,0.3)",
                 color: "#34d058",
                 boxShadow: "0 4px 20px rgba(52,208,88,0.15)",
-                display: "flex",
               }}
             >
-              📊 Open DataGhost Dashboard
+              📊 View Results in Dashboard →
             </a>
           </div>
         )}
 
         {/* ── EXPIRED ── */}
-        {step === "expired" && (
-          <div className="text-center space-y-4 py-4">
+        {phase === "expired" && (
+          <div className="text-center space-y-4 py-6">
             <div className="text-4xl">⏰</div>
             <p className="font-bold" style={{ color: "#ff9f0a" }}>Enrollment Code Expired</p>
             <p className="text-sm" style={{ color: "#64748b" }}>
               Code <strong style={{ color: "#94a3b8" }}>{code}</strong> has expired.
-              Please ask your administrator to generate a new enrollment code.
+              Ask your admin to generate a new one.
             </p>
             <a
               href={dashboardUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-block px-5 py-2 rounded-lg text-sm font-semibold transition-all"
-              style={{ background: "rgba(255,159,10,0.1)", border: "1px solid rgba(255,159,10,0.3)", color: "#ff9f0a" }}
+              className="inline-block px-5 py-2 rounded-lg text-sm font-semibold"
+              style={{
+                background: "rgba(255,159,10,0.1)",
+                border: "1px solid rgba(255,159,10,0.3)",
+                color: "#ff9f0a",
+              }}
             >
               Go to Dashboard
             </a>
@@ -490,28 +544,49 @@ export default function EnrollPage() {
         )}
 
         {/* ── ERROR ── */}
-        {step === "error" && (
-          <div className="space-y-4 py-2">
+        {phase === "error" && (
+          <div className="space-y-4">
             <div
               className="rounded-xl px-4 py-3 text-sm"
-              style={{ background: "rgba(255,59,59,0.06)", border: "1px solid rgba(255,59,59,0.2)", color: "#ff3b3b" }}
+              style={{
+                background: "rgba(255,59,59,0.06)",
+                border: "1px solid rgba(255,59,59,0.2)",
+                color: "#ff3b3b",
+              }}
             >
-              <p className="font-semibold mb-1">⚠ Enrollment Failed</p>
+              <p className="font-bold mb-1">⚠ Connection Error</p>
               <p style={{ color: "#ff6b6b" }}>{errorMsg}</p>
             </div>
+
+            {/* Still show log */}
+            {logLines.length > 0 && (
+              <div
+                ref={logRef}
+                className="rounded-lg p-2.5 font-mono text-[10px] max-h-28 overflow-y-auto"
+                style={{ background: "#040a17", border: "1px solid #1a2744", color: "#1e4d7f" }}
+              >
+                {logLines.map((l, i) => <div key={i}>{l}</div>)}
+              </div>
+            )}
+
             <button
-              onClick={init}
+              onClick={() => window.location.reload()}
               className="w-full py-2.5 rounded-xl text-sm font-semibold transition-all"
-              style={{ background: "rgba(255,59,59,0.1)", border: "1px solid rgba(255,59,59,0.25)", color: "#ff3b3b" }}
+              style={{
+                background: "rgba(255,59,59,0.1)",
+                border: "1px solid rgba(255,59,59,0.25)",
+                color: "#ff3b3b",
+                cursor: "pointer",
+              }}
             >
-              Try Again
+              Retry
             </button>
           </div>
         )}
 
         {/* Footer */}
         <p className="text-center text-[10px] mt-6" style={{ color: "#1e3a5f" }}>
-          DataGhost DLP · Secure Device Enrollment · v2.0
+          DataGhost DLP · Zero-Touch Enrollment · End-to-End Scan
         </p>
       </div>
     </div>

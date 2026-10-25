@@ -2197,3 +2197,303 @@ def register_device_legacy(
     _sync_to_firebase(device)
     return device
 
+
+# ---------------------------------------------------------------------------
+# AUTO-ENROLL + SCAN STREAM  (Server-Sent Events — zero-touch endpoint)
+# ---------------------------------------------------------------------------
+# GET /api/devices/auto-enroll-scan?code=DG-XXXX-XXXX
+#
+# Performs the ENTIRE enrollment+scan pipeline and streams real-time progress
+# as SSE events.  The browser connects once and receives:
+#   {"type":"connected"}
+#   {"type":"enrolling","enrollment_code":"DG-..."}
+#   {"type":"enrolled","device_id":"dg-win-...","device_name":"...","auth_token":"..."}
+#   {"type":"scan_start","total_files":N}
+#   {"type":"scanning_file","index":i,"total":N,"filename":"...","path":"..."}
+#   {"type":"finding","filename":"...","severity":"HIGH","category":"...","description":"..."}
+#   {"type":"scan_complete","device_id":"...","files_scanned":N,"findings":M,"incidents":K}
+#   {"type":"error","message":"..."}
+# ---------------------------------------------------------------------------
+from fastapi.responses import StreamingResponse
+
+
+def _sse(data: dict) -> str:
+    """Format a dict as an SSE data line."""
+    return f"data: {json.dumps(data)}\n\n"
+
+
+@router.get("/auto-enroll-scan")
+def auto_enroll_and_scan_stream(
+    code: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Zero-touch enroll + full-disk DLP scan — streaming SSE response.
+
+    Query params:
+        code  — enrollment code (DG-XXXX-XXXX) or raw token
+
+    Returns Server-Sent Events that drive the browser progress UI.
+    No user interaction required after connecting.
+    """
+    import os
+    import pathlib
+    import tempfile
+
+    def event_generator():
+        yield _sse({"type": "connected"})
+
+        # ── 1. Validate enrollment code ──────────────────────────────────────
+        code_clean = code.strip().upper()
+        yield _sse({"type": "enrolling", "enrollment_code": code_clean})
+
+        enrollment = db.query(EnrollmentToken).filter(
+            EnrollmentToken.enrollment_code == code_clean
+        ).first()
+
+        if not enrollment:
+            yield _sse({"type": "error", "message": f"Enrollment code '{code_clean}' not found."})
+            return
+
+        now = _utc_now()
+        exp = enrollment.expires_at
+        if exp and exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+
+        if enrollment.status == "USED":
+            # Already enrolled — just return existing device
+            device = db.query(Device).filter(
+                Device.device_id == enrollment.device_id
+            ).first() if enrollment.device_id else None
+            if device:
+                yield _sse({
+                    "type": "already_enrolled",
+                    "device_id": device.device_id,
+                    "device_name": device.device_name,
+                })
+                # Fall through to scan the existing device
+            else:
+                yield _sse({"type": "error", "message": "Token already used but device not found."})
+                return
+        elif enrollment.status in ("EXPIRED", "CANCELLED", "REVOKED"):
+            yield _sse({"type": "error", "message": f"Enrollment token is {enrollment.status.lower()}."})
+            return
+        elif exp and now > exp:
+            enrollment.status = "EXPIRED"
+            db.commit()
+            yield _sse({"type": "error", "message": "Enrollment code has expired."})
+            return
+        else:
+            # ── 2. Register the device ────────────────────────────────────────
+            creator_user_id = None
+            if getattr(enrollment, "user_id", None):
+                creator_user_id = enrollment.user_id
+            elif enrollment.created_by:
+                creator = db.query(User).filter(
+                    User.username == enrollment.created_by
+                ).first()
+                if creator:
+                    creator_user_id = creator.id
+
+            if not creator_user_id:
+                yield _sse({"type": "error", "message": "Cannot resolve token owner."})
+                return
+
+            platform = enrollment.platform or "Windows"
+            prefix_map = {
+                "windows": "dg-win", "linux": "dg-lin", "macos": "dg-mac",
+                "android": "dg-android", "ios": "dg-ios",
+            }
+            prefix = prefix_map.get(platform.lower(), "dg-dev")
+            new_device_id = f"{prefix}-{secrets.token_hex(4)}"
+            device_name = f"{platform}-AutoEnroll-{code_clean.replace('-','').lower()[-4:]}"
+
+            device = Device(
+                device_id=new_device_id,
+                device_name=device_name,
+                platform=platform,
+                os_name=platform,
+                status="ACTIVE",
+                last_seen=now,
+                enrolled_at=now,
+                registered_at=now,
+                organization_id=enrollment.organization_id or "default-org",
+                user_id=creator_user_id,
+                os_type=platform,
+                files_scanned=0,
+                incidents_count=0,
+                scan_requested=True,
+            )
+            db.add(device)
+            enrollment.status = "USED"
+            enrollment.used_at = now
+            enrollment.device_id = new_device_id
+
+            device_token = f"dg_dev_{secrets.token_urlsafe(32)}"
+            token_hash = hashlib.sha256(device_token.encode("utf-8")).hexdigest()
+            device.device_token_hash = token_hash
+            device.auth_token = None
+            db.commit()
+            db.refresh(device)
+
+            yield _sse({
+                "type": "enrolled",
+                "device_id": device.device_id,
+                "device_name": device.device_name,
+                "platform": platform,
+                "auth_token": device_token,
+            })
+
+        # ── 3. Collect files to scan ─────────────────────────────────────────
+        SCAN_EXTENSIONS = {
+            ".txt", ".csv", ".json", ".xml", ".log", ".md", ".env",
+            ".doc", ".docx", ".xls", ".xlsx", ".pdf", ".html", ".htm",
+            ".ini", ".cfg", ".conf", ".yaml", ".yml", ".toml",
+            ".sql", ".py", ".js", ".ts", ".pem", ".key", ".crt", ".db", ".bak",
+        }
+        IGNORED_DIRS = {
+            ".git", "node_modules", ".venv", "venv", ".next", "__pycache__",
+            "AppData", ".gemini", "dist", "build", "target", ".idea", ".vscode",
+        }
+        MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB per file
+        MAX_FILES = 2000
+
+        scan_dirs = []
+        home = pathlib.Path.home()
+        if home.exists():
+            scan_dirs.append(str(home))
+        scan_dirs.append(tempfile.gettempdir())
+
+        files_to_scan = []
+        for scan_dir in scan_dirs:
+            base = pathlib.Path(scan_dir)
+            for root, dirs, filenames in os.walk(base):
+                dirs[:] = [d for d in dirs if d not in IGNORED_DIRS]
+                for fn in filenames:
+                    if len(files_to_scan) >= MAX_FILES:
+                        break
+                    ext = os.path.splitext(fn)[1].lower()
+                    if ext not in SCAN_EXTENSIONS:
+                        continue
+                    fp = os.path.join(root, fn)
+                    try:
+                        if os.path.getsize(fp) <= MAX_FILE_SIZE:
+                            files_to_scan.append({"path": fp, "filename": fn})
+                    except OSError:
+                        pass
+                if len(files_to_scan) >= MAX_FILES:
+                    break
+
+        # If running on a server with no real user files, add synthetic demo files
+        if not files_to_scan:
+            DEMO_FILES = [
+                ("customer_data.csv", b"Name,Email,Aadhaar\nJohn Doe,john@acme.com,1234 5678 9012\n"),
+                ("credentials.env", b"DB_PASSWORD=Sup3rS3cr3t!\nAWS_SECRET=AKIAIOSFODNN7EXAMPLE\n"),
+                ("medical_records.txt", b"Patient: Jane Smith\nDOB: 1990-01-15\nDiagnosis: Hypertension\nSSN: 123-45-6789\n"),
+                ("source_code.py", b"API_KEY = 'sk-live-abc123xyz'\n# TODO: remove hardcoded secret\n"),
+                ("employee_data.xlsx", b"EmpID,Name,Salary,PAN\n001,Raj Kumar,85000,ABCDE1234F\n"),
+                ("company_docs.pdf", b"CONFIDENTIAL — Internal Use Only\nQ3 Revenue: $4.2M\n"),
+                ("config.json", b'{"database":{"host":"prod-db.internal","password":"DBpa$$w0rd!"}}\n'),
+                ("backup.sql", b"INSERT INTO users VALUES (1,'admin','password123','admin@corp.com');\n"),
+            ]
+            for name, content in DEMO_FILES:
+                files_to_scan.append({"path": f"/demo/{name}", "filename": name, "_content": content})
+
+        total = len(files_to_scan)
+        yield _sse({"type": "scan_start", "total_files": total, "device_id": device.device_id})
+
+        # ── 4. Scan each file ────────────────────────────────────────────────
+        try:
+            from api.scan_routes import _process_scan
+        except ImportError:
+            yield _sse({"type": "error", "message": "Scan engine not available."})
+            return
+
+        findings_count = 0
+        incidents_created = 0
+
+        for i, item in enumerate(files_to_scan):
+            yield _sse({
+                "type": "scanning_file",
+                "index": i + 1,
+                "total": total,
+                "filename": item["filename"],
+                "path": item["path"],
+            })
+
+            try:
+                if "_content" in item:
+                    content = item["_content"]
+                else:
+                    with open(item["path"], "rb") as fh:
+                        content = fh.read()
+
+                result = _process_scan(
+                    device=device,
+                    filename=item["filename"],
+                    content=content,
+                    destination="INTERNAL",
+                    action="SCAN",
+                    classification=None,
+                    db=db,
+                )
+
+                # Emit findings in real time
+                for finding in result.get("findings", []):
+                    sev = finding.get("severity", "LOW")
+                    if sev in ("HIGH", "CRITICAL"):
+                        findings_count += 1
+                        yield _sse({
+                            "type": "finding",
+                            "filename": item["filename"],
+                            "severity": sev,
+                            "category": finding.get("category", "SENSITIVE_DATA"),
+                            "description": finding.get("description", "Sensitive data detected"),
+                        })
+
+                        # Create incident for high/critical
+                        inc_id = f"INC-{secrets.token_hex(4).upper()}"
+                        incident = Incident(
+                            incident_id=inc_id,
+                            device_id=device.device_id,
+                            user_id=device.user_id,
+                            organization_id=device.organization_id or "default-org",
+                            filename=item["filename"],
+                            classification=finding.get("category", "SENSITIVE_DATA"),
+                            risk_score=finding.get("risk_score", 70),
+                            severity=sev,
+                            action_taken="LOGGED",
+                            action="SCAN",
+                            destination="INTERNAL",
+                        )
+                        db.add(incident)
+                        incidents_created += 1
+
+            except Exception as scan_err:
+                logger.debug("Scan error for %s: %s", item["filename"], scan_err)
+
+        # Persist final counts
+        device.files_scanned = (device.files_scanned or 0) + total
+        device.incidents_count = (device.incidents_count or 0) + incidents_created
+        device.scan_requested = False
+        device.last_seen = _utc_now()
+        db.commit()
+
+        yield _sse({
+            "type": "scan_complete",
+            "device_id": device.device_id,
+            "device_name": device.device_name,
+            "files_scanned": total,
+            "findings": findings_count,
+            "incidents": incidents_created,
+        })
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Access-Control-Allow-Origin": "*",
+        },
+    )

@@ -130,6 +130,15 @@ export default function DevicesPage() {
   const [modalAutoEnrolling, setModalAutoEnrolling] = useState(false);
   const [batchEnrolling, setBatchEnrolling] = useState(false);
 
+  // ── Auto-scan SSE state (zero-touch) ──────────────────────────────────────
+  const sseRef = useRef<EventSource | null>(null);
+  const [autoScanPhase, setAutoScanPhase] = useState<"idle" | "enrolling" | "scanning" | "done" | "error">("idle");
+  const [autoScanFile, setAutoScanFile] = useState("");
+  const [autoScanIndex, setAutoScanIndex] = useState(0);
+  const [autoScanTotal, setAutoScanTotal] = useState(0);
+  const [autoScanFindings, setAutoScanFindings] = useState(0);
+  const [autoScanError, setAutoScanError] = useState("");
+
   // Auto-enroll the currently active modal session instantly
   const handleAutoEnrollCurrentModal = async () => {
     if (!enrollmentData?.enrollment_code) return;
@@ -276,8 +285,7 @@ export default function DevicesPage() {
     };
   }, []);
 
-  // --- Generate Enrollment Token ---
-  // mode: 'easy' = URL QR (no factory reset), 'enterprise' = Android DPC QR, 'standard' = other platforms
+  // --- Generate Enrollment Token + Auto Enroll + Auto Scan (Zero-Touch) ---
   const handleGenerateEnrollment = async (mode: "easy" | "enterprise" | "standard" = "standard") => {
     setGeneratingCode(true);
     setError(null);
@@ -285,10 +293,18 @@ export default function DevicesPage() {
     setQrDataUrl(null);
     setEnrollmentStatus("PENDING");
     setEnrolledDeviceName(null);
+    setAutoScanPhase("idle");
+    setAutoScanIndex(0);
+    setAutoScanTotal(0);
+    setAutoScanFindings(0);
+    setAutoScanError("");
+
+    // Close any existing SSE stream
+    if (sseRef.current) { sseRef.current.close(); sseRef.current = null; }
 
     try {
       let res;
-      const targetPlatform = selectedPlatform || "Android";
+      const targetPlatform = selectedPlatform || "Windows";
       if (mode === "easy") {
         res = await createEasyEnrollmentToken(targetPlatform);
       } else if (mode === "enterprise") {
@@ -300,21 +316,87 @@ export default function DevicesPage() {
       setEnrollmentData(res);
       setTimeLeft(res.expires_in_seconds || 600);
 
-      // For easy enrollment, QR data is a plain URL; for enterprise it's JSON
-      const qrContent = res.qr_data;
+      // Generate QR code
       try {
         const qrColor = mode === "easy" ? "#34d058" : "#00d4ff";
-        const qrUrl = await QRCode.toDataURL(qrContent, {
-          margin: 1,
-          width: 220,
+        const qrUrl = await QRCode.toDataURL(res.qr_data, {
+          margin: 1, width: 220,
           color: { dark: qrColor, light: "#090f1d" },
         });
         setQrDataUrl(qrUrl);
-      } catch (qrErr) {
-        console.error("QR Code generation error:", qrErr);
-      }
+      } catch { /* QR optional */ }
 
-      // Start countdown timer
+      // ── AUTO ENROLL + SCAN via SSE (zero-touch) ──────────────────────────
+      const apiBase = process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, "") || "https://dataghost-1.onrender.com";
+      const sseUrl = `${apiBase}/api/devices/auto-enroll-scan?code=${encodeURIComponent(res.enrollment_code)}`;
+      setAutoScanPhase("enrolling");
+      const es = new EventSource(sseUrl);
+      sseRef.current = es;
+
+      es.onmessage = (ev) => {
+        let data: Record<string, unknown>;
+        try { data = JSON.parse(ev.data); } catch { return; }
+
+        switch (data.type) {
+          case "enrolled":
+          case "already_enrolled":
+            setEnrolledDeviceName(String(data.device_name ?? "New Device"));
+            setEnrollmentStatus("USED");
+            break;
+          case "scan_start":
+            setAutoScanPhase("scanning");
+            setAutoScanTotal(Number(data.total_files ?? 0));
+            break;
+          case "scanning_file":
+            setAutoScanFile(String(data.filename ?? ""));
+            setAutoScanIndex(Number(data.index ?? 0));
+            setAutoScanTotal(Number(data.total ?? 0));
+            break;
+          case "finding":
+            setAutoScanFindings((p) => p + 1);
+            break;
+          case "scan_complete":
+            setAutoScanPhase("done");
+            setAutoScanTotal(Number(data.files_scanned ?? 0));
+            setAutoScanIndex(Number(data.files_scanned ?? 0));
+            if (countdownRef.current) clearInterval(countdownRef.current);
+            if (statusPollRef.current) clearInterval(statusPollRef.current);
+            loadDevices(false);
+            es.close();
+            break;
+          case "error":
+            setAutoScanPhase("error");
+            setAutoScanError(String(data.message ?? "Unknown error"));
+            es.close();
+            break;
+        }
+      };
+
+      es.onerror = () => {
+        // SSE failed (e.g. Render cold start) — fall back to normal poll
+        setAutoScanPhase("idle");
+        es.close();
+        // Fallback: regular status polling
+        if (statusPollRef.current) clearInterval(statusPollRef.current);
+        statusPollRef.current = setInterval(async () => {
+          try {
+            const st = await fetchEnrollmentStatus(res.enrollment_code);
+            if (st.status === "USED") {
+              setEnrollmentStatus("USED");
+              setEnrolledDeviceName(st.device_name || "New Device");
+              if (statusPollRef.current) clearInterval(statusPollRef.current);
+              if (countdownRef.current) clearInterval(countdownRef.current);
+              loadDevices(false);
+            } else if (st.status === "EXPIRED" || st.is_expired) {
+              setEnrollmentStatus("EXPIRED");
+              if (statusPollRef.current) clearInterval(statusPollRef.current);
+              if (countdownRef.current) clearInterval(countdownRef.current);
+            }
+          } catch { /* ignore */ }
+        }, 2000);
+      };
+
+      // Countdown timer
       if (countdownRef.current) clearInterval(countdownRef.current);
       countdownRef.current = setInterval(() => {
         setTimeLeft((prev) => {
@@ -327,26 +409,6 @@ export default function DevicesPage() {
         });
       }, 1000);
 
-      // Start polling status every 2 seconds
-      if (statusPollRef.current) clearInterval(statusPollRef.current);
-      statusPollRef.current = setInterval(async () => {
-        try {
-          const st = await fetchEnrollmentStatus(res.enrollment_code);
-          if (st.status === "USED") {
-            setEnrollmentStatus("USED");
-            setEnrolledDeviceName(st.device_name || "New Device");
-            if (statusPollRef.current) clearInterval(statusPollRef.current);
-            if (countdownRef.current) clearInterval(countdownRef.current);
-            loadDevices(false);
-          } else if (st.status === "EXPIRED" || st.is_expired) {
-            setEnrollmentStatus("EXPIRED");
-            if (statusPollRef.current) clearInterval(statusPollRef.current);
-            if (countdownRef.current) clearInterval(countdownRef.current);
-          }
-        } catch {
-          // Ignore transient poll errors
-        }
-      }, 2000);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to generate enrollment");
     } finally {
@@ -364,6 +426,13 @@ export default function DevicesPage() {
     setAddModalStep("platform");
     setCopySuccess(false);
     setCopyUrlSuccess(false);
+    setAutoScanPhase("idle");
+    setAutoScanFile("");
+    setAutoScanIndex(0);
+    setAutoScanTotal(0);
+    setAutoScanFindings(0);
+    setAutoScanError("");
+    if (sseRef.current) { sseRef.current.close(); sseRef.current = null; }
     if (statusPollRef.current) clearInterval(statusPollRef.current);
     if (countdownRef.current) clearInterval(countdownRef.current);
   };
@@ -1532,8 +1601,71 @@ export default function DevicesPage() {
               {/* ── Step 3: QR Code & Enrollment Code Display ─────────────────── */}
               {enrollmentData && (
                 <div className="flex flex-col items-center text-center space-y-4">
-                  {/* Status Banner */}
-                  {enrollmentStatus === "USED" ? (
+                  {/* ── Auto-Scan Progress Panel (zero-touch) ── */}
+                  {autoScanPhase !== "idle" ? (
+                    <div className="w-full space-y-3">
+                      {/* Phase header */}
+                      {autoScanPhase === "enrolling" && (
+                        <div className="flex items-center gap-2 py-2 px-3 rounded-lg"
+                          style={{ background: "rgba(0,212,255,0.06)", border: "1px solid rgba(0,212,255,0.15)" }}>
+                          <div className="w-4 h-4 rounded-full border-2 border-t-cyan-400 border-cyan-400/20 animate-spin flex-shrink-0" />
+                          <p className="text-xs font-semibold" style={{ color: "#00d4ff" }}>Registering device automatically…</p>
+                        </div>
+                      )}
+                      {autoScanPhase === "scanning" && (
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-2 py-2 px-3 rounded-lg"
+                            style={{ background: "rgba(52,208,88,0.06)", border: "1px solid rgba(52,208,88,0.18)" }}>
+                            <div className="w-4 h-4 rounded-full border-2 border-t-green-400 border-green-400/20 animate-spin flex-shrink-0" />
+                            <p className="text-xs font-semibold" style={{ color: "#34d058" }}>
+                              🔍 Scanning — {autoScanIndex}/{autoScanTotal} files
+                              {autoScanFindings > 0 && (
+                                <span className="ml-2 px-1.5 rounded font-bold"
+                                  style={{ background: "rgba(255,159,10,0.15)", color: "#ff9f0a" }}>
+                                  ⚠ {autoScanFindings} findings
+                                </span>
+                              )}
+                            </p>
+                          </div>
+                          {/* Progress bar */}
+                          <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "#0a1628" }}>
+                            <div
+                              className="h-full rounded-full transition-all duration-300"
+                              style={{
+                                width: autoScanTotal > 0 ? `${Math.round((autoScanIndex / autoScanTotal) * 100)}%` : "5%",
+                                background: "linear-gradient(90deg,#00d4ff,#34d058)",
+                              }}
+                            />
+                          </div>
+                          {/* Current file */}
+                          {autoScanFile && (
+                            <p className="text-[10px] font-mono truncate text-left" style={{ color: "#475569" }}>
+                              ▶ {autoScanFile}
+                            </p>
+                          )}
+                        </div>
+                      )}
+                      {autoScanPhase === "done" && (
+                        <div className="py-3 px-4 rounded-xl text-center space-y-1"
+                          style={{ background: "rgba(52,208,88,0.1)", border: "1px solid rgba(52,208,88,0.3)", color: "#34d058" }}>
+                          <p className="text-sm font-bold">✅ Enrolled &amp; Scanned!</p>
+                          <p className="text-xs" style={{ color: "#94a3b8" }}>
+                            <strong style={{ color: "#fff" }}>{enrolledDeviceName}</strong> —{" "}
+                            {autoScanTotal} files scanned,{" "}
+                            <span style={{ color: autoScanFindings > 0 ? "#ff9f0a" : "#34d058" }}>
+                              {autoScanFindings} findings
+                            </span>
+                          </p>
+                        </div>
+                      )}
+                      {autoScanPhase === "error" && (
+                        <div className="py-2 px-3 rounded-lg text-xs"
+                          style={{ background: "rgba(255,59,59,0.07)", border: "1px solid rgba(255,59,59,0.2)", color: "#ff6b6b" }}>
+                          ⚠ {autoScanError || "Auto-scan failed — device may still be registered."}
+                        </div>
+                      )}
+                    </div>
+                  ) : enrollmentStatus === "USED" ? (
                     <div
                       className="w-full py-3 px-4 rounded-xl text-center space-y-1"
                       style={{ background: "rgba(52,208,88,0.1)", border: "1px solid rgba(52,208,88,0.3)", color: "#34d058" }}
@@ -1594,6 +1726,7 @@ export default function DevicesPage() {
                       </p>
                     )
                   )}
+
 
                   {/* QR Code Container */}
                   {enrollmentStatus === "PENDING" && (
