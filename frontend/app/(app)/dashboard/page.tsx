@@ -7,7 +7,23 @@ import { fetchDashboardStats, fetchDashboardActivity, fetchIncidents, fetchFindi
 import type { DashboardStats, ActivityDataPoint, RiskSegment, IncidentRow, FindingStats } from "@/lib/api";
 import { useAuthContext } from "@/lib/AuthContext";
 
-import { AuthError } from "@/lib/auth";
+import { AuthError, ApiConnectionError } from "@/lib/auth";
+
+/** Returns true if the error looks like a backend cold-start / wake-up situation. */
+function isWakeUpError(err: unknown): boolean {
+  if (err instanceof ApiConnectionError) return true;
+  if (err instanceof Error) {
+    const m = err.message.toLowerCase();
+    return (
+      m.includes("failed to fetch") ||
+      m.includes("backend is waking up") ||
+      m.includes("502") ||
+      m.includes("network") ||
+      m.includes("unavailable")
+    );
+  }
+  return false;
+}
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, BarChart, Bar, Legend,
@@ -82,6 +98,8 @@ export default function DashboardPage() {
   const [initialLoading, setInitialLoading] = useState(true);
   // dataError: shown inside the dashboard without destroying the shell.
   const [dataError, setDataError] = useState<string | null>(null);
+  // isWakingUp: true when the error is a backend cold-start / wake-up 502.
+  const [isWakingUp, setIsWakingUp] = useState(false);
   const [now, setNow] = useState(new Date());
 
   // Use a ref so the polling callback always reads the latest value without
@@ -101,6 +119,7 @@ export default function DashboardPage() {
 
     try {
       setDataError(null);
+      setIsWakingUp(false);
       const [statsData, activityData, incidentsData, findingsData] = await Promise.all([
         fetchDashboardStats(),
         fetchDashboardActivity(),
@@ -111,8 +130,8 @@ export default function DashboardPage() {
       setActivity(activityData);
       setIncidents(incidentsData.items);
       if (findingsData) setFindingStats(findingsData);
+      setIsWakingUp(false);
     } catch (err) {
-
       if (err instanceof AuthError) {
         // JWT rejected by backend — clear interval, signal auth failure once.
         authFailedRef.current = true;
@@ -121,8 +140,13 @@ export default function DashboardPage() {
           intervalRef.current = null;
         }
         signalAuthFailure(); // Clears auth state → layout redirects to /login ONCE.
+      } else if (isWakeUpError(err)) {
+        // Render free-tier cold start — show friendly wake-up banner, keep polling.
+        setIsWakingUp(true);
+        setDataError(null);
       } else {
-        // Network/server error — show in-dashboard error, keep polling.
+        // Genuine network/server error — show raw message, keep polling.
+        setIsWakingUp(false);
         setDataError(
           err instanceof Error ? err.message : "Failed to load dashboard data"
         );
@@ -236,7 +260,38 @@ export default function DashboardPage() {
       ) : (
         <div className="p-6 space-y-6 animate-fade-up">
 
-          {/* Error banner — shown inside dashboard, not replacing it */}
+          {/* Wake-up banner — backend cold-start on Render free tier */}
+          {isWakingUp && (
+            <div
+              className="px-4 py-3 rounded-lg text-sm flex items-center justify-between gap-4"
+              style={{
+                background: "rgba(245,158,11,0.07)",
+                border: "1px solid rgba(245,158,11,0.25)",
+                color: "#fbbf24",
+              }}
+            >
+              <div className="flex items-center gap-2">
+                <svg className="animate-spin h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+                </svg>
+                <span>
+                  <strong>Backend is waking up</strong> — Render free-tier instances sleep after
+                  inactivity. This usually takes <strong>30–60 seconds</strong>. The dashboard
+                  will refresh automatically.
+                </span>
+              </div>
+              <button
+                onClick={() => load(false)}
+                className="shrink-0 text-xs font-medium px-3 py-1.5 rounded-md"
+                style={{ background: "rgba(245,158,11,0.15)", border: "1px solid rgba(245,158,11,0.3)" }}
+              >
+                Retry now
+              </button>
+            </div>
+          )}
+
+          {/* Error banner — shown for real errors, not replacing dashboard */}
           {dataError && (
             <div
               className="px-4 py-3 rounded-lg text-sm flex items-center justify-between gap-4"
