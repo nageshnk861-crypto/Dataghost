@@ -206,6 +206,119 @@ DLP_RULES: List[Dict[str, Any]] = [
         "severity": "HIGH",
         "category": "AI_MODELS",
     },
+    # ── 1. Personally Identifiable Information (PII) Extended ───────────────
+    {
+        "name": "passport_number",
+        "pattern": _c(r"\b[A-PR-WYa-pr-wy][1-9]\d\s?\d{4}[1-9]\b"),
+        "severity": "HIGH",
+        "category": "PII",
+        "context_keywords": ["passport", "republic", "travel document", "nationality"],
+    },
+    {
+        "name": "driving_license",
+        "pattern": _c(r"\b[A-Z]{2}[0-9]{2}[-\s]?[0-9]{11}\b"),
+        "severity": "MEDIUM",
+        "category": "PII",
+        "context_keywords": ["dl", "driving", "licence", "license", "driver"],
+    },
+    {
+        "name": "dob_marker",
+        "pattern": _c(
+            r"(?i)\b(?:dob|date\s*of\s*birth|birth\s*date)\s*[:=\s]+\s*([0-3]?[0-9][\/\-.][0-1]?[0-9][\/\-.](?:19|20)\d{2})\b"
+        ),
+        "severity": "MEDIUM",
+        "category": "PII",
+    },
+    {
+        "name": "pin_code",
+        "pattern": _c(r"\b[1-9][0-9]{2}\s?[0-9]{3}\b"),
+        "severity": "LOW",
+        "category": "PII",
+        "context_keywords": ["pincode", "pin code", "postal code", "zipcode", "zip code", "address"],
+    },
+    # ── 2. Payment & Financial Extended ─────────────────────────────────────
+    {
+        "name": "iban_code",
+        "pattern": _c(r"\b[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}\b"),
+        "severity": "HIGH",
+        "category": "FINANCIAL",
+        "context_keywords": ["iban", "bank", "wire", "transfer", "swift"],
+    },
+    {
+        "name": "swift_bic",
+        "pattern": _c(r"\b[A-Z]{6}[A-Z0-9]{2}(?:[A-Z0-9]{3})?\b"),
+        "severity": "MEDIUM",
+        "category": "FINANCIAL",
+        "context_keywords": ["swift", "bic", "wire transfer", "bank code"],
+    },
+    {
+        "name": "upi_id",
+        "pattern": _c(
+            r"\b[a-zA-Z0-9.\-_]{2,256}@(okhdfcbank|okaxis|oksbi|okicici|paytm|gpay|ybl|apl|upi)\b",
+            re.IGNORECASE,
+        ),
+        "severity": "MEDIUM",
+        "category": "FINANCIAL",
+    },
+    # ── 3 & 4. Authentication, Cloud & API Keys Extended ────────────────────
+    {
+        "name": "github_token",
+        "pattern": _c(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,255}\b"),
+        "severity": "CRITICAL",
+        "category": "CREDENTIALS",
+    },
+    {
+        "name": "slack_token",
+        "pattern": _c(r"\bxox[baprs]-[0-9]{10,13}-[0-9]{10,13}[a-zA-Z0-9-]*\b"),
+        "severity": "CRITICAL",
+        "category": "CREDENTIALS",
+    },
+    {
+        "name": "stripe_api_key",
+        "pattern": _c(r"\b(?:sk|rk)_(?:live|test)_[0-9a-zA-Z]{24,}\b"),
+        "severity": "CRITICAL",
+        "category": "CREDENTIALS",
+    },
+    {
+        "name": "ssh_private_key",
+        "pattern": _c(r"-----BEGIN (?:OPENSSH|DSA|EC|RSA) PRIVATE KEY-----"),
+        "severity": "CRITICAL",
+        "category": "CREDENTIALS",
+    },
+    {
+        "name": "authorization_header",
+        "pattern": _c(
+            r"(?i)\bauthorization\s*:\s*(?:bearer|basic)\s+([A-Za-z0-9_\-\.\+/=]{16,})"
+        ),
+        "severity": "CRITICAL",
+        "category": "CREDENTIALS",
+    },
+    # ── 5. Database & Infrastructure Connection Strings ─────────────────────
+    {
+        "name": "database_connection_url",
+        "pattern": _c(
+            r"(?i)\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp|mssql)://[^\s:@]+:[^\s:@]+@[^\s/]+"
+        ),
+        "severity": "CRITICAL",
+        "category": "DATABASE",
+    },
+    {
+        "name": "k8s_secret_manifest",
+        "pattern": _c(
+            r"(?i)kind\s*:\s*Secret[\s\S]*?(?:data|stringData)\s*:"
+        ),
+        "severity": "HIGH",
+        "category": "INFRASTRUCTURE",
+    },
+    # ── 8. Healthcare PHI Data ──────────────────────────────────────────────
+    {
+        "name": "healthcare_phi",
+        "pattern": _c(
+            r"(?i)\b(?:patient\s*(?:name|id|record)|medical\s*record|diagnosis|prescription|treatment\s*plan|insurance\s*member\s*id|phi)\s*[:=\s]+\s*([A-Za-z0-9\-\s]{3,40})\b"
+        ),
+        "severity": "HIGH",
+        "category": "HEALTHCARE",
+    },
 ]
 
 # ---------------------------------------------------------------------------

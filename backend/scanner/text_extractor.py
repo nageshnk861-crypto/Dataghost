@@ -80,6 +80,63 @@ def _extract_docx(content: bytes) -> str:
         return ""
 
 
+def _extract_xlsx(content: bytes) -> str:
+    """Extract text from an XLSX/XLS file using zipfile XML inspection."""
+    import zipfile
+    import xml.etree.ElementTree as ET
+    parts = []
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as z:
+            for name in z.namelist():
+                if name.startswith("xl/sharedStrings") or name.startswith("xl/worksheets/"):
+                    try:
+                        tree = ET.fromstring(z.read(name))
+                        parts.extend(tree.itertext())
+                    except Exception:
+                        pass
+    except Exception as exc:
+        logger.warning("XLSX extraction failed: %s", exc)
+    return " ".join(parts)
+
+
+def _extract_pptx(content: bytes) -> str:
+    """Extract text from a PPTX file using slide XML text extraction."""
+    import zipfile
+    import xml.etree.ElementTree as ET
+    parts = []
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as z:
+            for name in z.namelist():
+                if name.startswith("ppt/slides/slide") or name.startswith("ppt/notesSlides/"):
+                    try:
+                        tree = ET.fromstring(z.read(name))
+                        parts.extend(tree.itertext())
+                    except Exception:
+                        pass
+    except Exception as exc:
+        logger.warning("PPTX extraction failed: %s", exc)
+    return " ".join(parts)
+
+
+def _extract_zip(content: bytes) -> str:
+    """Extract and aggregate text from files inside a ZIP archive."""
+    import zipfile
+    parts = []
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as z:
+            for item in z.infolist():
+                if item.is_dir() or item.file_size > 2 * 1024 * 1024:
+                    continue
+                inner_ext = _ext(item.filename)
+                if inner_ext in _TEXT_EXTENSIONS or inner_ext in (".pdf", ".docx", ".xlsx", ".pptx"):
+                    inner_bytes = z.read(item)
+                    parts.append(f"--- File: {item.filename} ---")
+                    parts.append(extract_text(inner_bytes, item.filename))
+    except Exception as exc:
+        logger.warning("ZIP extraction failed: %s", exc)
+    return "\n".join(parts)
+
+
 def extract_text(file_content: bytes, filename: str) -> str:
     """
     Extract plain text from file bytes.
@@ -104,6 +161,12 @@ def extract_text(file_content: bytes, filename: str) -> str:
         text = _extract_pdf(file_content)
     elif ext == ".docx":
         text = _extract_docx(file_content)
+    elif ext in (".xlsx", ".xls"):
+        text = _extract_xlsx(file_content)
+    elif ext in (".pptx", ".ppt"):
+        text = _extract_pptx(file_content)
+    elif ext == ".zip":
+        text = _extract_zip(file_content)
     else:
         # Best-effort UTF-8 decode for any other extension.
         try:
