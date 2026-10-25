@@ -11,6 +11,8 @@ interface IncidentTableProps {
   incidents?: IncidentRow[];
   loading?: boolean;
   onStatusChange?: (incidentId: string, newStatus: string) => void;
+  /** Called when a row is clicked — parent can use this to show the AI explain panel. */
+  onRowClick?: (row: IncidentRow) => void;
   limit?: number;
 }
 
@@ -70,6 +72,7 @@ export default function IncidentTable({
   incidents,
   loading,
   onStatusChange,
+  onRowClick,
   limit,
 }: IncidentTableProps) {
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -167,7 +170,10 @@ export default function IncidentTable({
                 <tr
                   className="cursor-pointer transition-colors"
                   style={isExpanded ? { background: "rgba(0,212,255,0.03)" } : {}}
-                  onClick={() => setExpanded(isExpanded ? null : row.incident_id)}
+                  onClick={() => {
+                    setExpanded(isExpanded ? null : row.incident_id);
+                    onRowClick?.(row);
+                  }}
                 >
                   <td>
                     <span className="font-mono text-[10px]" style={{ color: "#475569" }}>

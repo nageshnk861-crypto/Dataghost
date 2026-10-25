@@ -15,6 +15,7 @@ from api.enrollment_routes import router as enrollment_router
 from api.provisioning_routes import router as provisioning_router
 from api.upload_routes import router as upload_router
 from api.findings_routes import router as findings_router
+from api.ai_routes import router as ai_router
 
 router = APIRouter()
 
@@ -31,4 +32,5 @@ router.include_router(dlp_router)
 router.include_router(enrollment_router, prefix="/v1")
 router.include_router(provisioning_router, prefix="/v1")
 router.include_router(upload_router, prefix="/v1")
+router.include_router(ai_router)
 

@@ -2,6 +2,7 @@
 
 import ClassificationBadge from "./ClassificationBadge";
 import RiskGauge from "./RiskGauge";
+import AiExplainPanel from "./AiExplainPanel";
 
 export interface ScanFinding {
   rule_name: string;
@@ -314,6 +315,24 @@ export default function ScanResult({ result, loading }: ScanResultProps) {
           </div>
         )}
       </div>
+
+      {/* AI Explanation — only shown when there are findings worth explaining */}
+      {findings.length > 0 && (
+        <AiExplainPanel
+          incidentId={result.incident_id ?? undefined}
+          filename={filename}
+          classification={classification}
+          riskScore={risk_score}
+          severity={result.severity}
+          actionTaken={action_taken}
+          findings={findings.map((f) => ({
+            category:    f.category,
+            severity:    f.severity,
+            count:       f.matches_count,
+            description: f.sample_match,
+          }))}
+        />
+      )}
     </div>
   );
 }
