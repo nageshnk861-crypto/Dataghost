@@ -32,7 +32,7 @@ function getApiBase(): string {
   if (typeof window === "undefined") return "";
   const envUrl = process.env.NEXT_PUBLIC_API_URL?.trim();
   if (envUrl) return envUrl.replace(/\/+$/, "");
-  return "";
+  return "https://dataghost-1.onrender.com";
 }
 
 async function fetchStatus(code: string): Promise<EnrollmentStatus | null> {

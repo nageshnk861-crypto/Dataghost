@@ -700,7 +700,15 @@ def register_with_enrollment(
     # Determine platform and identifiers
     platform = _normalize_platform(payload.platform or enrollment.platform)
     device_name = payload.device_name.strip()
-    prefix = "dg-win" if platform == "Windows" else f"dg-{platform.lower()[:3]}"
+    prefix_map = {
+        "windows": "dg-win",
+        "linux": "dg-lin",
+        "macos": "dg-mac",
+        "darwin": "dg-mac",
+        "android": "dg-android",
+        "ios": "dg-ios",
+    }
+    prefix = prefix_map.get(platform.lower(), f"dg-{platform.lower()[:3]}")
     new_device_id = f"{prefix}-{secrets.token_hex(4)}"
 
     # Create new Device
@@ -761,13 +769,19 @@ def register_with_enrollment(
 # ---------------------------------------------------------------------------
 def _authenticate_device_request(device: Device, request: Request) -> bool:
     """
-    Verify that request Authorization header Bearer token matches the device's token.
-    FAILS CLOSED: if the device has no device_token_hash (and no auth_token),
-    or the Bearer token does not match, returns False.
-    Uses hmac.compare_digest for constant-time comparison against timing attacks.
+    Verify that the request Authorization header Bearer token matches the
+    device's token hash (SHA-256 of the raw token issued at enrollment).
+
+    FAILS CLOSED:
+      - If the device has no device_token_hash, returns False.
+      - If the Authorization header is absent or malformed, returns False.
+      - If the token hash does not match, returns False.
+      - Non-ASCII / undecodable bytes in the header are caught and return False.
+
+    Uses hmac.compare_digest for constant-time comparison to resist timing attacks.
     """
-    if not device.device_token_hash and not device.auth_token:
-        # Legacy/unenrolled device without credentials must fail closed
+    if not device.device_token_hash:
+        # Device was never properly enrolled or is a legacy record without credentials.
         return False
 
     auth_header = request.headers.get("Authorization", "")
@@ -778,19 +792,14 @@ def _authenticate_device_request(device: Device, request: Request) -> bool:
     if not token:
         return False
 
-    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    try:
+        token_bytes = token.encode("utf-8")
+        token_hash = hashlib.sha256(token_bytes).hexdigest()
+    except Exception:
+        return False
 
-    # Compare hashes with hmac.compare_digest
-    if device.device_token_hash:
-        if hmac.compare_digest(token_hash, device.device_token_hash):
-            return True
-
-    if device.auth_token:
-        # Legacy auth_token may store either the raw token or its sha256 hash
-        if hmac.compare_digest(token, device.auth_token) or hmac.compare_digest(token_hash, device.auth_token):
-            return True
-
-    return False
+    # Only the SHA-256 hash path is authoritative.
+    return hmac.compare_digest(token_hash, device.device_token_hash)
 
 
 def _mark_offline_scans_interrupted(device: Device, db: Session, threshold_seconds: int = 120) -> int:
@@ -1951,15 +1960,17 @@ def upload_device_findings(
     # Validate authentication: Bearer device_auth_token or valid JWT
     is_authenticated = _authenticate_device_request(device, request)
     if not is_authenticated:
-        # Check JWT bearer token fallback
+        # Check JWT bearer token fallback with strict device ownership check
         auth_header = request.headers.get("Authorization", "")
         token = auth_header.replace("Bearer ", "").strip() if auth_header.startswith("Bearer ") else ""
         if token:
             try:
-                from auth import verify_access_token
-                token_data = verify_access_token(token)
-                if token_data:
-                    is_authenticated = True
+                from auth import verify_token
+                username = verify_token(token)
+                if username:
+                    user = db.query(User).filter(User.username == username, User.is_active == True).first()
+                    if user and (user.role == "admin" or user.id == device.user_id):
+                        is_authenticated = True
             except Exception:
                 pass
 

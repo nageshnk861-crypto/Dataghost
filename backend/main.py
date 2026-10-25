@@ -37,6 +37,20 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing database schema …")
     init_db()
 
+    # ─── Production startup guard ───────────────────────────────────────────
+    # On Render (or any env where RENDER is set), the application MUST NOT
+    # start if DEFAULT_ADMIN_PASSWORD is absent or still set to the known
+    # default value.  This prevents shipping a predictable admin credential.
+    _DEFAULT_FALLBACK_PASS = "dataghost123"
+    if os.environ.get("RENDER"):
+        configured_pass = os.environ.get("DEFAULT_ADMIN_PASSWORD", "")
+        if not configured_pass or configured_pass == _DEFAULT_FALLBACK_PASS:
+            raise RuntimeError(
+                "FATAL: Running on Render with DEFAULT_ADMIN_PASSWORD unset or equal to the "
+                "default value. Set a strong, unique password in the Render environment "
+                "variables before deploying."
+            )
+
     # Initialize Firebase Admin SDK
     try:
         initialize_firebase_admin()
@@ -47,10 +61,33 @@ async def lifespan(app: FastAPI):
     try:
         _seed_admin(db)
         _ensure_classifier()
-        if os.environ.get("SEED_DEMO_DATA", "").lower() in ("1", "true", "yes") and db.query(Device).count() == 0:
-            logger.info("Seeding demo data …")
+
+        # ─── Demo seeding gate ───────────────────────────────────────────
+        # Demo data is seeded ONLY when ALL of the following are true:
+        #   1. DATAGHOST_SEED_DEMO=true  (explicit opt-in)
+        #   2. RENDER env var is NOT set, OR DATAGHOST_SEED_DEMO is explicitly
+        #      set alongside RENDER (never seeded on Render by accident).
+        # The legacy SEED_DEMO_DATA var is accepted as an alias.
+        _seed_flag = (
+            os.environ.get("DATAGHOST_SEED_DEMO", "").lower() in ("1", "true", "yes")
+            or os.environ.get("SEED_DEMO_DATA", "").lower() in ("1", "true", "yes")
+        )
+        _on_render = bool(os.environ.get("RENDER"))
+        _demo_explicitly_on_render = (
+            _on_render and os.environ.get("DATAGHOST_SEED_DEMO", "").lower() in ("1", "true", "yes")
+        )
+
+        _should_seed = _seed_flag and (not _on_render or _demo_explicitly_on_render)
+        if _should_seed and db.query(Device).count() == 0:
+            logger.info("Seeding demo data (DATAGHOST_SEED_DEMO=true) …")
             _seed_demo_data(db)
             logger.info("Demo data seeded successfully.")
+        elif _seed_flag and _on_render and not _demo_explicitly_on_render:
+            logger.warning(
+                "SEED_DEMO_DATA/DATAGHOST_SEED_DEMO is set but RENDER is also set. "
+                "Demo seeding is SKIPPED on Render unless DATAGHOST_SEED_DEMO=true is "
+                "explicitly set. Remove the flag or add DATAGHOST_SEED_DEMO=true."
+            )
     finally:
         db.close()
     yield
@@ -148,6 +185,9 @@ def download_android_agent_apk():
 def _seed_admin(db):
     admin_user = os.environ.get("DEFAULT_ADMIN_USER") or "admin"
     admin_email = os.environ.get("DEFAULT_ADMIN_EMAIL") or "admin@dataghost.local"
+    # Fall back to the default only for local development.
+    # Production (RENDER set) refuses to start without an explicit password —
+    # see the lifespan startup guard above.
     admin_pass = os.environ.get("DEFAULT_ADMIN_PASSWORD") or "dataghost123"
 
     admin = db.query(User).filter(
@@ -168,7 +208,17 @@ def _seed_admin(db):
         except Exception:
             db.rollback()
 
-    if db.query(User).filter(User.username == "analyst01").first() is None:
+    # Demo users (analyst01/02, viewer01) are ONLY created when
+    # DATAGHOST_SEED_DEMO=true.  They must never appear in production.
+    _seed_demo_users = (
+        os.environ.get("DATAGHOST_SEED_DEMO", "").lower() in ("1", "true", "yes")
+        or os.environ.get("SEED_DEMO_DATA", "").lower() in ("1", "true", "yes")
+    )
+    if _seed_demo_users and db.query(User).filter(User.username == "analyst01").first() is None:
+        # Passwords are intentionally weak demo-only credentials; they are
+        # documented here so they are never confused for real accounts.
+        # analyst01 / analyst02 → password: analyst123
+        # viewer01             → password: viewer123
         demo_users = [
             User(username="analyst01", email="analyst01@dataghost.local",
                  hashed_password=get_password_hash("analyst123"), role="analyst", is_active=True),
@@ -181,7 +231,7 @@ def _seed_admin(db):
             db.add(u)
         try:
             db.commit()
-            logger.info("Demo users seeded.")
+            logger.info("Demo users seeded (analyst01, analyst02, viewer01).")
         except Exception:
             db.rollback()
 

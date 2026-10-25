@@ -329,10 +329,25 @@ def save_config(cfg: Dict[str, Any]) -> None:
         with open(_CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2)
         # Apply restricted file permissions (owner read/write only)
-        try:
-            os.chmod(_CONFIG_PATH, 0o600)
-        except Exception:
-            pass
+        if sys.platform == "win32":
+            try:
+                import getpass
+                import subprocess
+                user = getpass.getuser()
+                subprocess.run(
+                    ["icacls", str(_CONFIG_PATH), "/inheritance:r", "/grant:r", f"{user}:(R,W)"],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            except Exception as win_err:
+                logger.debug("Could not restrict Windows ACL via icacls: %s", win_err)
+        else:
+            try:
+                os.chmod(_CONFIG_PATH, 0o600)
+            except Exception:
+                pass
     except Exception as e:
         logger.warning("Could not save config.json: %s", e)
 

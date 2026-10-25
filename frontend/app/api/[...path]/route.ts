@@ -378,50 +378,114 @@ function analyzeTextDlp(text: string, filename: string, destination: string = "L
   };
 }
 
-// Helper to proxy request to backend if available
-async function tryProxyToBackend(req: NextRequest, fullPath: string): Promise<Response | null> {
+// Sentinel value returned by tryProxyToBackend when the backend is unreachable in production.
+// Callers must check for this and propagate the 502 immediately — never fall through to mocks.
+const BACKEND_UNREACHABLE_502 = Symbol("BACKEND_UNREACHABLE_502");
+
+/**
+ * Forward the request to the real FastAPI backend with a 60-second timeout.
+ * Retries ONCE on a 502/503/504 or network abort before giving up.
+ *
+ * Return semantics:
+ *   - Response object          → backend replied; return it directly.
+ *   - BACKEND_UNREACHABLE_502  → backend still unreachable after retry (production) or
+ *                                mock fallback is disabled; caller must return 502.
+ *   - null                     → local dev with ENABLE_MOCK_FALLBACK=true; proceed to mocks.
+ */
+async function tryProxyToBackend(
+  req: NextRequest,
+  fullPath: string,
+): Promise<Response | typeof BACKEND_UNREACHABLE_502 | null> {
+  // Detect Vercel production / preview deployments.
   const isVercel = Boolean(process.env.VERCEL || process.env.NEXT_PUBLIC_VERCEL_ENV);
+
+  // In local dev, set ENABLE_MOCK_FALLBACK=true in .env.local to keep mock behaviour.
+  const mockFallbackEnabled = !isVercel && process.env.ENABLE_MOCK_FALLBACK === "true";
+
   const backendUrl = (
     process.env.BACKEND_INTERNAL_URL ||
     process.env.BACKEND_URL ||
-    (!isVercel && process.env.NEXT_PUBLIC_API_URL ? process.env.NEXT_PUBLIC_API_URL : "") ||
-    (!isVercel ? "http://127.0.0.1:8000" : "")
+    process.env.NEXT_PUBLIC_API_URL ||
+    "https://dataghost-1.onrender.com"
   ).trim().replace(/\/+$/, "");
-
-  if (!backendUrl || backendUrl.includes("devtunnels.ms")) {
-    return null;
-  }
 
   const searchParams = req.nextUrl.search;
   const target = `${backendUrl}${fullPath}${searchParams}`;
 
-  try {
-    const isScanRequest = fullPath.includes("/scan");
-    const timeoutMs = isScanRequest ? 15000 : 4000;
+  // Render free-tier instances sleep after inactivity; give them up to 60 seconds.
+  const isScanRequest = fullPath.includes("/scan");
+  const timeoutMs = isScanRequest ? 60_000 : 60_000; // 60 s for all routes on Render
+
+  // Body must be cloned before the first attempt so it can be re-read on retry.
+  const bodyBuffer =
+    ["GET", "HEAD"].includes(req.method) ? undefined : await req.clone().arrayBuffer();
+
+  const headers = new Headers(req.headers);
+  headers.delete("host");
+  headers.delete("content-length");
+
+  /** Single attempt — returns a Response, or throws on timeout/network error. */
+  async function attempt(): Promise<Response> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-    const headers = new Headers(req.headers);
-    headers.delete("host");
-    headers.delete("content-length");
-
-    const body = ["GET", "HEAD"].includes(req.method) ? undefined : await req.clone().arrayBuffer();
-
-    const response = await fetch(target, {
-      method: req.method,
-      headers,
-      body,
-      signal: controller.signal,
-    });
-    clearTimeout(timer);
-
-    if (response.status !== 502 && response.status !== 503 && response.status !== 504) {
+    try {
+      const response = await fetch(target, {
+        method: req.method,
+        headers,
+        body: bodyBuffer,
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
       return response;
+    } catch (err) {
+      clearTimeout(timer);
+      throw err;
     }
-  } catch {
-    // Backend unreachable, fallback to serverless handler
   }
-  return null;
+
+  /** True when we should retry: gateway-level 5xx or network abort. */
+  function isRetryable(r: Response): boolean {
+    return r.status === 502 || r.status === 503 || r.status === 504;
+  }
+
+  // ── Attempt 1 ──
+  let lastResponse: Response | null = null;
+  try {
+    const r = await attempt();
+    if (!isRetryable(r)) return r; // success or a non-gateway error (4xx etc.)
+    lastResponse = r;
+  } catch {
+    // Network / timeout — fall through to retry
+  }
+
+  // ── Attempt 2 (retry after brief pause) ──
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  try {
+    const r = await attempt();
+    if (!isRetryable(r)) return r;
+    lastResponse = r;
+  } catch {
+    // Still unreachable
+  }
+
+  // Both attempts failed.
+  if (isVercel) return BACKEND_UNREACHABLE_502;
+  return mockFallbackEnabled ? null : BACKEND_UNREACHABLE_502;
+}
+
+/** Emit a 502 JSON response prompting the caller to retry. */
+function backend502(path: string): NextResponse {
+  return NextResponse.json(
+    {
+      error: "Backend is waking up, please retry in a minute",
+      message:
+        "The DataGhost backend (https://dataghost-1.onrender.com) did not respond after two " +
+        "attempts. Render free-tier instances may need up to 60 seconds to wake from sleep. " +
+        "Please wait a moment and try again.",
+      path,
+    },
+    { status: 502 },
+  );
 }
 
 // ─── GET Handlers ─────────────────────────────────────────────────────────────
@@ -430,8 +494,9 @@ export async function GET(request: NextRequest, { params }: { params: { path: st
   const pathStr = "/" + pathSegments.join("/");
   const fullApiPath = `/api${pathStr}`;
 
-  // 1. Try real backend proxy if configured & reachable
+  // 1. Forward to real backend.  In production (Vercel), never fall through to mocks.
   const proxyRes = await tryProxyToBackend(request, fullApiPath);
+  if (proxyRes === BACKEND_UNREACHABLE_502) return backend502(fullApiPath);
   if (proxyRes) return proxyRes;
 
   const origin = request.nextUrl.origin;
@@ -666,8 +731,9 @@ export async function POST(request: NextRequest, { params }: { params: { path: s
   const pathStr = "/" + pathSegments.join("/");
   const fullApiPath = `/api${pathStr}`;
 
-  // 1. Try real backend proxy if configured & reachable
+  // 1. Forward to real backend.  In production (Vercel), never fall through to mocks.
   const proxyRes = await tryProxyToBackend(request, fullApiPath);
+  if (proxyRes === BACKEND_UNREACHABLE_502) return backend502(fullApiPath);
   if (proxyRes) return proxyRes;
 
   let body: any = {};

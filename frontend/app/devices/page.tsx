@@ -1655,17 +1655,15 @@ export default function DevicesPage() {
                         style={{ background: "#060b14", border: "1px solid #1a2744" }}
                       >
                         <p className="text-slate-400"># 1. Access web portal for dashboard / login:</p>
-                        <p className="text-cyan-300">
-                          {typeof window !== "undefined" ? window.location.origin : "https://dataghost-five.vercel.app"}
-                        </p>
+                        <p className="text-cyan-300">https://dataghost-five.vercel.app</p>
                         <p className="text-slate-400 mt-1"># 2. Run agent on endpoint device (auto-enroll and scan):</p>
                         <div className="flex items-center justify-between bg-slate-900/80 p-2 rounded border border-slate-800 text-green-400">
                           <span className="truncate">
-                            python dataghost_agent.py --api-url {typeof window !== "undefined" ? window.location.origin : "https://dataghost-five.vercel.app"} --enroll {enrollmentData.enrollment_code} --yes
+                            python dataghost_agent.py --api-url https://dataghost-1.onrender.com --enroll {enrollmentData.enrollment_code}
                           </span>
                           <button
                             type="button"
-                            onClick={() => handleCopyCode(`python dataghost_agent.py --api-url ${typeof window !== "undefined" ? window.location.origin : "https://dataghost-five.vercel.app"} --enroll ${enrollmentData.enrollment_code} --yes`)}
+                            onClick={() => handleCopyCode(`python dataghost_agent.py --api-url https://dataghost-1.onrender.com --enroll ${enrollmentData.enrollment_code}`)}
                             className="text-[10px] text-slate-300 hover:text-white ml-2 px-1.5 py-0.5 rounded bg-slate-800 flex-shrink-0"
                           >
                             Copy Command

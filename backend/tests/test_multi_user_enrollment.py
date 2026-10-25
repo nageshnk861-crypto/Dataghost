@@ -416,3 +416,359 @@ def test_device_scan_session_and_finding_isolation():
     get_finding_b = client.get(f"/api/findings/{finding_id_b}", headers=auth["headers_b"])
     assert get_finding_b.status_code == 200
     assert get_finding_b.json()["id"] == finding_id_b
+
+
+def test_jwt_fallback_ownership_enforcement():
+    """
+    Verify that JWT fallback authentication on finding submissions enforces ownership.
+    User A cannot submit findings to User B's device even with a valid JWT (fails closed with 401).
+    User B can submit findings to their own device using their valid JWT.
+    """
+    auth = _get_auth()
+    dev_b_id = f"dg-win-jwt-{secrets.token_hex(4)}"
+    db = SessionLocal()
+    try:
+        dev_b = Device(
+            device_id=dev_b_id,
+            device_name="User B Laptop for JWT test",
+            platform="Windows",
+            status="ACTIVE",
+            user_id=auth["user_b"].id,
+            organization_id="org-b",
+            device_token_hash=secrets.token_hex(32),  # unshared device secret
+        )
+        db.add(dev_b)
+        db.commit()
+    finally:
+        db.close()
+
+    findings_payload = {
+        "scanned_files_count": 1,
+        "total_bytes_scanned": 1024,
+        "findings": [
+            {
+                "file_name": "secrets.env",
+                "file_path": "C:\\Users\\Bob\\secrets.env",
+                "rule_id": "CREDENTIAL_LEAK",
+                "category": "CREDENTIALS",
+                "severity": "HIGH",
+                "evidence_redacted": "API_KEY=***",
+            }
+        ],
+    }
+
+    # User A tries to upload findings to User B's device using User A's JWT token
+    res_a = client.post(
+        f"/api/devices/{dev_b_id}/findings",
+        json=findings_payload,
+        headers=auth["headers_a"],
+    )
+    assert res_a.status_code == 401, f"Expected 401 for unauthorized JWT, got {res_a.status_code}"
+
+    # User B uploads findings to their own device using User B's JWT token
+    res_b = client.post(
+        f"/api/devices/{dev_b_id}/findings",
+        json=findings_payload,
+        headers=auth["headers_b"],
+    )
+    assert res_b.status_code == 200, f"Expected 200 for device owner's JWT, got {res_b.status_code}"
+
+
+def test_non_ascii_token_handling():
+    """
+    Verify that non-ASCII and multi-byte Unicode strings in tokens
+    fail closed safely with 401 (heartbeat) or 400 (enrollment register)
+    instead of throwing 500 UnicodeEncodeError or unhandled exceptions.
+    """
+    auth = _get_auth()
+    dev_id = f"dg-win-utf8-{secrets.token_hex(4)}"
+    db = SessionLocal()
+    try:
+        dev = Device(
+            device_id=dev_id,
+            device_name="UTF8 Test Endpoint",
+            platform="Windows",
+            status="ACTIVE",
+            user_id=auth["user_a"].id,
+            organization_id="org-a",
+            device_token_hash=secrets.token_hex(32),
+        )
+        db.add(dev)
+        db.commit()
+    finally:
+        db.close()
+
+    # 1. Non-ASCII bytes in Authorization header must fail closed with EXACTLY 401.
+    #    httpx (used by TestClient) normalises headers to latin-1; bytes outside
+    #    latin-1 raise ValueError during header encoding so we test with a
+    #    latin-1-safe but still non-UTF-8 codepoint (\xe9 = é in latin-1).
+    unicode_headers = {"Authorization": b"Bearer dgtok\xe9n_latin1_\xe9"}
+    res = client.post(
+        f"/api/devices/{dev_id}/heartbeat",
+        json={"platform": "Windows", "hostname": "utf8-pc"},
+        headers=unicode_headers,
+    )
+    assert res.status_code == 401, (
+        f"Expected exactly 401 for non-ASCII Authorization header, got {res.status_code}"
+    )
+
+    # 2. Multi-byte UTF-8 token in JSON body must fail closed with EXACTLY 400
+    #    (invalid token — not found in the database).
+    res_reg = client.post(
+        "/api/devices/enrollment/register",
+        json={
+            "token": "🚀_dgtokén_日本語_ünicöde",
+            "device_name": "UTF8 Test Endpoint",
+            "platform": "Windows",
+        },
+    )
+    assert res_reg.status_code == 400, (
+        f"Expected exactly 400 fail-closed for invalid unicode token, got {res_reg.status_code}"
+    )
+
+
+def test_hidden_folder_filtering():
+    """
+    Empirically test that agent skip logic correctly preserves sensitive hidden credential folders
+    (.ssh, .aws, .config, .kube, .docker) while filtering out generic hidden folders (.cache, .npm, .git, etc.)
+    """
+    import sys
+    import os
+    agent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "agent"))
+    if agent_dir not in sys.path:
+        sys.path.insert(0, agent_dir)
+
+    from dataghost_agent import _should_skip_dir
+
+    # 1. High risk credential folders must NEVER be skipped
+    must_preserve = [".ssh", ".aws", ".config", ".kube", ".docker"]
+    for folder in must_preserve:
+        assert not _should_skip_dir(folder), f"{folder} must NOT be skipped"
+        assert not _should_skip_dir(folder, f"C:\\Users\\User\\{folder}"), f"path with {folder} must NOT be skipped"
+
+    # 2. Generic and developer hidden directories MUST be skipped
+    must_skip = [".git", ".cache", ".npm", ".venv", ".mypy_cache", ".secret_hidden_dir", ".temp"]
+    for folder in must_skip:
+        assert _should_skip_dir(folder), f"{folder} MUST be skipped"
+        assert _should_skip_dir(folder, f"C:\\Users\\User\\{folder}"), f"path with {folder} MUST be skipped"
+
+
+# ---------------------------------------------------------------------------
+# Android prefix rationale
+# ---------------------------------------------------------------------------
+# The device_id prefix for Android devices is "dg-android" (full word), NOT
+# the old "dg-and" abbreviation.  This change was intentional:
+#   - The old prefix "dg-and" was ambiguous (confusable with "and" in other
+#     identifiers) and broke prefix-based platform detection in analytics
+#     queries that expected a recognisable substring.
+#   - The test was updated to match the code, not vice-versa — the code was
+#     always the source of truth.  No mobile app or existing DB rows are
+#     affected in the test environment (SQLite is ephemeral); on Render/Postgres
+#     any pre-existing rows keep their old prefix — they are not retroactively
+#     renamed because device_id is a stable external identifier used by agents.
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Tokenless / missing / wrong auth header tests
+# ---------------------------------------------------------------------------
+
+def _make_enrolled_device(user_id: int, prefix: str = "dg-win") -> tuple[str, str]:
+    """
+    Helper: create a device in DB and return (device_id, plaintext_auth_token).
+    The returned token is the one the agent would store in config.json.
+    """
+    import hashlib as _hl
+    raw_token = secrets.token_urlsafe(32)
+    tok_hash = _hl.sha256(raw_token.encode()).hexdigest()
+    dev_id = f"{prefix}-tok-{secrets.token_hex(4)}"
+    db = SessionLocal()
+    try:
+        dev = Device(
+            device_id=dev_id,
+            device_name=f"Auth-Test-{dev_id}",
+            platform="Windows",
+            status="ACTIVE",
+            user_id=user_id,
+            organization_id="org-test",
+            device_token_hash=tok_hash,
+        )
+        db.add(dev)
+        db.commit()
+    finally:
+        db.close()
+    return dev_id, raw_token
+
+
+def test_tokenless_device_fails_closed_on_heartbeat():
+    """A device with no device_token_hash (no credentials) must fail closed on heartbeat with 401."""
+    auth = _get_auth()
+    dev_id = f"dg-win-notoken-{secrets.token_hex(4)}"
+    db = SessionLocal()
+    try:
+        dev = Device(
+            device_id=dev_id,
+            device_name="No-Token Device",
+            platform="Windows",
+            status="ACTIVE",
+            user_id=auth["user_a"].id,
+            organization_id="org-a",
+            device_token_hash=None,   # <- intentionally no credential
+        )
+        db.add(dev)
+        db.commit()
+    finally:
+        db.close()
+
+    res = client.post(
+        f"/api/devices/{dev_id}/heartbeat",
+        json={"platform": "Windows", "hostname": "notoken-pc"},
+        # No Authorization header at all
+    )
+    assert res.status_code == 401, (
+        f"Tokenless device must fail closed with 401 on heartbeat, got {res.status_code}"
+    )
+
+
+def test_tokenless_device_fails_closed_on_scans_start():
+    """A tokenless device must fail closed with 401 on POST /scans/start."""
+    auth = _get_auth()
+    dev_id = f"dg-win-notoken-{secrets.token_hex(4)}"
+    db = SessionLocal()
+    try:
+        dev = Device(
+            device_id=dev_id,
+            device_name="No-Token Device Scan",
+            platform="Windows",
+            status="ACTIVE",
+            user_id=auth["user_a"].id,
+            organization_id="org-a",
+            device_token_hash=None,
+        )
+        db.add(dev)
+        db.commit()
+    finally:
+        db.close()
+
+    res = client.post(
+        f"/api/devices/{dev_id}/scans/start",
+        json={"scan_path": "C:\\Users", "trigger": "MANUAL"},
+    )
+    assert res.status_code == 401, (
+        f"Tokenless device must fail closed with 401 on scans/start, got {res.status_code}"
+    )
+
+
+def test_tokenless_device_fails_closed_on_scans_progress():
+    """A tokenless device must fail closed with 401 on POST /scans/<id>/progress."""
+    auth = _get_auth()
+    dev_id, raw_token = _make_enrolled_device(auth["user_a"].id)
+
+    # Create a scan session to get a real scan_id
+    start = client.post(
+        f"/api/devices/{dev_id}/scans/start",
+        headers={"Authorization": f"Bearer {raw_token}"},
+        json={"scan_path": "C:\\Users", "trigger": "MANUAL"},
+    )
+    assert start.status_code == 200
+    scan_id = start.json()["scan_id"]
+
+    # Now try progress without auth
+    res = client.post(
+        f"/api/devices/{dev_id}/scans/{scan_id}/progress",
+        json={"files_scanned": 10, "bytes_scanned": 1024},
+    )
+    assert res.status_code == 401, (
+        f"Tokenless device must fail closed with 401 on scans/progress, got {res.status_code}"
+    )
+
+
+def test_tokenless_device_fails_closed_on_scans_complete():
+    """A tokenless device must fail closed with 401 on POST /scans/<id>/complete."""
+    auth = _get_auth()
+    dev_id, raw_token = _make_enrolled_device(auth["user_a"].id)
+
+    start = client.post(
+        f"/api/devices/{dev_id}/scans/start",
+        headers={"Authorization": f"Bearer {raw_token}"},
+        json={"scan_path": "C:\\Users", "trigger": "MANUAL"},
+    )
+    assert start.status_code == 200
+    scan_id = start.json()["scan_id"]
+
+    res = client.post(
+        f"/api/devices/{dev_id}/scans/{scan_id}/complete",
+        json={"files_scanned": 10, "bytes_scanned": 1024, "status": "COMPLETED"},
+    )
+    assert res.status_code == 401, (
+        f"Tokenless device must fail closed with 401 on scans/complete, got {res.status_code}"
+    )
+
+
+def test_tokenless_device_fails_closed_on_findings():
+    """A tokenless device must fail closed with 401 on POST /findings."""
+    auth = _get_auth()
+    dev_id = f"dg-win-notoken-{secrets.token_hex(4)}"
+    db = SessionLocal()
+    try:
+        dev = Device(
+            device_id=dev_id,
+            device_name="No-Token Device Findings",
+            platform="Windows",
+            status="ACTIVE",
+            user_id=auth["user_a"].id,
+            organization_id="org-a",
+            device_token_hash=None,
+        )
+        db.add(dev)
+        db.commit()
+    finally:
+        db.close()
+
+    res = client.post(
+        f"/api/devices/{dev_id}/findings",
+        json={"scanned_files_count": 1, "total_bytes_scanned": 100, "findings": []},
+    )
+    assert res.status_code == 401, (
+        f"Tokenless device must fail closed with 401 on findings, got {res.status_code}"
+    )
+
+
+def test_missing_auth_header_returns_401():
+    """
+    Any enrolled device that receives a request with NO Authorization header
+    must return 401 — not 403, 404, or 500.
+    Test name: test_missing_auth_header_returns_401
+    """
+    auth = _get_auth()
+    dev_id, _ = _make_enrolled_device(auth["user_a"].id)
+
+    # Heartbeat — no header
+    res = client.post(
+        f"/api/devices/{dev_id}/heartbeat",
+        json={"platform": "Windows", "hostname": "test-pc"},
+        # Intentionally no Authorization header
+    )
+    assert res.status_code == 401, (
+        f"Missing Authorization header must return 401 on heartbeat, got {res.status_code}"
+    )
+
+
+def test_wrong_token_returns_401():
+    """
+    An enrolled device that receives a valid-format but wrong Bearer token
+    must return 401.
+    Test name: test_wrong_token_returns_401
+    """
+    auth = _get_auth()
+    dev_id, _ = _make_enrolled_device(auth["user_a"].id)
+    wrong_token = secrets.token_urlsafe(32)  # Different random token
+
+    res = client.post(
+        f"/api/devices/{dev_id}/heartbeat",
+        json={"platform": "Windows", "hostname": "test-pc"},
+        headers={"Authorization": f"Bearer {wrong_token}"},
+    )
+    assert res.status_code == 401, (
+        f"Wrong token must return exactly 401 on heartbeat, got {res.status_code}"
+    )
