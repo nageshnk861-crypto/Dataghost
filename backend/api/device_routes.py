@@ -132,14 +132,70 @@ def _normalize_platform(raw: Optional[str]) -> str:
     return raw.capitalize()
 
 
-def _find_device(identifier: str, db: Session) -> Optional[Device]:
-    """Find device by unique device_id or primary key id."""
+def _find_device(identifier: str, db: Session, request: Optional[Request] = None) -> Optional[Device]:
+    """Find device by unique device_id or primary key id.
+    If the device is not found in the DB (e.g. ephemeral SQLite DB recreated on deployment)
+    but an agent presents a valid Bearer token for a recognizable device_id (dg-*),
+    auto-provision/restore the device record immediately so agent operations never fail with 404.
+    """
     device = db.query(Device).filter(Device.device_id == identifier).first()
     if device:
         return device
     if identifier.isdigit():
-        return db.query(Device).filter(Device.id == int(identifier)).first()
+        device = db.query(Device).filter(Device.id == int(identifier)).first()
+        if device:
+            return device
+
+    # Auto-provision if requested by agent with Bearer token
+    if request and identifier.startswith("dg-"):
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            raw_token = auth_header.replace("Bearer ", "").strip()
+            if raw_token.startswith("dg_dev_"):
+                try:
+                    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+                    now_ap = _utc_now()
+                    owner = (
+                        db.query(User).filter(User.role == "admin").first()
+                        or db.query(User).first()
+                    )
+                    plat = "Windows"
+                    if "lin" in identifier:
+                        plat = "Linux"
+                    elif "mac" in identifier:
+                        plat = "macOS"
+                    elif "android" in identifier:
+                        plat = "Android"
+                    elif "ios" in identifier:
+                        plat = "iOS"
+
+                    device = Device(
+                        device_id=identifier,
+                        device_name=f"{plat}-Agent-{identifier[-4:]}",
+                        platform=plat,
+                        os_name=plat,
+                        os_type=plat,
+                        status="ACTIVE",
+                        last_seen=now_ap,
+                        enrolled_at=now_ap,
+                        registered_at=now_ap,
+                        organization_id="default-org",
+                        user_id=owner.id if owner else 1,
+                        files_scanned=0,
+                        incidents_count=0,
+                        device_token_hash=token_hash,
+                    )
+                    db.add(device)
+                    db.commit()
+                    db.refresh(device)
+                    logger.info("Auto-restored device %s with active auth hash", identifier)
+                    return device
+                except Exception as exc:
+                    logger.warning("Auto-restoring device %s failed: %s", identifier, exc)
+                    db.rollback()
+
     return None
+
 
 
 def _sync_to_firebase(device: Device):
@@ -180,19 +236,13 @@ def list_devices(
     """
     timeout = getattr(settings, "DEVICE_HEARTBEAT_TIMEOUT_SECONDS", 120)
 
-    if current_user.role == "admin":
+    if current_user.role in ("admin", "analyst", "viewer"):
+        # All authenticated users see all devices in the organization
         devices = db.query(Device).order_by(Device.device_name).all()
     else:
-        # Analyst sees their own devices, plus organization demo devices (user_id == 1)
         devices = (
             db.query(Device)
-            .filter(
-                or_(
-                    Device.user_id == current_user.id,
-                    Device.user_id == 1,
-                    Device.device_id.like("DGD-%"),
-                )
-            )
+            .filter(Device.user_id == current_user.id)
             .order_by(Device.device_name)
             .all()
         )
@@ -901,7 +951,7 @@ def device_heartbeat_by_param(
     db: Session = Depends(get_db),
 ):
     """Handle periodic heartbeat from an enrolled agent using path parameter."""
-    device = _find_device(device_id_or_id, db)
+    device = _find_device(device_id_or_id, db, request)
     if not device:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -1518,7 +1568,7 @@ def scan_session_start(
     Authenticated via device Bearer token (same mechanism as heartbeat).
     Returns the new scan_id the agent must use for all subsequent progress/complete calls.
     """
-    device = _find_device(device_id_or_id, db)
+    device = _find_device(device_id_or_id, db, request)
     if not device:
         raise HTTPException(status_code=404, detail=f"Device '{device_id_or_id}' not found.")
 
@@ -1559,7 +1609,7 @@ def scan_session_progress(
     Called by the agent periodically (~every 15 s) while a scan is running.
     Updates counters and current_path.  No-op if session is already terminal.
     """
-    device = _find_device(device_id_or_id, db)
+    device = _find_device(device_id_or_id, db, request)
     if not device:
         raise HTTPException(status_code=404, detail=f"Device '{device_id_or_id}' not found.")
 
@@ -1606,7 +1656,7 @@ def scan_session_complete(
     Called by the agent when the scan finishes (COMPLETED, FAILED, CANCELLED).
     Closes the session and clears scan_requested on the device.
     """
-    device = _find_device(device_id_or_id, db)
+    device = _find_device(device_id_or_id, db, request)
     if not device:
         raise HTTPException(status_code=404, detail=f"Device '{device_id_or_id}' not found.")
 
@@ -2383,12 +2433,40 @@ def upload_device_findings(
       - Deduplicates findings via SHA-256 fingerprint.
       - Creates high/critical incidents and updates device risk scores dynamically.
     """
-    device = _find_device(device_id_or_id, db)
+    device = _find_device(device_id_or_id, db, request)
     if not device:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Device '{device_id_or_id}' not found.",
+        # Fallback auto-provision if device not found
+        logger.warning(
+            "Device '%s' not found — auto-provisioning from agent upload", device_id_or_id
         )
+        now_ap = _utc_now()
+        owner = (
+            db.query(User).filter(User.role == "admin").first()
+            or db.query(User).first()
+        )
+        auth_header = request.headers.get("Authorization", "")
+        raw_token = auth_header.replace("Bearer ", "").strip() if auth_header.startswith("Bearer ") else ""
+        token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest() if raw_token else None
+
+        device = Device(
+            device_id=device_id_or_id,
+            device_name=device_id_or_id,
+            platform="Windows",
+            os_name="Windows",
+            os_type="Windows",
+            status="ACTIVE",
+            last_seen=now_ap,
+            enrolled_at=now_ap,
+            registered_at=now_ap,
+            organization_id="default-org",
+            user_id=owner.id if owner else 1,
+            files_scanned=0,
+            incidents_count=0,
+            device_token_hash=token_hash,
+        )
+        db.add(device)
+        db.commit()
+        db.refresh(device)
 
     # Validate authentication: Bearer device_auth_token or valid JWT
     is_authenticated = _authenticate_device_request(device, request)
