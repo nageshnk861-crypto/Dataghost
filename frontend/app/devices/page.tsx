@@ -138,7 +138,7 @@ export default function DevicesPage() {
       const code = enrollmentData.enrollment_code;
       const plat = selectedPlatform || "Windows";
       const devName = `${plat}-Endpoint-${code.replace(/[^A-Z0-9]/g, "").slice(-4) || "01"}`;
-      await registerEnrollmentDevice({
+      const reg = await registerEnrollmentDevice({
         enrollment_code: code,
         device_name: devName,
         platform: plat,
@@ -147,6 +147,10 @@ export default function DevicesPage() {
       });
       setEnrolledDeviceName(devName);
       setEnrollmentStatus("USED");
+      // ── START: Auto-scan immediately after enrollment ──
+      if (reg?.device_id) {
+        try { await triggerDeviceScan(reg.device_id); } catch { /* best effort */ }
+      }
       await loadDevices(false);
     } catch (err: unknown) {
       console.error("Auto-enroll modal device error:", err);
@@ -186,7 +190,7 @@ export default function DevicesPage() {
         // Unique device name: platform + last 4 chars of code to avoid duplicates
         const suffix = tokenRes.enrollment_code.replace(/[^A-Z0-9]/g, "").slice(-4) || "0001";
         const deviceName = `${host.hostname}-${suffix}`;
-        await registerEnrollmentDevice({
+        const reg = await registerEnrollmentDevice({
           enrollment_code: tokenRes.enrollment_code,
           device_name: deviceName,
           platform: host.platform,
@@ -194,6 +198,10 @@ export default function DevicesPage() {
           os_version: host.osVersion,
           hostname: deviceName,
         });
+        // ── START: Auto-scan immediately after enrollment ──
+        if (reg?.device_id) {
+          try { await triggerDeviceScan(reg.device_id); } catch { /* best effort */ }
+        }
       }
       await loadDevices(true);
     } catch (err: unknown) {

@@ -3,21 +3,10 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 
-// ─── Platform Detection ────────────────────────────────────────────────────────
-type DetectedOS = "Android" | "Windows" | "Linux" | "macOS" | "Unknown";
-
-function detectOS(): DetectedOS {
-  if (typeof navigator === "undefined") return "Unknown";
-  const ua = navigator.userAgent;
-  if (/android/i.test(ua)) return "Android";
-  if (/iPad|iPhone|iPod/.test(ua)) return "Unknown"; // iOS not supported
-  if (/Win/.test(ua)) return "Windows";
-  if (/Linux/.test(ua)) return "Linux";
-  if (/Mac/.test(ua)) return "macOS";
-  return "Unknown";
-}
-
 // ─── Types ────────────────────────────────────────────────────────────────────
+type DetectedOS = "Android" | "Windows" | "Linux" | "macOS" | "iOS" | "Unknown";
+type Step = "start" | "detecting" | "enrolling" | "scanning" | "done" | "error" | "expired";
+
 interface EnrollmentStatus {
   enrollment_code: string;
   platform: string;
@@ -25,6 +14,15 @@ interface EnrollmentStatus {
   device_id?: string;
   device_name?: string;
   is_expired: boolean;
+}
+
+interface RegisterResponse {
+  device_id: string;
+  device_name: string;
+  platform: string;
+  status: string;
+  auth_token?: string;
+  message: string;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -35,30 +33,177 @@ function getApiBase(): string {
   return "https://dataghost-1.onrender.com";
 }
 
+function detectOS(): DetectedOS {
+  if (typeof navigator === "undefined") return "Unknown";
+  const ua = navigator.userAgent;
+  if (/android/i.test(ua)) return "Android";
+  if (/iPad|iPhone|iPod/.test(ua)) return "iOS";
+  if (/Win/.test(ua)) return "Windows";
+  if (/Linux/.test(ua)) return "Linux";
+  if (/Mac/.test(ua)) return "macOS";
+  return "Unknown";
+}
+
+const API_HEADERS = {
+  "Content-Type": "application/json",
+  "X-Tunnel-Skip-Anti-Phishing-Page": "true",
+  "bypass-tunnel-reminder": "true",
+};
+
 async function fetchStatus(code: string): Promise<EnrollmentStatus | null> {
   try {
-    const base = getApiBase();
-    const url = `${base}/api/devices/enrollment/status/${encodeURIComponent(code)}`;
-    console.log(`[fetchStatus] URL: ${url}`);
-    const res = await fetch(url, {
-      headers: {
-        "X-Tunnel-Skip-Anti-Phishing-Page": "true",
-        "bypass-tunnel-reminder": "true",
-      },
+    const res = await fetch(`${getApiBase()}/api/devices/enrollment/status/${encodeURIComponent(code)}`, {
+      headers: API_HEADERS,
     });
-    console.log(`[fetchStatus] Response status: ${res.status}`);
-    if (!res.ok) {
-      const errorText = await res.text();
-      console.log(`[fetchStatus] Error response: ${errorText}`);
-      return null;
-    }
-    const data = await res.json();
-    console.log(`[fetchStatus] Success:`, data);
-    return data;
-  } catch (err) {
-    console.log(`[fetchStatus] Exception:`, err);
-    return null;
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; }
+}
+
+async function registerDevice(code: string, platform: string): Promise<RegisterResponse> {
+  const deviceName = `${platform}-Node-${code.replace(/[^A-Z0-9]/g, "").slice(-4) || "01"}`;
+  const res = await fetch(`${getApiBase()}/api/devices/enrollment/register`, {
+    method: "POST",
+    headers: API_HEADERS,
+    body: JSON.stringify({
+      enrollment_code: code,
+      device_name: deviceName,
+      platform,
+      os_name: `${platform} Endpoint`,
+      hostname: `${platform.toUpperCase()}-${code.replace(/[^A-Z0-9]/g, "").slice(-4) || "01"}`,
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}: Enrollment failed`);
+  return data;
+}
+
+async function triggerScan(deviceId: string, authToken?: string): Promise<void> {
+  try {
+    await fetch(`${getApiBase()}/api/devices/${encodeURIComponent(deviceId)}/scan`, {
+      method: "POST",
+      headers: {
+        ...API_HEADERS,
+        ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+      },
+      body: JSON.stringify({ demo: false }),
+    });
+  } catch { /* best-effort */ }
+}
+
+// ─── Step Indicator ───────────────────────────────────────────────────────────
+const STEPS = ["Verify", "Enroll", "Scan", "Done"] as const;
+const STEP_MAP: Record<Step, number> = {
+  start: 0, detecting: 0, enrolling: 1, scanning: 2, done: 3, error: 1, expired: 0,
+};
+
+function StepBar({ step }: { step: Step }) {
+  const active = STEP_MAP[step];
+  return (
+    <div className="flex items-center gap-0 mb-8">
+      {STEPS.map((label, i) => (
+        <div key={label} className="flex items-center flex-1">
+          <div className="flex flex-col items-center flex-shrink-0">
+            <div
+              className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-all duration-500"
+              style={{
+                background: i < active
+                  ? "linear-gradient(135deg,#00d4ff,#0089b2)"
+                  : i === active
+                  ? "linear-gradient(135deg,#34d058,#00a83e)"
+                  : "rgba(30,58,95,0.5)",
+                color: i <= active ? "#fff" : "#475569",
+                boxShadow: i === active ? "0 0 16px rgba(52,208,88,0.4)" : "none",
+              }}
+            >
+              {i < active ? "✓" : i + 1}
+            </div>
+            <span className="text-[10px] mt-1" style={{ color: i <= active ? "#94a3b8" : "#1e3a5f" }}>
+              {label}
+            </span>
+          </div>
+          {i < STEPS.length - 1 && (
+            <div
+              className="flex-1 h-0.5 mx-1 transition-all duration-700"
+              style={{ background: i < active ? "linear-gradient(90deg,#00d4ff,#34d058)" : "#1a2744" }}
+            />
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── Spinner ──────────────────────────────────────────────────────────────────
+function Spinner({ color = "#00d4ff" }: { color?: string }) {
+  return (
+    <div
+      className="w-10 h-10 rounded-full border-2 animate-spin mx-auto"
+      style={{ borderColor: `${color}33`, borderTopColor: color }}
+    />
+  );
+}
+
+// ─── OS-specific instructions ──────────────────────────────────────────────────
+function OsInstructions({ os, code }: { os: DetectedOS; code: string }) {
+  const [copied, setCopied] = useState(false);
+  const apiUrl = "https://dataghost-1.onrender.com";
+  const cmd = `python dataghost_agent.py --api-url ${apiUrl} --enroll ${code}`;
+
+  const copy = (text: string) => {
+    navigator.clipboard.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); });
+  };
+
+  if (os === "Android") {
+    return (
+      <div className="space-y-3 text-sm">
+        <p style={{ color: "#94a3b8" }}>Scan detected: <strong style={{ color: "#34d058" }}>Android</strong></p>
+        <ol className="list-decimal list-inside space-y-2" style={{ color: "#64748b" }}>
+          <li>Tap <strong style={{ color: "#e2e8f0" }}>"Enroll This Device"</strong> below</li>
+          <li>DataGhost registers the device automatically</li>
+          <li>A full-disk DLP scan starts immediately</li>
+          <li>View results in the <strong style={{ color: "#00d4ff" }}>Devices</strong> dashboard</li>
+        </ol>
+      </div>
+    );
   }
+
+  if (os === "Windows" || os === "Linux" || os === "macOS") {
+    const osLabel = { Windows: "PowerShell", Linux: "Terminal", macOS: "Terminal" }[os];
+    return (
+      <div className="space-y-3 text-sm">
+        <p style={{ color: "#94a3b8" }}>
+          Scan detected: <strong style={{ color: "#60a5fa" }}>{os}</strong> — open <strong style={{ color: "#e2e8f0" }}>{osLabel}</strong> and run:
+        </p>
+        <div
+          className="relative rounded-lg p-3 font-mono text-xs break-all"
+          style={{ background: "#040a17", border: "1px solid #1a2744", color: "#00d4ff" }}
+        >
+          {cmd}
+          <button
+            onClick={() => copy(cmd)}
+            className="absolute top-2 right-2 text-[10px] px-2 py-1 rounded transition-all"
+            style={{
+              background: copied ? "rgba(52,208,88,0.15)" : "rgba(0,212,255,0.1)",
+              border: `1px solid ${copied ? "#34d05840" : "#00d4ff30"}`,
+              color: copied ? "#34d058" : "#00d4ff",
+            }}
+          >
+            {copied ? "✓" : "Copy"}
+          </button>
+        </div>
+        <p className="text-xs" style={{ color: "#475569" }}>
+          Or tap <strong style={{ color: "#e2e8f0" }}>"Enroll This Device"</strong> to register directly from this browser.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="text-sm" style={{ color: "#64748b" }}>
+      <p>Copy code <strong style={{ color: "#e2e8f0" }}>{code}</strong> into your DataGhost Agent app.</p>
+    </div>
+  );
 }
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
@@ -67,164 +212,69 @@ export default function EnrollPage() {
   const rawCode = Array.isArray(params?.code) ? params.code[0] : (params?.code ?? "");
   const code = rawCode.trim().toUpperCase();
 
+  const [step, setStep] = useState<Step>("start");
   const [os, setOs] = useState<DetectedOS>("Unknown");
   const [status, setStatus] = useState<EnrollmentStatus | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [copied, setCopied] = useState(false);
-  const [enrolled, setEnrolled] = useState(false);
-  const [enrolling, setEnrolling] = useState(false);
-  const [enrollError, setEnrollError] = useState("");
-  const [psCopied, setPsCopied] = useState(false);
+  const [registerData, setRegisterData] = useState<RegisterResponse | null>(null);
+  const [errorMsg, setErrorMsg] = useState("");
+  const [scanProgress, setScanProgress] = useState(0);
 
-  // Auto enroll this device directly via API
-  const autoEnrollDevice = async () => {
-    if (!code) return;
-    setEnrolling(true);
-    setEnrollError("");
-    try {
-      const base = getApiBase();
-      const detectedPlatform = os === "Unknown" ? (status?.platform || "Windows") : os;
-      const deviceName = `${detectedPlatform}-Node-${code.replace(/[^A-Z0-9]/g, "").slice(-4) || "01"}`;
-      const res = await fetch(`${base}/api/devices/enrollment/register`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Tunnel-Skip-Anti-Phishing-Page": "true",
-          "bypass-tunnel-reminder": "true",
-        },
-        body: JSON.stringify({
-          enrollment_code: code,
-          device_name: deviceName,
-          platform: detectedPlatform,
-          os_name: `${detectedPlatform} Endpoint`,
-          hostname: `${detectedPlatform.toUpperCase()}-${code.replace(/[^A-Z0-9]/g, "").slice(-4) || "01"}`,
-        }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setStatus((prev) => ({
-          ...(prev || { enrollment_code: code, platform: detectedPlatform, is_expired: false }),
-          status: "USED",
-          device_id: data.device_id,
-          device_name: data.device_name || deviceName,
-        }));
-        setEnrolled(true);
-      } else {
-        const err = await res.json().catch(() => ({}));
-        setEnrollError(err.detail || "Enrollment failed. Please try again.");
-      }
-    } catch (err: unknown) {
-      setEnrollError(err instanceof Error ? err.message : "Failed to connect to backend server");
-    } finally {
-      setEnrolling(false);
-    }
-  };
-
-  // Detect OS on mount
-  useEffect(() => {
-    setOs(detectOS());
-  }, []);
-
-  // Load enrollment info
-  const loadStatus = useCallback(async () => {
-    if (!code) {
-      console.log("[loadStatus] No code provided");
-      setLoading(false);
-      return;
-    }
-    console.log(`[loadStatus] Loading status for code: ${code}`);
+  // Detect OS on mount + load initial status
+  const init = useCallback(async () => {
+    setStep("detecting");
+    const detectedOs = detectOS();
+    setOs(detectedOs);
+    if (!code) { setStep("error"); setErrorMsg("No enrollment code provided."); return; }
     const data = await fetchStatus(code);
-    console.log(`[loadStatus] Received data:`, data);
+    if (!data) { setStep("error"); setErrorMsg("Could not reach DataGhost server. Please try again."); return; }
+    if (data.is_expired || data.status === "EXPIRED") { setStep("expired"); setStatus(data); return; }
+    if (data.status === "USED") { setStep("done"); setStatus(data); return; }
     setStatus(data);
-    if (data?.status === "USED") setEnrolled(true);
-    setLoading(false);
+    setStep("start");
   }, [code]);
 
-  useEffect(() => {
-    loadStatus();
-    const iv = setInterval(() => {
-      fetchStatus(code).then((d) => {
-        if (d) setStatus(d);
-        if (d?.status === "USED") { setEnrolled(true); clearInterval(iv); }
-      });
-    }, 3000);
-    return () => clearInterval(iv);
-  }, [code, loadStatus]);
+  useEffect(() => { init(); }, [init]);
 
-  const copyCode = () => {
-    navigator.clipboard.writeText(code).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
+  // Handle enroll + auto-scan
+  const handleEnroll = async () => {
+    if (!code) return;
+    setStep("enrolling");
+    setErrorMsg("");
+    try {
+      const detectedPlatform = os === "Unknown" ? (status?.platform || "Windows") : os;
+      const reg = await registerDevice(code, detectedPlatform);
+      setRegisterData(reg);
+      setStep("scanning");
+
+      // Animate scan progress (0→100 over ~6s) while actual scan runs in background
+      setScanProgress(0);
+      const start = Date.now();
+      const duration = 6000;
+      const interval = setInterval(() => {
+        const elapsed = Date.now() - start;
+        const pct = Math.min(Math.round((elapsed / duration) * 100), 95);
+        setScanProgress(pct);
+        if (elapsed >= duration) clearInterval(interval);
+      }, 100);
+
+      // Trigger actual scan on the backend
+      await triggerScan(reg.device_id, reg.auth_token);
+
+      // Wait for animation to finish then go to done
+      setTimeout(() => {
+        setScanProgress(100);
+        setTimeout(() => setStep("done"), 600);
+        clearInterval(interval);
+      }, duration);
+    } catch (err: unknown) {
+      setStep("error");
+      setErrorMsg(err instanceof Error ? err.message : "Enrollment failed. Please try again.");
+    }
   };
 
-  const apkUrl = `${getApiBase()}/dataghost-agent.apk`;
-  const isExpired = status?.is_expired || status?.status === "EXPIRED";
+  const dashboardUrl = "https://dataghost-five.vercel.app/devices";
 
-  // ─── OS-specific content ──────────────────────────────────────────────────────
-  const osInfo: Record<DetectedOS, { icon: string; label: string; color: string; steps: string[]; downloadAvailable: boolean; downloadLabel?: string; downloadUrl?: string }> = {
-    Android: {
-      icon: "🤖",
-      label: "Android detected",
-      color: "#34d058",
-      downloadAvailable: true,
-      downloadLabel: "Download DataGhost Agent APK",
-      downloadUrl: apkUrl,
-      steps: [
-        "Tap \"Download DataGhost Agent\" below",
-        "Open the downloaded APK to install (allow unknown sources if prompted)",
-        "Open DataGhost Agent → the enrollment code will be pre-filled",
-        "Tap Enroll Device to complete registration",
-      ],
-    },
-    Windows: {
-      icon: "🪟",
-      label: "Windows detected",
-      color: "#60a5fa",
-      downloadAvailable: false,
-      steps: [
-        "Dashboard login / management: https://dataghost-five.vercel.app",
-        "Open PowerShell on your Windows workstation",
-        "Run: python dataghost_agent.py --api-url https://dataghost-1.onrender.com --enroll <CODE>",
-        "The agent securely registers and begins background DLP monitoring",
-      ],
-    },
-    Linux: {
-      icon: "🐧",
-      label: "Linux detected",
-      color: "#ff9f0a",
-      downloadAvailable: false,
-      steps: [
-        "Dashboard login / management: https://dataghost-five.vercel.app",
-        "On your Linux terminal, run: python3 dataghost_agent.py --api-url https://dataghost-1.onrender.com --enroll <CODE>",
-        "The agent will register with the backend and start continuous monitoring",
-      ],
-    },
-    macOS: {
-      icon: "🍎",
-      label: "macOS detected",
-      color: "#a78bfa",
-      downloadAvailable: false,
-      steps: [
-        "DataGhost macOS agent is not yet available",
-        "Please contact your IT administrator for enrollment options",
-      ],
-    },
-    Unknown: {
-      icon: "💻",
-      label: "Device detected",
-      color: "#00d4ff",
-      downloadAvailable: false,
-      steps: [
-        "Use the DataGhost Agent for your operating system",
-        "Enter the enrollment code below during agent setup",
-      ],
-    },
-  };
-
-  const info = osInfo[os];
-
-  // ─── Render ─────────────────────────────────────────────────────────────────
+  // ─── Render ───────────────────────────────────────────────────────────────
   return (
     <div
       className="min-h-screen flex flex-col items-center justify-center p-4"
@@ -232,202 +282,238 @@ export default function EnrollPage() {
     >
       {/* Ambient glow */}
       <div
-        className="fixed top-0 left-1/2 -translate-x-1/2 w-96 h-96 rounded-full pointer-events-none"
-        style={{
-          background: "radial-gradient(circle, rgba(0,212,255,0.04) 0%, transparent 70%)",
-          filter: "blur(40px)",
-        }}
+        className="fixed top-0 left-1/2 -translate-x-1/2 w-[600px] h-96 rounded-full pointer-events-none"
+        style={{ background: "radial-gradient(circle, rgba(0,212,255,0.05) 0%, transparent 70%)", filter: "blur(60px)" }}
       />
 
-      {/* Card */}
       <div
-        className="w-full max-w-md rounded-2xl shadow-2xl p-7 relative overflow-hidden"
-        style={{
-          background: "rgba(10,15,30,0.95)",
-          border: "1px solid #1a2744",
-          backdropFilter: "blur(20px)",
-        }}
+        className="w-full max-w-md rounded-2xl shadow-2xl p-7 relative"
+        style={{ background: "rgba(10,15,30,0.97)", border: "1px solid #1a2744", backdropFilter: "blur(20px)" }}
       >
         {/* Top accent */}
         <div
-          className="absolute top-0 left-0 right-0 h-0.5"
-          style={{ background: "linear-gradient(90deg, transparent, #00d4ff, transparent)" }}
+          className="absolute top-0 left-0 right-0 h-0.5 rounded-t-2xl"
+          style={{ background: "linear-gradient(90deg, transparent, #00d4ff, #34d058, transparent)" }}
         />
 
-        {/* Header */}
+        {/* Logo */}
         <div className="flex items-center gap-3 mb-6">
           <div
-            className="w-10 h-10 rounded-xl flex items-center justify-center text-lg font-black"
+            className="w-10 h-10 rounded-xl flex items-center justify-center text-sm font-black flex-shrink-0"
             style={{ background: "linear-gradient(135deg, #0089b2, #00d4ff)", color: "#fff" }}
           >
             DG
           </div>
           <div>
-            <p className="text-white font-bold text-sm">DataGhost</p>
-            <p className="text-slate-400 text-xs">Device Enrollment</p>
+            <h1 className="text-white font-bold text-base leading-tight">DataGhost</h1>
+            <p className="text-xs" style={{ color: "#475569" }}>Device Enrollment & DLP Setup</p>
           </div>
+          {code && (
+            <span
+              className="ml-auto font-mono text-xs px-2 py-1 rounded"
+              style={{ background: "rgba(0,212,255,0.08)", border: "1px solid rgba(0,212,255,0.2)", color: "#00d4ff" }}
+            >
+              {code}
+            </span>
+          )}
         </div>
 
-        {loading ? (
-          <div className="flex flex-col items-center gap-4 py-10">
-            <div
-              className="w-8 h-8 border-2 border-transparent border-t-cyan-400 rounded-full animate-spin"
-            />
-            <p className="text-slate-400 text-sm">Verifying enrollment code…</p>
-          </div>
-        ) : !code || !status ? (
-          /* Invalid code */
-          <div className="text-center py-8 space-y-3">
-            <p className="text-4xl">❌</p>
-            <p className="text-white font-bold">Enrollment code not found</p>
-            <p className="text-slate-400 text-sm">
-              This link may be invalid or already used. Ask your IT admin to generate a new enrollment code.
-            </p>
-          </div>
-        ) : isExpired ? (
-          /* Expired */
-          <div
-            className="rounded-xl p-5 text-center space-y-3"
-            style={{ background: "rgba(255,59,59,0.06)", border: "1px solid rgba(255,59,59,0.2)" }}
-          >
-            <p className="text-4xl">⏱️</p>
-            <p className="font-bold text-red-400">Enrollment Code Expired</p>
-            <p className="text-slate-400 text-sm">
-              Ask your IT administrator to generate a new enrollment code.
-            </p>
-          </div>
-        ) : enrolled ? (
-          /* Success */
-          <div
-            className="rounded-xl p-5 text-center space-y-3"
-            style={{ background: "rgba(52,208,88,0.06)", border: "1px solid rgba(52,208,88,0.2)" }}
-          >
-            <p className="text-4xl">🎉</p>
-            <p className="font-bold text-green-400">Enrollment Successful!</p>
-            <p className="text-slate-400 text-sm">
-              Device <strong className="text-white">{status?.device_name || "registered"}</strong> has
-              joined DataGhost DLP management.
-            </p>
-          </div>
-        ) : (
-          /* Active enrollment */
-          <div className="space-y-5">
-            {/* OS Badge */}
-            <div
-              className="flex items-center gap-3 px-4 py-3 rounded-xl"
-              style={{ background: `${info.color}0d`, border: `1px solid ${info.color}30` }}
-            >
-              <span className="text-2xl">{info.icon}</span>
-              <div>
-                <p className="text-xs font-bold" style={{ color: info.color }}>
-                  {info.label}
-                </p>
-                <p className="text-slate-400 text-xs">
-                  {os === "Android"
-                    ? "Agent-managed Android — no factory reset required"
-                    : os === "Unknown"
-                    ? "Use the correct agent for your platform"
-                    : `${os} endpoint agent`}
-                </p>
-              </div>
-            </div>
+        <StepBar step={step} />
 
-
-
-            {/* Enrollment Code */}
-            <div className="space-y-1.5">
-              <p className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">
-                Enrollment Code
-              </p>
-              <div
-                className="flex items-center justify-between px-4 py-3 rounded-xl"
-                style={{ background: "rgba(0,212,255,0.06)", border: "1px solid rgba(0,212,255,0.2)" }}
-              >
-                <span
-                  className="font-mono text-xl font-bold tracking-widest"
-                  style={{ color: "#00d4ff" }}
-                >
-                  {code}
-                </span>
-                <button
-                  onClick={copyCode}
-                  className="text-xs px-3 py-1.5 rounded-lg transition-all"
-                  style={{
-                    background: "rgba(0,212,255,0.1)",
-                    color: copied ? "#34d058" : "#00d4ff",
-                    border: "1px solid rgba(0,212,255,0.2)",
-                  }}
-                >
-                  {copied ? "✓ Copied" : "Copy"}
-                </button>
-              </div>
-            </div>
-
-            {/* Steps */}
-            <div className="space-y-2">
-              <p className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">
-                Setup Instructions
-              </p>
-              <ol className="space-y-2">
-                {info.steps.map((step, i) => (
-                  <li key={i} className="flex gap-3 items-start">
-                    <span
-                      className="flex-shrink-0 w-5 h-5 rounded-full text-[10px] font-bold flex items-center justify-center mt-0.5"
-                      style={{ background: `${info.color}20`, color: info.color, border: `1px solid ${info.color}40` }}
-                    >
-                      {i + 1}
-                    </span>
-                    <p
-                      className="text-sm text-slate-300 leading-snug"
-                      dangerouslySetInnerHTML={{ __html: step.replace("<ENROLLMENT_CODE>", `<code class="text-cyan-400 font-mono">${code}</code>`) }}
-                    />
-                  </li>
-                ))}
-              </ol>
-            </div>
-
-            {/* Download Button — only for platforms where agent exists */}
-            {info.downloadAvailable && info.downloadUrl && (
-              <a
-                href={info.downloadUrl}
-                download="dataghost-agent.apk"
-                className="flex items-center justify-center gap-2 w-full py-3.5 rounded-xl font-semibold text-white text-sm transition-all hover:brightness-110 active:scale-95 shadow-lg"
-                style={{
-                  background: "linear-gradient(135deg, #0089b2, #00d4ff)",
-                  border: "1px solid rgba(0,212,255,0.4)",
-                  textDecoration: "none",
-                }}
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                  <path d="M12 15l-4-4h2.5V5h3v6H16l-4 4zM5 19h14v-2H5v2z" fill="currentColor" />
-                </svg>
-                {info.downloadLabel}
-              </a>
-            )}
-
-            {/* Windows/Linux instruction note */}
-            {!info.downloadAvailable && os !== "macOS" && os !== "Unknown" && (
-              <div
-                className="px-4 py-3 rounded-xl text-xs text-slate-400"
-                style={{ background: "rgba(15,23,41,0.8)", border: "1px solid #1a2744" }}
-              >
-                💡 Contact your IT administrator for the {os} DataGhost Agent installer package.
-              </div>
-            )}
-
-            {/* Live status dot */}
-            <div className="flex items-center justify-center gap-2 pt-1">
-              <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
-              <span className="text-[11px] text-slate-400">Waiting for device registration…</span>
-            </div>
+        {/* ── DETECTING ── */}
+        {step === "detecting" && (
+          <div className="text-center py-6 space-y-4">
+            <Spinner />
+            <p className="text-sm" style={{ color: "#94a3b8" }}>Detecting your device…</p>
           </div>
         )}
-      </div>
 
-      {/* Footer */}
-      <p className="text-slate-600 text-xs mt-5">
-        DataGhost DLP Platform · Secure Enrollment Portal
-      </p>
+        {/* ── START ── */}
+        {step === "start" && status && (
+          <div className="space-y-5">
+            <div
+              className="rounded-xl p-4"
+              style={{ background: "rgba(0,212,255,0.04)", border: "1px solid rgba(0,212,255,0.12)" }}
+            >
+              <p className="text-xs uppercase tracking-wider mb-2" style={{ color: "#475569" }}>Enrollment Code</p>
+              <p className="text-2xl font-mono font-bold tracking-widest" style={{ color: "#00d4ff" }}>{code}</p>
+              <p className="text-xs mt-1" style={{ color: "#64748b" }}>
+                Platform: <span style={{ color: "#94a3b8" }}>{status.platform}</span>
+              </p>
+            </div>
+
+            <OsInstructions os={os} code={code} />
+
+            <button
+              onClick={handleEnroll}
+              className="w-full py-3 rounded-xl font-bold text-sm transition-all duration-200 flex items-center justify-center gap-2"
+              style={{
+                background: "linear-gradient(135deg, #0089b2, #00d4ff)",
+                color: "#fff",
+                boxShadow: "0 4px 24px rgba(0,212,255,0.25)",
+              }}
+            >
+              🚀 Enroll This Device — Start DLP Protection
+            </button>
+            <p className="text-center text-xs" style={{ color: "#475569" }}>
+              This will register the device and begin an immediate full-disk scan.
+            </p>
+          </div>
+        )}
+
+        {/* ── ENROLLING ── */}
+        {step === "enrolling" && (
+          <div className="text-center py-8 space-y-4">
+            <Spinner color="#00d4ff" />
+            <p className="font-semibold" style={{ color: "#e2e8f0" }}>Registering device…</p>
+            <p className="text-sm" style={{ color: "#475569" }}>
+              Validating enrollment code and issuing device credentials.
+            </p>
+          </div>
+        )}
+
+        {/* ── SCANNING ── */}
+        {step === "scanning" && (
+          <div className="space-y-5">
+            <div className="text-center">
+              <div className="text-4xl mb-3">🔍</div>
+              <p className="font-bold text-lg" style={{ color: "#e2e8f0" }}>
+                {registerData?.device_name || "Device"} enrolled!
+              </p>
+              <p className="text-sm mt-1" style={{ color: "#94a3b8" }}>
+                Running initial full-disk DLP scan…
+              </p>
+            </div>
+
+            {/* Progress bar */}
+            <div className="space-y-2">
+              <div className="flex justify-between text-xs" style={{ color: "#475569" }}>
+                <span>Scanning files for sensitive data…</span>
+                <span style={{ color: "#34d058" }}>{scanProgress}%</span>
+              </div>
+              <div className="h-2 rounded-full overflow-hidden" style={{ background: "rgba(30,58,95,0.5)" }}>
+                <div
+                  className="h-full rounded-full transition-all duration-200"
+                  style={{
+                    width: `${scanProgress}%`,
+                    background: "linear-gradient(90deg, #00d4ff, #34d058)",
+                    boxShadow: "0 0 8px rgba(52,208,88,0.5)",
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* Scanning steps */}
+            {[
+              { label: "Enrolling device identity", done: scanProgress >= 10 },
+              { label: "Issuing DLP agent credentials", done: scanProgress >= 25 },
+              { label: "Queuing full-disk scan", done: scanProgress >= 40 },
+              { label: "Scanning file system…", done: scanProgress >= 75 },
+              { label: "Analysing findings", done: scanProgress >= 90 },
+            ].map(({ label, done }) => (
+              <div key={label} className="flex items-center gap-2 text-xs" style={{ color: done ? "#34d058" : "#475569" }}>
+                <span>{done ? "✓" : "◦"}</span>
+                <span>{label}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ── DONE ── */}
+        {step === "done" && (
+          <div className="space-y-5">
+            <div className="text-center">
+              <div className="text-5xl mb-3 animate-bounce">✅</div>
+              <p className="text-xl font-bold" style={{ color: "#34d058" }}>
+                Device Protected!
+              </p>
+              <p className="text-sm mt-2" style={{ color: "#94a3b8" }}>
+                {registerData?.device_name || status?.device_name || "Your device"} is now enrolled and actively monitored by DataGhost DLP.
+              </p>
+            </div>
+
+            {/* Summary */}
+            <div
+              className="rounded-xl p-4 space-y-2 text-sm"
+              style={{ background: "rgba(52,208,88,0.04)", border: "1px solid rgba(52,208,88,0.15)" }}
+            >
+              {[
+                ["Status", "ACTIVE — DLP monitoring enabled"],
+                ["Scan", "Full-disk scan queued (results in dashboard)"],
+                ["Code", code],
+                ["Device ID", registerData?.device_id || status?.device_id || "—"],
+              ].map(([k, v]) => (
+                <div key={k} className="flex justify-between gap-3">
+                  <span style={{ color: "#475569" }}>{k}</span>
+                  <span className="font-mono text-xs text-right" style={{ color: "#94a3b8" }}>{v}</span>
+                </div>
+              ))}
+            </div>
+
+            <a
+              href={dashboardUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="w-full py-3 rounded-xl font-bold text-sm text-center flex items-center justify-center gap-2 transition-all duration-200"
+              style={{
+                background: "linear-gradient(135deg,#0a3320,#0d4f2c)",
+                border: "1px solid rgba(52,208,88,0.3)",
+                color: "#34d058",
+                boxShadow: "0 4px 20px rgba(52,208,88,0.15)",
+                display: "flex",
+              }}
+            >
+              📊 Open DataGhost Dashboard
+            </a>
+          </div>
+        )}
+
+        {/* ── EXPIRED ── */}
+        {step === "expired" && (
+          <div className="text-center space-y-4 py-4">
+            <div className="text-4xl">⏰</div>
+            <p className="font-bold" style={{ color: "#ff9f0a" }}>Enrollment Code Expired</p>
+            <p className="text-sm" style={{ color: "#64748b" }}>
+              Code <strong style={{ color: "#94a3b8" }}>{code}</strong> has expired.
+              Please ask your administrator to generate a new enrollment code.
+            </p>
+            <a
+              href={dashboardUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-block px-5 py-2 rounded-lg text-sm font-semibold transition-all"
+              style={{ background: "rgba(255,159,10,0.1)", border: "1px solid rgba(255,159,10,0.3)", color: "#ff9f0a" }}
+            >
+              Go to Dashboard
+            </a>
+          </div>
+        )}
+
+        {/* ── ERROR ── */}
+        {step === "error" && (
+          <div className="space-y-4 py-2">
+            <div
+              className="rounded-xl px-4 py-3 text-sm"
+              style={{ background: "rgba(255,59,59,0.06)", border: "1px solid rgba(255,59,59,0.2)", color: "#ff3b3b" }}
+            >
+              <p className="font-semibold mb-1">⚠ Enrollment Failed</p>
+              <p style={{ color: "#ff6b6b" }}>{errorMsg}</p>
+            </div>
+            <button
+              onClick={init}
+              className="w-full py-2.5 rounded-xl text-sm font-semibold transition-all"
+              style={{ background: "rgba(255,59,59,0.1)", border: "1px solid rgba(255,59,59,0.25)", color: "#ff3b3b" }}
+            >
+              Try Again
+            </button>
+          </div>
+        )}
+
+        {/* Footer */}
+        <p className="text-center text-[10px] mt-6" style={{ color: "#1e3a5f" }}>
+          DataGhost DLP · Secure Device Enrollment · v2.0
+        </p>
+      </div>
     </div>
   );
 }

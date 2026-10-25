@@ -743,14 +743,23 @@ def register_with_enrollment(
     db.commit()
     db.refresh(device)
 
-    # Issue device auth token, return once, store only its SHA-256 hash
+    # Issue device auth token — returned once, hash stored for future auth
     device_token = f"dg_dev_{secrets.token_urlsafe(32)}"
     token_hash = hashlib.sha256(device_token.encode("utf-8")).hexdigest()
     device.device_token_hash = token_hash
-    device.auth_token = None
+    device.auth_token = None  # Never persist plaintext; hash is the authority
+
+    # ── Auto-scan on first enrollment ────────────────────────────────────────
+    # Set scan_requested immediately so the agent auto-scans all files as soon
+    # as it sends its first heartbeat. This is the "start point" of DLP coverage.
+    device.scan_requested = True
+
     db.commit()
 
-    logger.info("Successfully enrolled device: %s (%s, %s)", new_device_id, device_name, platform)
+    logger.info(
+        "Successfully enrolled device: %s (%s, %s) — initial scan queued",
+        new_device_id, device_name, platform,
+    )
 
     return EnrollmentRegisterResponse(
         device_id=device.device_id,
@@ -760,7 +769,11 @@ def register_with_enrollment(
         auth_token=device_token,
         heartbeat_interval_seconds=30,
         server_time=now,
-        message="Device successfully enrolled and registered with DataGhost DLP.",
+        message=(
+            "Device successfully enrolled. "
+            "Initial full-disk DLP scan has been queued — "
+            "the agent will scan all files on first heartbeat."
+        ),
     )
 
 
