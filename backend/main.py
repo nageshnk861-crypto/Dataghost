@@ -37,9 +37,19 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing database schema …")
     init_db()
 
-    # ─── Production startup configuration ──────────────────────────────────
-    # Ensure admin password defaults to dataghost123 unless overridden
-    configured_pass = os.environ.get("DEFAULT_ADMIN_PASSWORD", "dataghost123")
+    # ─── Production startup guard ───────────────────────────────────────────
+    # On Render (or any env where RENDER is set), the application MUST NOT
+    # start if DEFAULT_ADMIN_PASSWORD is absent or still set to the known
+    # default value. This prevents shipping a predictable admin credential.
+    _DEFAULT_FALLBACK_PASS = "dataghost123"
+    if os.environ.get("RENDER"):
+        configured_pass = os.environ.get("DEFAULT_ADMIN_PASSWORD", "")
+        if not configured_pass or configured_pass == _DEFAULT_FALLBACK_PASS:
+            raise RuntimeError(
+                "FATAL: Running on Render with DEFAULT_ADMIN_PASSWORD unset or equal to the "
+                "default value. Set a strong, unique password in the Render environment "
+                "variables before deploying."
+            )
 
     # Initialize Firebase Admin SDK
     try:

@@ -45,14 +45,32 @@ def _apply_rbac_scope(query, current_user: User, db: Session):
     """
     Scope query according to user role:
       - admin: sees all findings
-      - analyst: sees only findings matching user_id or devices owned by user
+      - analyst: sees only findings matching user_id, user_id==1, or devices owned by user
     """
-    if current_user.role in ("admin", "analyst", "viewer"):
+    if current_user.role == "admin":
         return query
+
+    # Analyst: find all devices belonging to this user or shared demo devices
+    user_devices = (
+        db.query(Device.device_id)
+        .filter(
+            or_(
+                Device.user_id == current_user.id,
+                Device.user_id == 1,
+                Device.device_id.like("DGD-%"),
+            )
+        )
+        .all()
+    )
+    device_ids = [d.device_id for d in user_devices if d.device_id]
 
     conditions = [
         Finding.user_id == current_user.id,
+        Finding.user_id == 1,
     ]
+    if device_ids:
+        conditions.append(Finding.device_id.in_(device_ids))
+
     return query.filter(or_(*conditions))
 
 

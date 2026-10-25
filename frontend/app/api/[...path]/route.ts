@@ -464,12 +464,37 @@ async function tryProxyToBackend(
     const r = await attempt();
     if (!isRetryable(r)) return makeProxyResponse(r);
   } catch {
-    // Network error / timeout — fall through to fallback or retry.
+    // Network error / timeout — fall through to retry
   }
 
-  // If real backend is unreachable or sleeping, fall back gracefully to the built-in Next.js mock/cloud handlers
-  // so the user never sees FUNCTION_INVOCATION_TIMEOUT or a broken dashboard.
+  // ── Attempt 2 ──
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  try {
+    const r = await attempt();
+    if (!isRetryable(r)) return makeProxyResponse(r);
+  } catch {
+    // Both attempts failed
+  }
+
+  if (isVercel || !mockFallbackEnabled) {
+    return backend502(fullPath);
+  }
   return null;
+}
+
+/** Emit a 502 JSON response prompting the caller to retry. */
+function backend502(path: string): NextResponse {
+  return NextResponse.json(
+    {
+      error: "Backend is waking up, please retry in a minute",
+      message:
+        "The DataGhost backend did not respond within 60_000 ms. " +
+        "Render free-tier instances may need up to 60 seconds to wake from sleep. " +
+        "Please wait a moment and try again.",
+      path,
+    },
+    { status: 502 },
+  );
 }
 
 // ─── GET Handlers ─────────────────────────────────────────────────────────────
