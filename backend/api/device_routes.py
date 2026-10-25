@@ -2392,7 +2392,7 @@ def auto_enroll_and_scan_stream(
                 ("medical_records.txt", b"Patient: Jane Smith\nDOB: 1990-01-15\nDiagnosis: Hypertension\nSSN: 123-45-6789\n"),
                 ("source_code.py", b"API_KEY = 'sk-live-abc123xyz'\n# TODO: remove hardcoded secret\n"),
                 ("employee_data.xlsx", b"EmpID,Name,Salary,PAN\n001,Raj Kumar,85000,ABCDE1234F\n"),
-                ("company_docs.pdf", b"CONFIDENTIAL — Internal Use Only\nQ3 Revenue: $4.2M\n"),
+                ("company_docs.pdf", b"CONFIDENTIAL - Internal Use Only\nQ3 Revenue: $4.2M\n"),
                 ("config.json", b'{"database":{"host":"prod-db.internal","password":"DBpa$$w0rd!"}}\n'),
                 ("backup.sql", b"INSERT INTO users VALUES (1,'admin','password123','admin@corp.com');\n"),
             ]
