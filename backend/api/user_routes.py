@@ -4,6 +4,7 @@ GET  /users        → list all users (admin only)
 GET  /users/{id}   → single user (admin only)
 """
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from typing import List
 
@@ -73,3 +74,68 @@ def toggle_user(
     db.commit()
     db.refresh(u)
     return _user_out(u)
+
+
+class UserRoleUpdate(BaseModel):
+    role: str = Field(..., description="Role: admin | analyst | viewer")
+
+
+class UserCreateRequest(BaseModel):
+    username: str = Field(..., min_length=3, max_length=64)
+    email: str = Field(..., description="User email")
+    password: str = Field(..., min_length=6, description="Password")
+    role: str = Field("analyst", description="Role: admin | analyst | viewer")
+
+
+@router.patch("/{user_id}/role", summary="Update user role (admin only)")
+def update_user_role(
+    user_id: int,
+    payload: UserRoleUpdate,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(_require_admin),
+):
+    """Assign appropriate roles (admin, analyst, viewer). Admin-only."""
+    norm_role = payload.role.strip().lower()
+    valid_roles = {"admin", "analyst", "viewer"}
+    if norm_role not in valid_roles:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid role '{payload.role}'. Supported roles: {', '.join(sorted(valid_roles))}",
+        )
+    u = db.query(User).filter(User.id == user_id).first()
+    if not u:
+        raise HTTPException(status_code=404, detail="User not found")
+    u.role = norm_role
+    db.commit()
+    db.refresh(u)
+    return _user_out(u)
+
+
+@router.post("", summary="Create user account (admin only)")
+def create_user(
+    payload: UserCreateRequest,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(_require_admin),
+):
+    """Create a new user account with assigned role (admin, analyst, viewer)."""
+    from auth import get_password_hash
+    norm_role = payload.role.strip().lower()
+    if norm_role not in {"admin", "analyst", "viewer"}:
+        norm_role = "analyst"
+
+    if db.query(User).filter(User.username == payload.username.strip()).first():
+        raise HTTPException(status_code=409, detail="Username already exists")
+    if db.query(User).filter(User.email == payload.email.strip()).first():
+        raise HTTPException(status_code=409, detail="Email already registered")
+
+    new_user = User(
+        username=payload.username.strip(),
+        email=payload.email.strip(),
+        hashed_password=get_password_hash(payload.password),
+        role=norm_role,
+        is_active=True,
+    )
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    return _user_out(new_user)
