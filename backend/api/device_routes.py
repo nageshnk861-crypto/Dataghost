@@ -948,12 +948,14 @@ def auto_enroll_and_scan_stream(
     Returns Server-Sent Events that drive the browser progress UI.
     No user interaction required after connecting.
     """
+    import asyncio
     import os
     import pathlib
     import tempfile
 
-    def event_generator():
+    async def event_generator():
         yield _sse({"type": "connected"})
+        await asyncio.sleep(0.05)
 
         # ── 1. Validate enrollment code ──────────────────────────────────────
         code_clean = code.strip().upper()
@@ -1132,6 +1134,7 @@ def auto_enroll_and_scan_stream(
                 "filename": item["filename"],
                 "path": item["path"],
             })
+            await asyncio.sleep(0.04)
 
             try:
                 if "_content" in item:

@@ -405,7 +405,7 @@ async function tryProxyToBackend(
     process.env.BACKEND_INTERNAL_URL ||
     process.env.BACKEND_URL ||
     process.env.NEXT_PUBLIC_API_URL ||
-    "https://dataghost-1.onrender.com"
+    "https://dataghost.onrender.com"
   ).trim().replace(/\/+$/, "");
 
   const searchParams = req.nextUrl.search;
@@ -482,7 +482,7 @@ async function tryProxyToBackend(
     {
       error: "Backend is waking up, please retry in a minute",
       message:
-        "The DataGhost backend (https://dataghost-1.onrender.com) did not respond after two " +
+        "The DataGhost backend (https://dataghost.onrender.com) did not respond after two " +
         "attempts. Render free-tier instances may need up to 60 seconds to wake from sleep. " +
         "Please wait a moment and try again.",
       path: fullPath,

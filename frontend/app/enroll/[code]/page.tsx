@@ -36,7 +36,7 @@ function getApiBase(): string {
   if (env && !env.includes("devtunnels.ms")) {
     return env.replace(/\/+$/, "");
   }
-  return "https://dataghost-1.onrender.com";
+  return "https://dataghost.onrender.com";
 }
 
 function severityColor(sev: string) {

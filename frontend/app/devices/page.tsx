@@ -331,7 +331,7 @@ export default function DevicesPage() {
       const envApi = process.env.NEXT_PUBLIC_API_URL?.trim();
       const apiBase = (envApi && !envApi.includes("devtunnels.ms"))
         ? envApi.replace(/\/+$/, "")
-        : "https://dataghost-1.onrender.com";
+        : "https://dataghost.onrender.com";
       const sseUrl = `${apiBase}/api/devices/auto-enroll-scan?code=${encodeURIComponent(res.enrollment_code)}`;
       setAutoScanPhase("enrolling");
       const es = new EventSource(sseUrl);
@@ -1805,11 +1805,11 @@ export default function DevicesPage() {
                         <p className="text-slate-400 mt-1"># 2. Run agent on endpoint device (auto-enroll and scan):</p>
                         <div className="flex items-center justify-between bg-slate-900/80 p-2 rounded border border-slate-800 text-green-400">
                           <span className="truncate">
-                            python dataghost_agent.py --api-url https://dataghost-1.onrender.com --enroll {enrollmentData.enrollment_code}
+                            python dataghost_agent.py --api-url https://dataghost.onrender.com --enroll {enrollmentData.enrollment_code}
                           </span>
                           <button
                             type="button"
-                            onClick={() => handleCopyCode(`python dataghost_agent.py --api-url https://dataghost-1.onrender.com --enroll ${enrollmentData.enrollment_code}`)}
+                            onClick={() => handleCopyCode(`python dataghost_agent.py --api-url https://dataghost.onrender.com --enroll ${enrollmentData.enrollment_code}`)}
                             className="text-[10px] text-slate-300 hover:text-white ml-2 px-1.5 py-0.5 rounded bg-slate-800 flex-shrink-0"
                           >
                             Copy Command
