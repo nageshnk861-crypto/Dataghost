@@ -6,6 +6,8 @@ import { fetchDevices, resetDeviceEnrollment, disableDevice } from "@/lib/api";
 import type { Device } from "@/lib/api";
 import DeviceDetailDrawer from "@/components/DeviceDetailDrawer";
 import { AuthError } from "@/lib/auth";
+import { WakeUpBanner, ErrorBanner } from "@/components/Banners";
+import { isBackendWakeUpError } from "@/lib/errors";
 
 export default function DevicesPage() {
   const { signalAuthFailure } = useAuthContext();
@@ -13,6 +15,7 @@ export default function DevicesPage() {
   const [devices, setDevices] = useState<Device[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isWakingUp, setIsWakingUp] = useState(false);
   const [platformFilter, setPlatformFilter] = useState<string>("ALL");
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
   const [searchTerm, setSearchTerm] = useState("");
@@ -31,7 +34,13 @@ export default function DevicesPage() {
         signalAuthFailure();
         return;
       }
-      setError(err instanceof Error ? err.message : "Failed to load devices");
+      if (isBackendWakeUpError(err)) {
+        setIsWakingUp(true);
+        setError(null);
+      } else {
+        setIsWakingUp(false);
+        setError(err instanceof Error ? err.message : "Failed to load devices");
+      }
     } finally {
       setLoading(false);
     }

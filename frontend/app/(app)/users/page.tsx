@@ -3,6 +3,8 @@
 import { useEffect, useState, useCallback } from "react";
 import { apiFetch } from "../../../lib/auth";
 import TopBar from "../../../components/TopBar";
+import { WakeUpBanner, ErrorBanner } from "@/components/Banners";
+import { isBackendWakeUpError } from "@/lib/errors";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface DGUser {
@@ -40,6 +42,7 @@ function Skeleton() {
 export default function UsersPage() {
   const [users, setUsers]     = useState<DGUser[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isWakingUp, setIsWakingUp] = useState(false);
   const [error, setError]     = useState("");
   const [toggling, setToggling] = useState<number | null>(null);
 
@@ -168,25 +171,11 @@ export default function UsersPage() {
           </span>
         </div>
 
+        {/* Wake-up banner */}
+        {isWakingUp && <WakeUpBanner onRetry={load} />}
+
         {/* Error banner */}
-        {error && (
-          <div
-            className="flex items-center justify-between px-4 py-3 rounded-xl text-sm"
-            style={{
-              background: "rgba(255,59,59,0.06)",
-              border: "1px solid rgba(255,59,59,0.2)",
-              color: "#ff3b3b",
-            }}
-          >
-            <span>⚠ {error}</span>
-            <button
-              className="btn-ghost text-xs ml-4"
-              onClick={load}
-            >
-              Retry
-            </button>
-          </div>
-        )}
+        {error && <ErrorBanner message={error} onRetry={load} />}
 
         {/* Users table */}
         <div className="dg-card p-0 overflow-hidden">

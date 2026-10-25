@@ -12,6 +12,8 @@ import type {
   IncidentRow,
 } from "@/lib/api";
 import TopBar from "../../../components/TopBar";
+import { WakeUpBanner, ErrorBanner } from "@/components/Banners";
+import { isBackendWakeUpError } from "@/lib/errors";
 import {
   BarChart,
   Bar,
@@ -127,6 +129,7 @@ export default function AnalyticsPage() {
   const [incidents, setIncidents] = useState<IncidentRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isWakingUp, setIsWakingUp] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -141,9 +144,15 @@ export default function AnalyticsPage() {
       setActivity(activityData);
       setIncidents(incData.items);
     } catch (err) {
-      setError(
+      if (isBackendWakeUpError(err)) {
+        setIsWakingUp(true);
+        setError(null);
+      } else {
+        setIsWakingUp(false);
+        setError(
         err instanceof Error ? err.message : "Failed to load analytics data"
       );
+      }
     } finally {
       setLoading(false);
     }
@@ -230,31 +239,11 @@ export default function AnalyticsPage() {
       ) : (
         <div className="p-6 animate-fade-up space-y-6">
 
-          {/* Error banner with Retry */}
-          {error && (
-            <div
-              className="px-4 py-3 rounded-lg text-sm flex items-center justify-between gap-4"
-              style={{
-                background: "rgba(255,59,59,0.06)",
-                border: "1px solid rgba(255,59,59,0.2)",
-                color: "#ff3b3b",
-              }}
-            >
-              <span>⚠ {error}</span>
-              <button
-                onClick={load}
-                className="text-xs px-3 py-1 rounded font-semibold flex-shrink-0"
-                style={{
-                  background: "rgba(255,59,59,0.12)",
-                  border: "1px solid rgba(255,59,59,0.3)",
-                  color: "#ff3b3b",
-                  cursor: "pointer",
-                }}
-              >
-                Retry
-              </button>
-            </div>
-          )}
+          {/* Wake-up banner — Render free-tier cold start */}
+          {isWakingUp && <WakeUpBanner onRetry={load} />}
+
+          {/* Real error banner */}
+          {error && <ErrorBanner message={error} onRetry={load} />}
 
           {/* KPI row */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">

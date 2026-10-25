@@ -3,6 +3,8 @@
 import { useEffect, useState, useCallback } from "react";
 import { apiFetch } from "../../../lib/auth";
 import TopBar from "../../../components/TopBar";
+import { WakeUpBanner, ErrorBanner } from "@/components/Banners";
+import { isBackendWakeUpError } from "@/lib/errors";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface DlpRule {
@@ -64,12 +66,14 @@ export default function PoliciesPage() {
   const [rules, setRules]       = useState<DlpRule[]>([]);
   const [loading, setLoading]   = useState(true);
   const [error, setError]       = useState("");
+  const [isWakingUp, setIsWakingUp] = useState(false);
   const [selected, setSelected] = useState<DlpRule | null>(null);
   const [catFilter, setCatFilter] = useState("ALL");
 
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
+    setIsWakingUp(false);
     try {
       const res = await apiFetch("/api/dlp-rules");
       if (!res.ok) {
@@ -79,7 +83,13 @@ export default function PoliciesPage() {
       const data: DlpRule[] = await res.json();
       setRules(data);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Failed to load DLP rules");
+      if (isBackendWakeUpError(e)) {
+        setIsWakingUp(true);
+        setError("");
+      } else {
+        setIsWakingUp(false);
+        setError(e instanceof Error ? e.message : "Failed to load DLP rules");
+      }
     } finally {
       setLoading(false);
     }
@@ -174,22 +184,11 @@ export default function PoliciesPage() {
           ))}
         </div>
 
+        {/* Wake-up banner */}
+        {isWakingUp && <WakeUpBanner onRetry={load} />}
+
         {/* Error banner */}
-        {error && (
-          <div
-            className="flex items-center justify-between px-4 py-3 rounded-xl text-sm"
-            style={{
-              background: "rgba(255,59,59,0.06)",
-              border: "1px solid rgba(255,59,59,0.2)",
-              color: "#ff3b3b",
-            }}
-          >
-            <span>⚠ {error}</span>
-            <button className="btn-ghost text-xs ml-4" onClick={load}>
-              Retry
-            </button>
-          </div>
-        )}
+        {error && <ErrorBanner message={error} onRetry={load} />}
 
         {/* Category filter tabs */}
         {!loading && !error && (

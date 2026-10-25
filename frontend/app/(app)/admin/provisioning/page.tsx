@@ -9,6 +9,8 @@ import {
 import type { ProvisioningRecord } from "@/lib/api";
 import ProvisioningModal from "@/components/ProvisioningModal";
 import { AuthError } from "@/lib/auth";
+import { WakeUpBanner, ErrorBanner } from "@/components/Banners";
+import { isBackendWakeUpError } from "@/lib/errors";
 
 export default function ProvisioningPage() {
   const { signalAuthFailure } = useAuthContext();
@@ -16,6 +18,7 @@ export default function ProvisioningPage() {
   const [records, setRecords] = useState<ProvisioningRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isWakingUp, setIsWakingUp] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [platformFilter, setPlatformFilter] = useState<string>("ALL");
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
@@ -35,7 +38,13 @@ export default function ProvisioningPage() {
         signalAuthFailure();
         return;
       }
-      setError(err instanceof Error ? err.message : "Failed to load provisioning records");
+      if (isBackendWakeUpError(err)) {
+        setIsWakingUp(true);
+        setError(null);
+      } else {
+        setIsWakingUp(false);
+        setError(err instanceof Error ? err.message : "Failed to load provisioning records");
+      }
     } finally {
       setLoading(false);
     }

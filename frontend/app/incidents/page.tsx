@@ -7,6 +7,8 @@ import type { IncidentRow } from "../../components/IncidentTable";
 import { fetchIncidents, patchIncidentStatus } from "@/lib/api";
 import { useAuthGuard } from "@/lib/useAuthGuard";
 import AiExplainPanel from "@/components/AiExplainPanel";
+import { WakeUpBanner, ErrorBanner } from "@/components/Banners";
+import { isBackendWakeUpError } from "@/lib/errors";
 
 const SEVERITY_OPTIONS = ["ALL", "LOW", "MEDIUM", "HIGH", "CRITICAL"] as const;
 const STATUS_OPTIONS   = ["ALL", "OPEN", "ACKNOWLEDGED", "RESOLVED"] as const;
@@ -32,6 +34,7 @@ export default function IncidentsPage() {
   const [incidents, setIncidents]   = useState<IncidentRow[]>([]);
   const [loading, setLoading]       = useState(true);
   const [error, setError]           = useState<string | null>(null);
+  const [isWakingUp, setIsWakingUp] = useState(false);
   const [total, setTotal]           = useState(0);
   const [page, setPage]             = useState(1);
   const [severity, setSeverity]     = useState("ALL");
@@ -42,6 +45,7 @@ export default function IncidentsPage() {
   const loadIncidents = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setIsWakingUp(false);
     try {
       const data = await fetchIncidents({
         page,
@@ -116,14 +120,11 @@ export default function IncidentsPage() {
         </div>
 
         <div className="p-6 animate-fade-up space-y-5">
+          {/* Wake-up banner */}
+          {isWakingUp && <WakeUpBanner onRetry={loadIncidents} />}
+
           {/* Error banner */}
-          {error && (
-            <div className="px-4 py-3 rounded-lg text-sm flex items-center justify-between"
-              style={{ background: "rgba(255,59,59,0.06)", border: "1px solid rgba(255,59,59,0.2)", color: "#ff3b3b" }}>
-              <span>⚠ {error}</span>
-              <button className="btn-ghost text-xs" onClick={loadIncidents}>Retry</button>
-            </div>
-          )}
+          {error && <ErrorBanner message={error} onRetry={loadIncidents} />}
 
           {/* Stats row */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">

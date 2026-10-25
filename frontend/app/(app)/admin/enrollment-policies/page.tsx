@@ -6,6 +6,8 @@ import { fetchEnrollmentPolicies } from "@/lib/api";
 import type { EnrollmentPolicy } from "@/lib/api";
 import PolicyModal from "@/components/PolicyModal";
 import { AuthError } from "@/lib/auth";
+import { WakeUpBanner, ErrorBanner } from "@/components/Banners";
+import { isBackendWakeUpError } from "@/lib/errors";
 
 export default function EnrollmentPoliciesPage() {
   const { signalAuthFailure } = useAuthContext();
@@ -13,6 +15,7 @@ export default function EnrollmentPoliciesPage() {
   const [policies, setPolicies] = useState<EnrollmentPolicy[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isWakingUp, setIsWakingUp] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [platformFilter, setPlatformFilter] = useState<string>("ALL");
   const [page, setPage] = useState(0);
@@ -29,7 +32,13 @@ export default function EnrollmentPoliciesPage() {
         signalAuthFailure();
         return;
       }
-      setError(err instanceof Error ? err.message : "Failed to load enrollment policies");
+      if (isBackendWakeUpError(err)) {
+        setIsWakingUp(true);
+        setError(null);
+      } else {
+        setIsWakingUp(false);
+        setError(err instanceof Error ? err.message : "Failed to load enrollment policies");
+      }
     } finally {
       setLoading(false);
     }

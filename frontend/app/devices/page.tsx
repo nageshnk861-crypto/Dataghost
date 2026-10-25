@@ -26,6 +26,8 @@ import type {
   ScanSession,
 } from "@/lib/api";
 import { useAuthGuard } from "@/lib/useAuthGuard";
+import { WakeUpBanner, ErrorBanner } from "@/components/Banners";
+import { isBackendWakeUpError } from "@/lib/errors";
 
 // ─── Platform Configuration ───────────────────────────────────────────────────
 type PlatformType = "Windows" | "Linux" | "macOS" | "Android" | "iOS";
@@ -103,6 +105,7 @@ export default function DevicesPage() {
   const [devices, setDevices] = useState<Device[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isWakingUp, setIsWakingUp] = useState(false);
 
   // --- Selection and Bulk Actions State ---
   const [selectedDeviceIds, setSelectedDeviceIds] = useState<string[]>([]);
@@ -222,6 +225,7 @@ export default function DevicesPage() {
   const loadDevices = useCallback(async (showSpinner = true) => {
     if (showSpinner) setLoading(true);
     setError(null);
+    setIsWakingUp(false);
     try {
       const data = await fetchDevices();
       setDevices(data);
@@ -765,22 +769,11 @@ export default function DevicesPage() {
             </div>
           )}
 
+          {/* Wake-up banner — Render free-tier cold start */}
+          {isWakingUp && <WakeUpBanner onRetry={() => loadDevices(true)} />}
+
           {/* Error Banner */}
-          {error && (
-            <div
-              className="px-4 py-3 rounded-lg text-sm flex items-center justify-between"
-              style={{
-                background: "rgba(255,59,59,0.06)",
-                border: "1px solid rgba(255,59,59,0.2)",
-                color: "#ff3b3b",
-              }}
-            >
-              <span>⚠ {error}</span>
-              <button className="btn-ghost text-xs" onClick={() => loadDevices(true)}>
-                Retry
-              </button>
-            </div>
-          )}
+          {error && <ErrorBanner message={error} onRetry={() => loadDevices(true)} />}
 
           {/* Dynamic Statistics Bar */}
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">

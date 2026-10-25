@@ -8,6 +8,8 @@ import {
   patchFindingStatus,
 } from "@/lib/api";
 import type { FindingRow, FindingStats } from "@/lib/api";
+import { WakeUpBanner, ErrorBanner } from "@/components/Banners";
+import { isBackendWakeUpError } from "@/lib/errors";
 
 const SEVERITY_OPTIONS = ["ALL", "LOW", "MEDIUM", "HIGH", "CRITICAL"] as const;
 const STATUS_OPTIONS = ["ALL", "OPEN", "ACKNOWLEDGED", "RESOLVED", "FALSE_POSITIVE"] as const;
@@ -34,6 +36,7 @@ export default function FindingsPage() {
   const [stats, setStats] = useState<FindingStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isWakingUp, setIsWakingUp] = useState(false);
   const [selectedFinding, setSelectedFinding] = useState<FindingRow | null>(null);
 
   // Filters and pagination
@@ -67,7 +70,13 @@ export default function FindingsPage() {
       setTotalPages(listRes.pages || 1);
       setStats(statsRes);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load DLP findings.");
+      if (isBackendWakeUpError(err)) {
+        setIsWakingUp(true);
+        setError(null);
+      } else {
+        setIsWakingUp(false);
+        setError(err instanceof Error ? err.message : "Failed to load DLP findings.");
+      }
     } finally {
       setLoading(false);
     }
