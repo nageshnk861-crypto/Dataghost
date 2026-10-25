@@ -3,7 +3,7 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 
-// Allow Vercel Serverless Functions up to 60 seconds (matches our proxy timeout).
+// Allow Vercel Serverless Functions up to 60 seconds (enough for Render cold start + 2 retries).
 export const maxDuration = 60;
 
 // ─── Interfaces ──────────────────────────────────────────────────────────────
@@ -411,8 +411,17 @@ async function tryProxyToBackend(
   const searchParams = req.nextUrl.search;
   const target = `${backendUrl}${fullPath}${searchParams}`;
 
-  // 8 s timeout so Vercel Serverless Function (10-15s limit on free tier) never hits FUNCTION_INVOCATION_TIMEOUT.
-  const timeoutMs = 8_000;
+  // 25s per attempt × 2 attempts = up to ~50s total.
+  // Render free-tier cold start is typically 15-40s.
+  const timeoutMs = 25_000;
+
+  // ── Wake-ping: fire a cheap GET /api/health to unfreeze the dyno before the real request.
+  // We don't await the result — it just kicks the cold-start process early.
+  const healthUrl = `${backendUrl}/api/health`;
+  const wakeController = new AbortController();
+  fetch(healthUrl, { method: "GET", signal: wakeController.signal }).catch(() => {});
+  // Give the dyno a short head-start before our first real attempt.
+  await new Promise((resolve) => setTimeout(resolve, 300));
 
   // Body must be read once before the first attempt so it can be re-sent on retry.
   const bodyBuffer =
@@ -462,20 +471,27 @@ async function tryProxyToBackend(
   // ── Attempt 1 ──
   try {
     const r = await attempt();
-    if (!isRetryable(r)) return makeProxyResponse(r);
+    if (!isRetryable(r)) {
+      wakeController.abort(); // cancel wake-ping if we got a real response
+      return makeProxyResponse(r);
+    }
   } catch {
     // Network error / timeout — fall through to retry
   }
 
-  // ── Attempt 2 ──
-  await new Promise((resolve) => setTimeout(resolve, 1000));
+  // ── Attempt 2 (after 2s backoff) ──
+  await new Promise((resolve) => setTimeout(resolve, 2000));
   try {
     const r = await attempt();
-    if (!isRetryable(r)) return makeProxyResponse(r);
+    if (!isRetryable(r)) {
+      wakeController.abort();
+      return makeProxyResponse(r);
+    }
   } catch {
     // Both attempts failed
   }
 
+  wakeController.abort();
   if (isVercel || !mockFallbackEnabled) {
     return backend502(fullPath);
   }
@@ -486,11 +502,10 @@ async function tryProxyToBackend(
 function backend502(path: string): NextResponse {
   return NextResponse.json(
     {
-      error: "Backend is waking up, please retry in a minute",
+      error: "Backend is waking up, please retry in a moment",
       message:
-        "The DataGhost backend did not respond within 60_000 ms. " +
-        "Render free-tier instances may need up to 60 seconds to wake from sleep. " +
-        "Please wait a moment and try again.",
+        "The DataGhost backend is starting up (Render free-tier cold start). " +
+        "This usually takes 15–40 seconds. Please wait a moment and click Retry.",
       path,
     },
     { status: 502 },

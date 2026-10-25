@@ -3,12 +3,11 @@
 /**
  * DataGhost – shared alert banner components.
  *
- * <WakeUpBanner onRetry={fn} />   – amber "Backend waking up" notice
+ * <WakeUpBanner onRetry={fn} />   – amber "Backend waking up" notice with auto-retry countdown
  * <ErrorBanner message={...} onRetry={fn} />  – red error banner
- *
- * Both are drop-in replacements for the repeated inline error JSX
- * found across dashboard, analytics, incidents, findings, devices, etc.
  */
+
+import { useEffect, useState } from "react";
 
 // ── WakeUpBanner ──────────────────────────────────────────────────────────────
 
@@ -17,6 +16,18 @@ interface WakeUpBannerProps {
 }
 
 export function WakeUpBanner({ onRetry }: WakeUpBannerProps) {
+  const [countdown, setCountdown] = useState(30);
+
+  // Auto-retry after countdown reaches 0
+  useEffect(() => {
+    if (countdown <= 0) {
+      onRetry();
+      return;
+    }
+    const t = setTimeout(() => setCountdown((c) => c - 1), 1000);
+    return () => clearTimeout(t);
+  }, [countdown, onRetry]);
+
   return (
     <div
       className="px-4 py-3 rounded-lg text-sm flex items-center justify-between gap-4"
@@ -27,7 +38,7 @@ export function WakeUpBanner({ onRetry }: WakeUpBannerProps) {
         color:      "#fbbf24",
       }}
     >
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 min-w-0">
         {/* Spinner */}
         <svg
           style={{ width: 16, height: 16, flexShrink: 0, animation: "spin 1s linear infinite" }}
@@ -38,14 +49,14 @@ export function WakeUpBanner({ onRetry }: WakeUpBannerProps) {
           <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" opacity="0.25" />
           <path fill="currentColor" d="M4 12a8 8 0 018-8v8z" opacity="0.75" />
         </svg>
-        <span>
-          <strong>Backend is waking up</strong> — Render free-tier instances sleep after
-          inactivity. This usually takes <strong>30–60 seconds</strong>. The page will
-          refresh automatically.
+        <span className="min-w-0">
+          <strong>Backend is waking up</strong> — Render free-tier sleeps after inactivity.
+          Usually takes <strong>15–40 seconds</strong>. Auto-retrying in{" "}
+          <strong style={{ color: "#f59e0b" }}>{countdown}s</strong>…
         </span>
       </div>
       <button
-        onClick={onRetry}
+        onClick={() => { setCountdown(30); onRetry(); }}
         className="shrink-0 text-xs font-semibold px-3 py-1.5 rounded-md"
         style={{
           background: "rgba(245,158,11,0.15)",
@@ -68,6 +79,19 @@ interface ErrorBannerProps {
 }
 
 export function ErrorBanner({ message, onRetry }: ErrorBannerProps) {
+  // If the message looks like a cold-start error, render the friendlier banner
+  const looksLikeWakeUp =
+    message.toLowerCase().includes("waking up") ||
+    message.toLowerCase().includes("starting up") ||
+    message.toLowerCase().includes("cold start") ||
+    message.toLowerCase().includes("502") ||
+    message.toLowerCase().includes("backend unavailable") ||
+    message.toLowerCase().includes("failed to fetch");
+
+  if (looksLikeWakeUp && onRetry) {
+    return <WakeUpBanner onRetry={onRetry} />;
+  }
+
   return (
     <div
       className="px-4 py-3 rounded-lg text-sm flex items-center justify-between gap-4"

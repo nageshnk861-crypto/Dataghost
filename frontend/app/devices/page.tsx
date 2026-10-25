@@ -174,7 +174,11 @@ export default function DevicesPage() {
       );
       setLatestScans(scanMap);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load devices");
+      if (isBackendWakeUpError(err)) {
+        setIsWakingUp(true);
+      } else {
+        setError(err instanceof Error ? err.message : "Failed to load devices");
+      }
     } finally {
       if (showSpinner) setLoading(false);
     }
@@ -183,7 +187,8 @@ export default function DevicesPage() {
   useEffect(() => {
     if (checked) {
       loadDevices(true);
-      const interval = setInterval(() => loadDevices(false), 8000);
+      // Poll every 20s — slow enough not to hammer a sleeping backend
+      const interval = setInterval(() => loadDevices(false), 20000);
       return () => clearInterval(interval);
     }
   }, [checked, loadDevices]);
