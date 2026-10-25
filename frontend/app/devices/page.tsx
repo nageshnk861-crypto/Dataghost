@@ -328,7 +328,10 @@ export default function DevicesPage() {
       } catch { /* QR optional */ }
 
       // ── AUTO ENROLL + SCAN via SSE (zero-touch) ──────────────────────────
-      const apiBase = process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, "") || "https://dataghost-1.onrender.com";
+      const envApi = process.env.NEXT_PUBLIC_API_URL?.trim();
+      const apiBase = (envApi && !envApi.includes("devtunnels.ms"))
+        ? envApi.replace(/\/+$/, "")
+        : "https://dataghost-1.onrender.com";
       const sseUrl = `${apiBase}/api/devices/auto-enroll-scan?code=${encodeURIComponent(res.enrollment_code)}`;
       setAutoScanPhase("enrolling");
       const es = new EventSource(sseUrl);

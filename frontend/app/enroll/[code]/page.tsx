@@ -29,7 +29,13 @@ interface FindingAlert {
 function getApiBase(): string {
   if (typeof window === "undefined") return "";
   const env = process.env.NEXT_PUBLIC_API_URL?.trim();
-  if (env) return env.replace(/\/+$/, "");
+  const currentHost = window.location.hostname;
+  const isDeployedHost = currentHost.endsWith(".vercel.app") || currentHost.endsWith(".render.com") || (!currentHost.includes("localhost") && !currentHost.includes("127.0.0.1"));
+  
+  // If deployed or env contains old devtunnels URL, use official deployed Render backend
+  if (env && !env.includes("devtunnels.ms")) {
+    return env.replace(/\/+$/, "");
+  }
   return "https://dataghost-1.onrender.com";
 }
 
