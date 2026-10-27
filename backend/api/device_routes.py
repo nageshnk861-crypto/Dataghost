@@ -1290,26 +1290,27 @@ def auto_enroll_and_scan_stream(
                         content = fh.read()
 
                 result = _process_scan(
-                    device=device,
-                    filename=item["filename"],
                     content=content,
+                    filename=item["filename"],
                     destination="INTERNAL",
                     action="SCAN",
-                    classification=None,
+                    device_id=device.device_id,
                     db=db,
+                    user_id=device.user_id,
+                    organization_id=device.organization_id or "default-org",
                 )
 
                 # Emit findings in real time
-                for finding in result.get("findings", []):
-                    sev = finding.get("severity", "LOW")
+                for finding in (result.findings or []):
+                    sev = finding.severity
                     if sev in ("HIGH", "CRITICAL"):
                         findings_count += 1
                         yield _sse({
                             "type": "finding",
                             "filename": item["filename"],
                             "severity": sev,
-                            "category": finding.get("category", "SENSITIVE_DATA"),
-                            "description": finding.get("description", "Sensitive data detected"),
+                            "category": finding.category,
+                            "description": f"{finding.rule} detected in {item['filename']}",
                         })
 
                         # Create incident for high/critical
@@ -1320,8 +1321,8 @@ def auto_enroll_and_scan_stream(
                             user_id=device.user_id,
                             organization_id=device.organization_id or "default-org",
                             filename=item["filename"],
-                            classification=finding.get("category", "SENSITIVE_DATA"),
-                            risk_score=finding.get("risk_score", 70),
+                            classification=finding.category or "SENSITIVE_DATA",
+                            risk_score=result.risk_score or 70,
                             severity=sev,
                             action_taken="LOGGED",
                             action="SCAN",

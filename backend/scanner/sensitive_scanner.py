@@ -49,9 +49,9 @@ class SensitiveScanner:
                 if not matches:
                     continue
 
-            # Special logic for bank_account: only count matches that have a
-            # financial keyword within ±200 characters.
-            if name == "bank_account" and context_kw:
+            # Context validation: only count matches that have a
+            # context keyword within ±200 characters if required by the rule.
+            if context_kw:
                 validated = []
                 for m in matches:
                     start = max(0, m.start() - _BANK_CONTEXT_WINDOW)

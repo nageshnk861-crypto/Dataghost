@@ -144,6 +144,7 @@ def _process_scan(
     #     Run first so higher-confidence findings take precedence.
     masked_findings = []
     seen_offsets: set[int] = set()
+    seen_spans: list[tuple[int, int]] = []
     try:
         registry = get_registry()
         detector_findings = registry.scan(text or "", filename=filename)
@@ -171,6 +172,7 @@ def _process_scan(
                     )
                 )
             seen_offsets.add(df.char_start)
+            seen_spans.append((df.char_start, df.char_end))
     except Exception as _det_exc:
         logger.warning("Detector registry error (non-fatal): %s", _det_exc)
 
@@ -178,18 +180,22 @@ def _process_scan(
     scan_result = dlp_scan_text(text)
     raw_findings = scan_result["findings"]
 
-    # Merge: skip DLP findings that overlap with a detector finding (same offset)
+    # Merge: skip DLP findings that overlap with a detector finding (same offset or overlapping span)
     for f in raw_findings:
-        if f["start"] in seen_offsets:
+        f_start = f.get("start", 0)
+        f_end = f.get("end", 0)
+        if f_start in seen_offsets:
             continue  # already covered by a higher-confidence detector finding
+        if any(max(start, f_start) < min(end, f_end) for start, end in seen_spans):
+            continue  # overlaps with an existing detector finding
         masked_match = mask_sensitive_text(f["matched_text"], f["rule"])
         masked_findings.append(
             ScanFinding(
                 rule=f["rule"],
                 category=f["category"],
                 severity=f["severity"],
-                start=f["start"],
-                end=f["end"],
+                start=f_start,
+                end=f_end,
                 matched_text=masked_match,
             )
         )
@@ -210,6 +216,15 @@ def _process_scan(
             confidence = 1.0
     else:
         classification = classification.upper()
+
+    # Align classification floor based on detected findings if not explicitly overridden
+    if not classification_override and masked_findings:
+        if any(mf.severity == "CRITICAL" for mf in masked_findings):
+            classification = "RESTRICTED"
+        elif any(mf.severity == "HIGH" for mf in masked_findings) and classification in ("PUBLIC", "INTERNAL"):
+            classification = "CONFIDENTIAL"
+        elif any(mf.severity == "MEDIUM" for mf in masked_findings) and classification == "PUBLIC":
+            classification = "INTERNAL"
 
     # 5. Determine effective file size
     effective_size = file_size_override if file_size_override is not None else len(content)

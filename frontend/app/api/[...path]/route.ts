@@ -277,6 +277,29 @@ const DLP_RULES: DlpRule[] = [
   },
 ];
 
+function luhnCheck(numStr: string): boolean {
+  const digits = numStr.replace(/\D/g, "").split("").map(Number);
+  if (digits.length < 13 || digits.length > 19) return false;
+  let sum = 0;
+  let shouldDouble = false;
+  for (let i = digits.length - 1; i >= 0; i--) {
+    let d = digits[i];
+    if (shouldDouble) {
+      d *= 2;
+      if (d > 9) d -= 9;
+    }
+    sum += d;
+    shouldDouble = !shouldDouble;
+  }
+  return sum % 10 === 0;
+}
+
+function isPlaceholderPassword(val: string): boolean {
+  const stripped = val.replace(/^(?:password|passwd|pwd|secret|credential|auth_pass|db_pass)\s*[:=]\s*["']?/i, "").replace(/["']?$/, "").trim().toLowerCase();
+  const placeholders = ["password", "your_password", "changeme", "admin", "secret", "test", "123456", "12345678", "placeholder", "xxx", "********"];
+  return placeholders.includes(stripped) || stripped.length < 4;
+}
+
 function maskMatch(str: string, rule: string): string {
   if (!str) return "";
   if (rule === "EMAIL_ADDRESS") {
@@ -295,6 +318,22 @@ function maskMatch(str: string, rule: string): string {
   if (rule === "IP_ADDRESS") {
     const parts = str.split(".");
     if (parts.length === 4) return `${parts[0]}.${parts[1]}.***.***`;
+  }
+  if (rule === "PASSWORD_FIELD") {
+    return str.replace(/([:=]\s*["']?)(.*)(["']?)$/, "$1********$3");
+  }
+  if (rule === "BANK_ACCOUNT") {
+    return str.replace(/\d{4,}/g, (d) => `******${d.slice(-4)}`);
+  }
+  if (rule === "PCI_CREDIT_CARD") {
+    const digits = str.replace(/\D/g, "");
+    return `************${digits.slice(-4)}`;
+  }
+  if (rule === "US_SSN") {
+    return `***-**-${str.replace(/\D/g, "").slice(-4)}`;
+  }
+  if (rule === "AADHAAR_CARD") {
+    return `****-****-${str.replace(/\D/g, "").slice(-4)}`;
   }
   if (str.length > 8) {
     return `${str.slice(0, 4)}***${str.slice(-4)}`;
@@ -315,9 +354,14 @@ function analyzeTextDlp(text: string, filename: string, destination: string = "L
   for (const rule of DLP_RULES) {
     const matches = text.match(rule.pattern);
     if (matches && matches.length > 0) {
-      const validMatches = rule.name === "IP_ADDRESS"
-        ? matches.filter((m) => m !== "0.0.0.0" && m !== "255.255.255.255" && !m.startsWith("127."))
-        : matches;
+      let validMatches = matches;
+      if (rule.name === "PCI_CREDIT_CARD") {
+        validMatches = matches.filter(luhnCheck);
+      } else if (rule.name === "IP_ADDRESS") {
+        validMatches = matches.filter((m) => m !== "0.0.0.0" && m !== "255.255.255.255" && !m.startsWith("127."));
+      } else if (rule.name === "PASSWORD_FIELD") {
+        validMatches = matches.filter((m) => !isPlaceholderPassword(m));
+      }
 
       if (validMatches.length > 0) {
         const unique = Array.from(new Set(validMatches));
@@ -1165,14 +1209,15 @@ export async function POST(request: NextRequest, { params }: { params: { path: s
 
   // ── Text & File DLP Scanner (/api/scan/text, /api/scan/file, /api/scan) ──
   if (pathStr === "/scan/text" || pathStr === "/scan" || pathStr === "/scan/file") {
-    const text = body.text || body.content || "";
-    const filename = body.filename || "scan_artifact.dat";
+    const text = body.text || body.content || uploadedFile?.text || "";
+    const filename = body.filename || uploadedFile?.name || "scan_artifact.dat";
     const dest = body.destination || "EXTERNAL";
+    const effectiveSize = uploadedFile?.size || Buffer.byteLength(text, "utf-8");
     const res = analyzeTextDlp(text, filename, dest);
 
     const scanId = `scan-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
     const fileHash = crypto.createHash("sha256").update(text).digest("hex");
-    const bytesInspected = Buffer.byteLength(text, "utf-8");
+    const bytesInspected = effectiveSize;
 
     let incidentId: string | null = null;
     if (res.risk_score >= 30) {
@@ -1229,6 +1274,76 @@ export async function POST(request: NextRequest, { params }: { params: { path: s
       incident_id: incidentId,
       timestamp: new Date().toISOString(),
     });
+  }
+
+  // ── Multi-File Upload Scanner (/api/v1/upload, /api/upload) ──
+  if (pathStr === "/v1/upload" || pathStr === "/upload") {
+    const filesList = uploadedFiles.length > 0 ? uploadedFiles : (uploadedFile ? [uploadedFile] : []);
+    const dest = body.destination || "EXTERNAL";
+    const results = filesList.map((fileItem) => {
+      const text = fileItem.text || "";
+      const filename = fileItem.name || "uploaded_file.txt";
+      const res = analyzeTextDlp(text, filename, dest);
+      const scanId = `scan-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+      const fileHash = crypto.createHash("sha256").update(text).digest("hex");
+      const bytesInspected = fileItem.size || Buffer.byteLength(text, "utf-8");
+
+      let incidentId: string | null = null;
+      if (res.risk_score >= 30) {
+        incidentId = `DG-${new Date().getFullYear()}-${String(incidentsStore.length + 1).padStart(4, "0")}`;
+        incidentsStore.unshift({
+          id: incidentsStore.length + 1,
+          incident_id: incidentId,
+          user: currentUser,
+          filename,
+          file_hash: fileHash,
+          classification: res.classification,
+          risk_score: res.risk_score,
+          severity: res.severity,
+          status: "OPEN",
+          destination: dest.toUpperCase(),
+          action: body.action || "UPLOAD",
+          action_taken: res.action_taken,
+          findings: res.findings,
+          findings_json: JSON.stringify(res.findings),
+          device_id: body.device_id || "WEB-CONSOLE",
+          created_at: new Date().toISOString(),
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      return {
+        scan_id: scanId,
+        filename,
+        file_hash: fileHash,
+        file_size: bytesInspected,
+        bytes_inspected: bytesInspected,
+        scan_status: "COMPLETED",
+        is_simulated: false,
+        score: res.risk_score,
+        risk_score: res.risk_score,
+        decision_score: parseFloat((res.risk_score / 100).toFixed(4)),
+        severity: res.severity,
+        classification: res.classification,
+        recommended_action: res.action_taken === "BLOCKED" ? "BLOCK" : res.action_taken === "ALERTED" ? "ALERT" : "ALLOW",
+        action_taken: res.action_taken,
+        total_findings: res.findings.length,
+        findings: res.findings.map((f) => ({
+          rule: f.rule,
+          rule_name: f.rule,
+          category: f.category,
+          severity: f.severity,
+          matched_text: f.matched_text,
+          sample_match: f.matched_text,
+          matches_count: f.matches_count ?? 1,
+          detail: f.detail,
+        })),
+        incident_id: incidentId,
+        timestamp: new Date().toISOString(),
+      };
+    });
+
+    return NextResponse.json(results);
   }
 
   return NextResponse.json({ success: true, timestamp: new Date().toISOString() });

@@ -7,15 +7,16 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Maximum characters returned from any single file.
-MAX_TEXT_LENGTH = 50_000
+# Maximum characters returned from any single file (1 MB text window).
+MAX_TEXT_LENGTH = 1_000_000
 
 # Extensions treated as plain text.
 _TEXT_EXTENSIONS = {
     ".txt", ".md", ".py", ".js", ".ts", ".json", ".xml",
     ".yaml", ".yml", ".env", ".cfg", ".ini", ".log", ".csv",
-    ".html", ".htm", ".sh", ".bat", ".ps1", ".rb", ".go",
-    ".java", ".c", ".cpp", ".h",
+    ".html", ".htm", ".sh", ".bash", ".bat", ".ps1", ".rb", ".go",
+    ".java", ".c", ".cpp", ".h", ".sql", ".conf", ".toml",
+    ".properties", ".proto", ".key", ".pem", ".crt",
 }
 
 
@@ -136,6 +137,38 @@ def _extract_zip(content: bytes) -> str:
     return "\n".join(parts)
 
 
+def _extract_tar_gz(content: bytes, filename: str) -> str:
+    """Extract and aggregate text from files inside a TAR or GZ archive."""
+    import tarfile
+    import gzip
+    parts = []
+    try:
+        with tarfile.open(fileobj=io.BytesIO(content)) as tar:
+            for member in tar.getmembers():
+                if not member.isfile() or member.size > 2 * 1024 * 1024:
+                    continue
+                inner_ext = _ext(member.name)
+                if inner_ext in _TEXT_EXTENSIONS or inner_ext in (".pdf", ".docx", ".xlsx", ".pptx"):
+                    f = tar.extractfile(member)
+                    if f:
+                        inner_bytes = f.read()
+                        parts.append(f"--- File: {member.name} ---")
+                        parts.append(extract_text(inner_bytes, member.name))
+        if parts:
+            return "\n".join(parts)
+    except Exception:
+        pass
+
+    # Fallback for standalone .gz files
+    try:
+        decompressed = gzip.decompress(content)
+        inner_name = filename[:-3] if filename.lower().endswith(".gz") else filename
+        return extract_text(decompressed, inner_name)
+    except Exception as exc:
+        logger.warning("TAR/GZ extraction failed: %s", exc)
+        return ""
+
+
 def extract_text(file_content: bytes, filename: str) -> str:
     """
     Extract plain text from file bytes.
@@ -166,6 +199,8 @@ def extract_text(file_content: bytes, filename: str) -> str:
         text = _extract_pptx(file_content)
     elif ext == ".zip":
         text = _extract_zip(file_content)
+    elif ext in (".tar", ".gz", ".tgz"):
+        text = _extract_tar_gz(file_content, filename)
     else:
         # Best-effort UTF-8 decode for any other extension.
         try:
