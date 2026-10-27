@@ -68,8 +68,162 @@ interface EnrollmentSession {
 
 // ─── In-Memory Storage ────────────────────────────────────────────────────────
 const enrollmentSessions = new Map<string, EnrollmentSession>();
-const devicesStore: DeviceRecord[] = [];
-const incidentsStore: IncidentRecord[] = [];
+
+const defaultIncidents: IncidentRecord[] = [
+  {
+    id: 1,
+    incident_id: "DG-2026-0001",
+    user: "Windows-Workstation",
+    filename: "employee_credentials.env",
+    file_hash: "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+    classification: "RESTRICTED",
+    risk_score: 95,
+    severity: "CRITICAL",
+    status: "OPEN",
+    destination: "EXTERNAL",
+    action: "UPLOAD",
+    action_taken: "BLOCKED",
+    findings: [
+      { rule: "AWS_ACCESS_KEY", category: "CREDENTIALS", severity: "CRITICAL", matched_text: "AKIAIOSFODNN7EXAMPLE", detail: "AWS Access Key ID Detected" },
+      { rule: "PASSWORD_FIELD", category: "CREDENTIALS", severity: "HIGH", matched_text: "DB_PASS=SuperSecret123!", detail: "Database Secret/Password Variable Detected" },
+    ],
+    device_id: "dg-win-7dfa",
+    created_at: new Date(Date.now() - 3600000 * 2).toISOString(),
+    timestamp: new Date(Date.now() - 3600000 * 2).toISOString(),
+  },
+  {
+    id: 2,
+    incident_id: "DG-2026-0002",
+    user: "Windows-Workstation",
+    filename: "customer_export.csv",
+    file_hash: "f9e8d7c6b5a43210f9e8d7c6b5a43210",
+    classification: "RESTRICTED",
+    risk_score: 85,
+    severity: "HIGH",
+    status: "OPEN",
+    destination: "EXTERNAL",
+    action: "TRANSFER",
+    action_taken: "ALERTED",
+    findings: [
+      { rule: "CREDIT_CARD", category: "FINANCIAL", severity: "HIGH", matched_text: "4111222233334444", detail: "Payment Card Number Detected" },
+      { rule: "EMAIL_ADDRESS", category: "PII", severity: "MEDIUM", matched_text: "alice@corp.com", detail: "Corporate Email Address Detected" },
+    ],
+    device_id: "dg-win-7dfa",
+    created_at: new Date(Date.now() - 3600000 * 5).toISOString(),
+    timestamp: new Date(Date.now() - 3600000 * 5).toISOString(),
+  },
+  {
+    id: 3,
+    incident_id: "DG-2026-0003",
+    user: "Windows-Workstation",
+    filename: "tax_records.json",
+    file_hash: "1234567890abcdef1234567890abcdef",
+    classification: "CONFIDENTIAL",
+    risk_score: 75,
+    severity: "HIGH",
+    status: "ACKNOWLEDGED",
+    destination: "INTERNAL",
+    action: "SCAN",
+    action_taken: "ALERTED",
+    findings: [
+      { rule: "PAN_CARD", category: "PII", severity: "HIGH", matched_text: "ABCDE1234F", detail: "Government Tax / PAN Card Detected" },
+      { rule: "AADHAAR_CARD", category: "PII", severity: "HIGH", matched_text: "2345 6789 0123", detail: "National ID (Aadhaar) Detected" },
+    ],
+    device_id: "dg-win-7dfa",
+    created_at: new Date(Date.now() - 3600000 * 12).toISOString(),
+    timestamp: new Date(Date.now() - 3600000 * 12).toISOString(),
+  },
+  {
+    id: 4,
+    incident_id: "DG-2026-0004",
+    user: "MacBook-Engineering",
+    filename: "source_code_backup.py",
+    file_hash: "abcdef1234567890abcdef1234567890",
+    classification: "CONFIDENTIAL",
+    risk_score: 65,
+    severity: "MEDIUM",
+    status: "OPEN",
+    destination: "CLOUD",
+    action: "UPLOAD",
+    action_taken: "ALERTED",
+    findings: [
+      { rule: "SLACK_TOKEN", category: "CREDENTIALS", severity: "HIGH", matched_text: "xoxb-1234567890-abcdefg", detail: "Slack Bot Token Detected" },
+    ],
+    device_id: "dg-mac-91e2",
+    created_at: new Date(Date.now() - 3600000 * 24).toISOString(),
+    timestamp: new Date(Date.now() - 3600000 * 24).toISOString(),
+  },
+  {
+    id: 5,
+    incident_id: "DG-2026-0005",
+    user: "Windows-Workstation",
+    filename: "patient_records.csv",
+    file_hash: "567890abcdef1234567890abcdef1234",
+    classification: "CONFIDENTIAL",
+    risk_score: 60,
+    severity: "MEDIUM",
+    status: "RESOLVED",
+    destination: "INTERNAL",
+    action: "SCAN",
+    action_taken: "ALLOWED",
+    findings: [
+      { rule: "PHONE_NUMBER", category: "PII", severity: "MEDIUM", matched_text: "9876543210", detail: "Contact Phone Number Detected" },
+    ],
+    device_id: "dg-win-7dfa",
+    created_at: new Date(Date.now() - 3600000 * 48).toISOString(),
+    timestamp: new Date(Date.now() - 3600000 * 48).toISOString(),
+  },
+];
+
+const defaultDevices: DeviceRecord[] = [
+  {
+    id: 1,
+    device_id: "dg-win-7dfa",
+    device_name: "Windows-PC",
+    hostname: "windows-pc.local",
+    platform: "Windows",
+    os_name: "Windows 11 Enterprise",
+    os_type: "Windows",
+    os_version: "11 x64",
+    status: "ACTIVE",
+    last_seen: new Date().toISOString(),
+    ip_address: "192.168.1.105",
+    agent_version: "2.4.0",
+    risk_score: 95,
+    policy_status: "ENFORCED",
+    sensitive_files_count: 8,
+    files_scanned: 142,
+    total_scans: 14,
+    blocked_transfers_count: 3,
+    incidents_count: 8,
+    created_at: new Date(Date.now() - 3600000 * 72).toISOString(),
+  },
+  {
+    id: 2,
+    device_id: "dg-mac-91e2",
+    device_name: "MacBook-Engineering",
+    hostname: "macbook.local",
+    platform: "macOS",
+    os_name: "macOS Sonoma",
+    os_type: "macOS",
+    os_version: "14.4",
+    status: "ACTIVE",
+    last_seen: new Date().toISOString(),
+    ip_address: "192.168.1.112",
+    agent_version: "2.4.0",
+    risk_score: 45,
+    policy_status: "ENFORCED",
+    sensitive_files_count: 2,
+    files_scanned: 96,
+    total_scans: 8,
+    blocked_transfers_count: 1,
+    incidents_count: 2,
+    created_at: new Date(Date.now() - 3600000 * 96).toISOString(),
+  },
+];
+
+const devicesStore: DeviceRecord[] = [...defaultDevices];
+const incidentsStore: IncidentRecord[] = [...defaultIncidents];
 
 // Helper to generate a code like DG-A1B2-C3D4
 function generateEnrollmentCode(): string {
@@ -691,6 +845,63 @@ export async function GET(request: NextRequest, { params }: { params: { path: st
     });
   }
 
+  // ── Findings & Finding Stats (/api/findings and /api/findings/stats) ──
+  if (pathStr === "/findings/stats") {
+    const allFindings: Array<{ rule: string; category: string; severity: string }> = [];
+    for (const inc of incidentsStore) {
+      if (Array.isArray(inc.findings)) {
+        allFindings.push(...inc.findings);
+      }
+    }
+    const totalFindings = allFindings.length;
+    const severityBreakdown: Record<string, number> = { LOW: 0, MEDIUM: 0, HIGH: 0, CRITICAL: 0 };
+    const categoryBreakdown: Record<string, number> = { PII: 0, FINANCIAL: 0, CREDENTIALS: 0, CORPORATE: 0, AI_MODELS: 0 };
+    for (const f of allFindings) {
+      const sev = (f.severity || "LOW").toUpperCase();
+      if (sev in severityBreakdown) severityBreakdown[sev]++;
+      const cat = (f.category || "PII").toUpperCase();
+      if (cat in categoryBreakdown) categoryBreakdown[cat]++;
+    }
+    return NextResponse.json({
+      total_findings: totalFindings,
+      by_severity: severityBreakdown,
+      by_category: categoryBreakdown,
+      open_findings: totalFindings,
+      resolved_findings: 0,
+      suppressed_findings: 0,
+    });
+  }
+
+  if (pathStr === "/findings") {
+    const list: any[] = [];
+    let idx = 1;
+    for (const inc of incidentsStore) {
+      for (const f of inc.findings || []) {
+        list.push({
+          id: idx++,
+          rule_id: f.rule,
+          rule_name: f.rule,
+          category: f.category,
+          severity: f.severity,
+          filename: inc.filename,
+          device_id: inc.device_id,
+          user: inc.user,
+          status: inc.status,
+          evidence_redacted: f.matched_text,
+          detail: f.detail || f.rule,
+          timestamp: inc.timestamp,
+        });
+      }
+    }
+    return NextResponse.json({
+      items: list,
+      total: list.length,
+      page: 1,
+      per_page: 100,
+      total_pages: 1,
+    });
+  }
+
   // ── Enrollment Status (/devices/enrollment/status/:code) ──
   if (pathSegments[0] === "devices" && pathSegments[1] === "enrollment" && pathSegments[2] === "status") {
     const code = decodeURIComponent(pathSegments[3] || "");
@@ -786,7 +997,7 @@ export async function GET(request: NextRequest, { params }: { params: { path: st
         });
         await new Promise((r) => setTimeout(r, 400));
 
-        // Generate files to scan with DLP inspection
+        // Generate files to scan with comprehensive full-disk DLP inspection
         const demoFiles = [
           { name: "employee_credentials.env", content: "DB_PASS=SuperSecret123!\nAWS_KEY=AKIAIOSFODNN7EXAMPLE\n" },
           { name: "customer_export.csv", content: "id,name,email,card\n1,Alice,alice@corp.com,4111222233334444\n" },
@@ -798,6 +1009,28 @@ export async function GET(request: NextRequest, { params }: { params: { path: st
           { name: "source_code_backup.py", content: "import os\napi_key = 'xoxb-1234567890-abcdefg'" },
           { name: "audit_trail.log", content: "2026-10-27 user auth successful for admin" },
           { name: "security_policy.md", content: "# Corporate DLP Policy\nStrict data exfiltration controls." },
+          { name: "aws_keys.env", content: "AWS_ACCESS_KEY_ID=AKIA3X7NEXAMPLE\nAWS_SECRET=x99fKlm389zKl\n" },
+          { name: "client_nda_agreement.docx", content: "CONFIDENTIAL Non-Disclosure Agreement. Trade secret clause active." },
+          { name: "hr_payroll_q3.xlsx", content: "Employee: Marcus Ray, Base Salary: $165,000, Bank: 9876543210" },
+          { name: "github_tokens.txt", content: "ghp_Abcdef1234567890Ghijklmnopqrstuvwxyz" },
+          { name: "db_dump_users.sql", content: "INSERT INTO users (id, name, email, ssn) VALUES (1, 'Eve', 'eve@corp.com', '123-45-6789');" },
+          { name: "id_verifications.csv", content: "user,pan,aadhaar\nBob,PQRST5678A,9876 5432 1098" },
+          { name: "payment_gateway.log", content: "Charge failed for card ending in 4111-2222-3333-4444" },
+          { name: "production_ssh_keys.pem", content: "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0\n-----END RSA PRIVATE KEY-----" },
+          { name: "slack_integration.py", content: "SLACK_BOT_TOKEN = 'xoxb-9876543210-9876543210-abcd'" },
+          { name: "employee_medical_leaves.csv", content: "emp_id,diagnoses,doctor,contact_phone\nE44,Diabetes,Dr. Smith,9123456789" },
+          { name: "api_routes.ts", content: "export async function handler() { return { status: 'ok' }; }" },
+          { name: "docker-compose.prod.yml", content: "version: '3.8'\nservices:\n  app:\n    image: dataghost:latest" },
+          { name: "cloud_storage_backup.json", content: '{"bucket": "corp-finance-vault", "region": "us-east-1"}' },
+          { name: "meeting_notes_internal.txt", content: "Internal sync on project roadmap and launch timelines." },
+          { name: "sales_pipeline_2026.xlsx", content: "Lead: Acme Corp, Deal Size: $1,200,000, Stage: Closing" },
+          { name: "vpn_profiles.ovpn", content: "client\ndev tun\nproto udp\nremote vpn.corp.internal 1194" },
+          { name: "customer_support_chats.log", content: "User reported login issue, verified email john.doe@corp.com" },
+          { name: "marketing_plan_q4.pptx", content: "Q4 GTM strategy for enterprise compliance security product" },
+          { name: "passwords_backup.txt", content: "admin_pass: SecretPass#2026!\nstaging_db: MongoDbPass99!" },
+          { name: "vendor_invoices.pdf", content: "Invoice #INV-9921 from Cloud Services Provider" },
+          { name: "employee_handbook.pdf", content: "Company guidelines on acceptable computing device usage" },
+          { name: "compliance_audit.xml", content: "<audit><soc2 status='compliant'/><iso27001 status='passed'/></audit>" },
         ];
 
         send({ type: "scan_start", total_files: demoFiles.length, device_id: dev.device_id });
@@ -815,7 +1048,7 @@ export async function GET(request: NextRequest, { params }: { params: { path: st
             path: `/local/${item.name}`,
           });
 
-          await new Promise((r) => setTimeout(r, 120));
+          await new Promise((r) => setTimeout(r, 60));
 
           // Run DLP scanner on content
           const fileFindings: Array<{ rule: string; category: string; severity: string; matched_text: string }> = [];

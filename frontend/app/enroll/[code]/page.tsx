@@ -437,7 +437,7 @@ export default function EnrollPage() {
   }, [logLines]);
 
   const pct = totalFiles > 0 ? Math.round((fileIndex / totalFiles) * 100) : 0;
-  const dashboardUrl = "https://dataghost-five.vercel.app/devices";
+  const dashboardUrl = "/dashboard";
 
   // ─── Render ───────────────────────────────────────────────────────────────
   return (
@@ -677,7 +677,7 @@ export default function EnrollPage() {
             )}
 
             {/* Scan Real Device Files Button */}
-            <div className="pt-2">
+            <div className="pt-2 space-y-2">
               <input
                 type="file"
                 multiple
@@ -685,11 +685,24 @@ export default function EnrollPage() {
                 onChange={handleManualScanFiles}
                 className="hidden"
               />
+              <input
+                type="file"
+                ref={(el) => {
+                  if (el) {
+                    el.setAttribute("webkitdirectory", "");
+                    el.setAttribute("directory", "");
+                  }
+                }}
+                multiple
+                id="folder-scan-input"
+                onChange={handleManualScanFiles}
+                className="hidden"
+              />
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
                 disabled={isManualScanning}
-                className="w-full py-2.5 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all mb-2 cursor-pointer hover:brightness-110 active:scale-98"
+                className="w-full py-2.5 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer hover:brightness-110 active:scale-98"
                 style={{
                   background: "rgba(0,212,255,0.12)",
                   border: "1px solid rgba(0,212,255,0.4)",
@@ -697,8 +710,23 @@ export default function EnrollPage() {
                   boxShadow: "0 0 12px rgba(0,212,255,0.15)",
                 }}
               >
+                <span>📄</span>
+                <span>{isManualScanning ? "Scanning Files…" : "Pick & Scan Files from Device"}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => document.getElementById("folder-scan-input")?.click()}
+                disabled={isManualScanning}
+                className="w-full py-2.5 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer hover:brightness-110 active:scale-98"
+                style={{
+                  background: "rgba(52,208,88,0.12)",
+                  border: "1px solid rgba(52,208,88,0.4)",
+                  color: "#34d058",
+                  boxShadow: "0 0 12px rgba(52,208,88,0.15)",
+                }}
+              >
                 <span>📁</span>
-                <span>{isManualScanning ? "Scanning Device Files…" : "Scan Real Files from this Device (Upload / Pick)"}</span>
+                <span>{isManualScanning ? "Scanning Folder…" : "Scan Entire Folder from Device (All Files)"}</span>
               </button>
             </div>
 
