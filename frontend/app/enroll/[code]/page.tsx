@@ -29,14 +29,11 @@ interface FindingAlert {
 function getApiBase(): string {
   if (typeof window === "undefined") return "";
   const env = process.env.NEXT_PUBLIC_API_URL?.trim();
-  const currentHost = window.location.hostname;
-  const isDeployedHost = currentHost.endsWith(".vercel.app") || currentHost.endsWith(".render.com") || (!currentHost.includes("localhost") && !currentHost.includes("127.0.0.1"));
-  
-  // If deployed or env contains old devtunnels URL, use official deployed Render backend
   if (env && !env.includes("devtunnels.ms")) {
     return env.replace(/\/+$/, "");
   }
-  return "https://dataghost-1.onrender.com";
+  // Use relative same-origin /api so it seamlessly proxies or runs via Edge fallback
+  return "";
 }
 
 function severityColor(sev: string) {
@@ -286,128 +283,138 @@ export default function EnrollPage() {
       }
     }
 
-    const url = `${apiBase}/api/devices/auto-enroll-scan?code=${encodeURIComponent(code)}&platform=${encodeURIComponent(detectedPlatform)}${detectedDeviceName ? `&device_name=${encodeURIComponent(detectedDeviceName)}` : ""}`;
-    addLog(`[${new Date().toLocaleTimeString()}] Connecting as ${detectedPlatform} device…`);
+    const sseUrl = `${apiBase}/api/devices/auto-enroll-scan?code=${encodeURIComponent(code)}&platform=${encodeURIComponent(detectedPlatform)}${detectedDeviceName ? `&device_name=${encodeURIComponent(detectedDeviceName)}` : ""}`;
 
     let retryTimer: NodeJS.Timeout | null = null;
-    let attempts = 0;
-    const maxAttempts = 6;
+    let cancelled = false;
 
-    const connect = () => {
-      attempts++;
-      const es = new EventSource(url);
-      evtRef.current = es;
+    // ── Connect directly to SSE stream ──────────
+    const warmAndConnect = async () => {
+      addLog(`[${new Date().toLocaleTimeString()}] Connecting as ${detectedPlatform} device…`);
+      let attempts = 0;
+      const maxAttempts = 5;
 
-      es.onmessage = (ev) => {
-        let data: SseEvent;
-        try { data = JSON.parse(ev.data); } catch { return; }
+      const connect = () => {
+        if (cancelled) return;
+        attempts++;
+        const es = new EventSource(sseUrl);
+        evtRef.current = es;
 
-        const ts = new Date().toLocaleTimeString();
+        es.onmessage = (ev) => {
+          let data: SseEvent;
+          try { data = JSON.parse(ev.data); } catch { return; }
 
-        switch (data.type) {
-          case "connected":
-            addLog(`[${ts}] ✓ Connected to server`);
-            setPhase("enrolling");
-            break;
+          const ts = new Date().toLocaleTimeString();
 
-          case "enrolling":
-            addLog(`[${ts}] ⟳ Validating code ${data.enrollment_code}…`);
-            setPhase("enrolling");
-            break;
+          switch (data.type) {
+            case "connected":
+              addLog(`[${ts}] ✓ Connected to server`);
+              setPhase("enrolling");
+              break;
 
-          case "enrolled":
-          case "already_enrolled": {
-            const did = String(data.device_id ?? "");
-            const dn  = String(data.device_name ?? "");
-            const plt = String(data.platform ?? "");
-            setDeviceId(did);
-            setDeviceName(dn);
-            setPlatform(plt);
-            addLog(`[${ts}] ✓ Enrolled — ${dn} (${did})`);
-            setPhase("enrolled");
-            break;
+            case "enrolling":
+              addLog(`[${ts}] ⟳ Validating code ${data.enrollment_code}…`);
+              setPhase("enrolling");
+              break;
+
+            case "enrolled":
+            case "already_enrolled": {
+              const did = String(data.device_id ?? "");
+              const dn  = String(data.device_name ?? "");
+              const plt = String(data.platform ?? "");
+              setDeviceId(did);
+              setDeviceName(dn);
+              setPlatform(plt);
+              addLog(`[${ts}] ✓ Enrolled — ${dn} (${did})`);
+              setPhase("enrolled");
+              break;
+            }
+
+            case "waiting_for_agent": {
+              addLog(`[${ts}] ⏳ Waiting for DataGhost Agent to connect`);
+              break;
+            }
+
+            case "scan_start": {
+              const tot = Number(data.total_files ?? 0);
+              setTotalFiles(tot);
+              addLog(`[${ts}] 🔍 Scan started — File 1 to File ${tot}`);
+              setPhase("scanning");
+              break;
+            }
+
+            case "scanning_file": {
+              const fn  = String(data.filename ?? "");
+              const idx = Number(data.index ?? 0);
+              const tot = Number(data.total ?? 0);
+              setCurrentFile(fn);
+              setFileIndex(idx);
+              setTotalFiles(tot);
+              if (idx % 10 === 0 || idx === 1 || idx === tot)
+                addLog(`[${ts}] [${idx}/${tot}] ${fn}`);
+              break;
+            }
+
+            case "finding": {
+              const f: FindingAlert = {
+                filename: String(data.filename ?? ""),
+                severity: String(data.severity ?? "LOW"),
+                category: String(data.category ?? ""),
+                description: String(data.description ?? ""),
+              };
+              setFindings((prev) => [f, ...prev].slice(0, 50));
+              addLog(`[${ts}] ⚠ ${f.severity}: ${f.filename} — ${f.category}`);
+              break;
+            }
+
+            case "scan_complete": {
+              const stats = {
+                files:     Number(data.files_scanned ?? 0),
+                findings:  Number(data.findings ?? 0),
+                incidents: Number(data.incidents ?? 0),
+              };
+              setFinalStats(stats);
+              addLog(`[${ts}] ✅ Done — ${stats.files} files, ${stats.findings} findings, ${stats.incidents} incidents`);
+              setPhase("done");
+              es.close();
+              break;
+            }
+
+            case "error":
+              setErrorMsg(String(data.message ?? "Unknown error"));
+              setPhase("error");
+              addLog(`[${ts}] ✗ Error: ${data.message}`);
+              es.close();
+              break;
+
+            case "expired":
+              setPhase("expired");
+              es.close();
+              break;
           }
+        };
 
-          case "waiting_for_agent": {
-            addLog(`[${ts}] ⏳ Waiting for DataGhost Agent to connect`);
-            break;
-          }
-
-          case "scan_start": {
-            const tot = Number(data.total_files ?? 0);
-            setTotalFiles(tot);
-            addLog(`[${ts}] 🔍 Scan started — File 1 to File ${tot}`);
-            setPhase("scanning");
-            break;
-          }
-
-          case "scanning_file": {
-            const fn  = String(data.filename ?? "");
-            const idx = Number(data.index ?? 0);
-            const tot = Number(data.total ?? 0);
-            setCurrentFile(fn);
-            setFileIndex(idx);
-            setTotalFiles(tot);
-            if (idx % 10 === 0 || idx === 1 || idx === tot)
-              addLog(`[${ts}] [${idx}/${tot}] ${fn}`);
-            break;
-          }
-
-          case "finding": {
-            const f: FindingAlert = {
-              filename: String(data.filename ?? ""),
-              severity: String(data.severity ?? "LOW"),
-              category: String(data.category ?? ""),
-              description: String(data.description ?? ""),
-            };
-            setFindings((prev) => [f, ...prev].slice(0, 50));
-            addLog(`[${ts}] ⚠ ${f.severity}: ${f.filename} — ${f.category}`);
-            break;
-          }
-
-          case "scan_complete": {
-            const stats = {
-              files:     Number(data.files_scanned ?? 0),
-              findings:  Number(data.findings ?? 0),
-              incidents: Number(data.incidents ?? 0),
-            };
-            setFinalStats(stats);
-            addLog(`[${ts}] ✅ Done — ${stats.files} files, ${stats.findings} findings, ${stats.incidents} incidents`);
-            setPhase("done");
-            es.close();
-            break;
-          }
-
-          case "error":
-            setErrorMsg(String(data.message ?? "Unknown error"));
+        es.onerror = () => {
+          es.close();
+          if (cancelled) return;
+          if (attempts < maxAttempts) {
+            addLog(`[${new Date().toLocaleTimeString()}] Reconnecting… (${attempts}/${maxAttempts})`);
+            retryTimer = setTimeout(connect, 3000);
+          } else {
+            setErrorMsg("Connection lost. Click 'Retry' below.");
             setPhase("error");
-            addLog(`[${ts}] ✗ Error: ${data.message}`);
-            es.close();
-            break;
-
-          case "expired":
-            setPhase("expired");
-            es.close();
-            break;
-        }
+            addLog(`[${new Date().toLocaleTimeString()}] ✗ Connection failed after ${maxAttempts} attempts`);
+          }
+        };
       };
 
-      es.onerror = () => {
-        es.close();
-        if (attempts < maxAttempts) {
-          addLog(`[${new Date().toLocaleTimeString()}] Server waking up... auto-retrying (${attempts}/${maxAttempts})`);
-          retryTimer = setTimeout(connect, 4000);
-        } else {
-          setErrorMsg("Connection lost. The backend server may still be waking up. Click 'Retry' below.");
-          setPhase("error");
-          addLog(`[${new Date().toLocaleTimeString()}] ✗ Connection failed after ${maxAttempts} attempts`);
-        }
-      };
+      connect();
     };
 
-    connect();
+    warmAndConnect();
 
     return () => {
+      cancelled = true;
       if (retryTimer) clearTimeout(retryTimer);
       if (evtRef.current) {
         evtRef.current.close();
@@ -496,10 +503,30 @@ export default function EnrollPage() {
               {phase === "enrolling"  && `Validating enrollment code ${code}…`}
               {phase === "enrolled"   && `Device registered — starting scan…`}
             </p>
+            {phase === "connecting" && (
+              <p className="text-xs" style={{ color: "#475569" }}>
+                Free-tier server may take up to 60s to wake up
+              </p>
+            )}
             {deviceName && (
               <p className="text-xs" style={{ color: "#64748b" }}>
                 {deviceName} · {deviceId}
               </p>
+            )}
+            {/* Show live log during connection/wake-up */}
+            {logLines.length > 0 && (
+              <div
+                ref={logRef}
+                className="rounded-lg p-2.5 font-mono text-[10px] max-h-28 overflow-y-auto text-left"
+                style={{ background: "#040a17", border: "1px solid #1a2744", color: "#1e4d7f" }}
+              >
+                {logLines.map((l, i) => (
+                  <div key={i} style={{ color: l.includes("✓") ? "#34d058" : l.includes("⏳") ? "#ff9f0a" : "#1e4d7f" }}>
+                    {l}
+                  </div>
+                ))}
+                <div style={{ color: "#00d4ff" }}>▋</div>
+              </div>
             )}
           </div>
         )}

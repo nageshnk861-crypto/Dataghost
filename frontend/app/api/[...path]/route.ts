@@ -718,6 +718,180 @@ export async function GET(request: NextRequest, { params }: { params: { path: st
     });
   }
 
+  // ── Auto-Enroll & Scan SSE Stream (/devices/auto-enroll-scan) ──
+  if (pathSegments[0] === "devices" && pathSegments[1] === "auto-enroll-scan") {
+    const code = (request.nextUrl.searchParams.get("code") || "").trim().toUpperCase();
+    const platform = request.nextUrl.searchParams.get("platform") || "Windows";
+    const customDeviceName = request.nextUrl.searchParams.get("device_name");
+
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      async start(controller) {
+        const send = (data: object) => {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+        };
+
+        send({ type: "connected" });
+        await new Promise((r) => setTimeout(r, 200));
+
+        send({ type: "enrolling", enrollment_code: code });
+        await new Promise((r) => setTimeout(r, 300));
+
+        // Find or create device
+        const prefixMap: Record<string, string> = {
+          windows: "dg-win",
+          android: "dg-android",
+          ios: "dg-ios",
+          macos: "dg-mac",
+          linux: "dg-lin",
+        };
+        const pKey = platform.toLowerCase();
+        const prefix = prefixMap[pKey] || "dg-dev";
+        const suffix = Math.random().toString(16).substring(2, 6);
+        const deviceId = `${prefix}-${suffix}`;
+        const finalDeviceName = customDeviceName || `${platform}-${code.replace(/[^A-Z0-9]/g, "").slice(-4) || "Endpoint"}`;
+
+        let dev = devicesStore.find((d) => d.device_name === finalDeviceName);
+        if (!dev) {
+          dev = {
+            id: devicesStore.length + 1,
+            device_id: deviceId,
+            device_name: finalDeviceName,
+            hostname: `${finalDeviceName.toLowerCase()}.local`,
+            platform,
+            os_name: platform,
+            os_type: platform,
+            os_version: "1.0",
+            status: "ACTIVE",
+            last_seen: new Date().toISOString(),
+            ip_address: "192.168.1." + (100 + devicesStore.length),
+            agent_version: "2.4.0",
+            risk_score: 15,
+            policy_status: "ENFORCED",
+            sensitive_files_count: 0,
+            files_scanned: 0,
+            total_scans: 1,
+            blocked_transfers_count: 0,
+            incidents_count: 0,
+            created_at: new Date().toISOString(),
+          };
+          devicesStore.unshift(dev);
+        }
+
+        send({
+          type: "enrolled",
+          device_id: dev.device_id,
+          device_name: dev.device_name,
+          platform: dev.platform,
+        });
+        await new Promise((r) => setTimeout(r, 400));
+
+        // Generate files to scan with DLP inspection
+        const demoFiles = [
+          { name: "employee_credentials.env", content: "DB_PASS=SuperSecret123!\nAWS_KEY=AKIAIOSFODNN7EXAMPLE\n" },
+          { name: "customer_export.csv", content: "id,name,email,card\n1,Alice,alice@corp.com,4111222233334444\n" },
+          { name: "tax_records.json", content: '{"pan": "ABCDE1234F", "aadhaar": "2345 6789 0123"}' },
+          { name: "system_architecture.pdf", content: "DataGhost architecture design document v2.4" },
+          { name: "network_config.yaml", content: "internal_ip: 10.0.0.1\nfirewall: active" },
+          { name: "quarterly_budget.xlsx", content: "Payroll: $240,000, Total Salary Expenses: $450,000" },
+          { name: "patient_records.csv", content: "patient_id,name,phone,condition\n101,John,9876543210,Stable" },
+          { name: "source_code_backup.py", content: "import os\napi_key = 'xoxb-1234567890-abcdefg'" },
+          { name: "audit_trail.log", content: "2026-10-27 user auth successful for admin" },
+          { name: "security_policy.md", content: "# Corporate DLP Policy\nStrict data exfiltration controls." },
+        ];
+
+        send({ type: "scan_start", total_files: demoFiles.length, device_id: dev.device_id });
+
+        let findingsCount = 0;
+        let incidentsCount = 0;
+
+        for (let i = 0; i < demoFiles.length; i++) {
+          const item = demoFiles[i];
+          send({
+            type: "scanning_file",
+            index: i + 1,
+            total: demoFiles.length,
+            filename: item.name,
+            path: `/local/${item.name}`,
+          });
+
+          await new Promise((r) => setTimeout(r, 120));
+
+          // Run DLP scanner on content
+          const fileFindings: Array<{ rule: string; category: string; severity: string; matched_text: string }> = [];
+          for (const rule of DLP_RULES) {
+            rule.pattern.lastIndex = 0;
+            const matches = item.content.match(rule.pattern);
+            if (matches && matches.length > 0) {
+              fileFindings.push({
+                rule: rule.name,
+                category: rule.category,
+                severity: rule.severity,
+                matched_text: matches[0],
+              });
+            }
+          }
+
+          if (fileFindings.length > 0) {
+            for (const f of fileFindings) {
+              findingsCount++;
+              send({
+                type: "finding",
+                filename: item.name,
+                severity: f.severity,
+                category: f.category,
+                description: `${f.rule} detected in ${item.name}`,
+              });
+            }
+
+            incidentsCount++;
+            incidentsStore.unshift({
+              id: incidentsStore.length + 1,
+              incident_id: `INC-${Math.random().toString(16).substring(2, 8).toUpperCase()}`,
+              user: dev.device_name,
+              filename: item.name,
+              file_hash: crypto.createHash("sha256").update(item.content).digest("hex"),
+              classification: fileFindings.some((f) => f.severity === "CRITICAL") ? "RESTRICTED" : "CONFIDENTIAL",
+              risk_score: 75,
+              severity: fileFindings.some((f) => f.severity === "CRITICAL") ? "CRITICAL" : "HIGH",
+              status: "OPEN",
+              destination: "INTERNAL",
+              action: "SCAN",
+              action_taken: "ALERTED",
+              findings: fileFindings,
+              device_id: dev.device_id,
+              created_at: new Date().toISOString(),
+              timestamp: new Date().toISOString(),
+            });
+          }
+        }
+
+        dev.files_scanned = (dev.files_scanned || 0) + demoFiles.length;
+        dev.sensitive_files_count = (dev.sensitive_files_count || 0) + incidentsCount;
+        dev.incidents_count = (dev.incidents_count || 0) + incidentsCount;
+
+        send({
+          type: "scan_complete",
+          device_id: dev.device_id,
+          device_name: dev.device_name,
+          files_scanned: demoFiles.length,
+          findings: findingsCount,
+          incidents: incidentsCount,
+        });
+
+        controller.close();
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+      },
+    });
+  }
+
   // ── Devices List & Details ──
   if (pathSegments[0] === "devices" && pathSegments[1] !== "enrollment") {
     if (pathSegments.length === 1) {
