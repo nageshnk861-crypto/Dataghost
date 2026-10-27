@@ -1097,6 +1097,22 @@ export default function DevicesPage() {
 
             {/* Modal Body */}
             <div className="py-5 space-y-5">
+              {error && (
+                <div
+                  className="p-3 rounded-xl flex items-center justify-between text-xs"
+                  style={{ background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.3)", color: "#ef4444" }}
+                >
+                  <span>{error}</span>
+                  <button
+                    type="button"
+                    onClick={() => setError(null)}
+                    className="ml-2 font-bold hover:underline"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              )}
+
               {showPlatformStep && (
                 /* Step 1: Select Platform */
                 <div className="space-y-4">

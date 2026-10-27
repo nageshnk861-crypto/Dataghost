@@ -455,17 +455,14 @@ async function tryProxyToBackend(
   const searchParams = req.nextUrl.search;
   const target = `${backendUrl}${fullPath}${searchParams}`;
 
-  // 25s per attempt × 2 attempts = up to ~50s total.
-  // Render free-tier cold start is typically 15-40s.
-  const timeoutMs = 25_000;
+  // 4s per attempt × 2 attempts = max ~9s total before falling back to built-in handlers.
+  // This keeps the UI responsive (avoiding 50s button spins) while still connecting to the real backend if awake.
+  const timeoutMs = 4_000;
 
-  // ── Wake-ping: fire a cheap GET /api/health to unfreeze the dyno before the real request.
-  // We don't await the result — it just kicks the cold-start process early.
+  // ── Wake-ping: fire a cheap GET /api/health to unfreeze the dyno if it is asleep.
   const healthUrl = `${backendUrl}/api/health`;
   const wakeController = new AbortController();
   fetch(healthUrl, { method: "GET", signal: wakeController.signal }).catch(() => {});
-  // Give the dyno a short head-start before our first real attempt.
-  await new Promise((resolve) => setTimeout(resolve, 300));
 
   // Body must be read once before the first attempt so it can be re-sent on retry.
   const bodyBuffer =
@@ -516,15 +513,15 @@ async function tryProxyToBackend(
   try {
     const r = await attempt();
     if (!isRetryable(r)) {
-      wakeController.abort(); // cancel wake-ping if we got a real response
+      wakeController.abort();
       return makeProxyResponse(r);
     }
   } catch {
     // Network error / timeout — fall through to retry
   }
 
-  // ── Attempt 2 (after 2s backoff) ──
-  await new Promise((resolve) => setTimeout(resolve, 2000));
+  // ── Attempt 2 (after 1s backoff) ──
+  await new Promise((resolve) => setTimeout(resolve, 1000));
   try {
     const r = await attempt();
     if (!isRetryable(r)) {
