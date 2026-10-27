@@ -1324,8 +1324,6 @@ def auto_enroll_and_scan_stream(
                         incident = Incident(
                             incident_id=inc_id,
                             device_id=device.device_id,
-                            user_id=device.user_id,
-                            organization_id=device.organization_id or "default-org",
                             filename=item["filename"],
                             classification=finding.category or "SENSITIVE_DATA",
                             risk_score=result.risk_score or 70,
