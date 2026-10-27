@@ -366,17 +366,32 @@ export default function DevicesPage() {
       
       // If scan was queued for the endpoint agent, poll scan-summary until findings arrive or timeout
       let latestSummary = data;
+      // Capture baseline metrics so ANY increase signals scan completion
       const initialScanned = data?.scanned_files_count || 0;
+      const initialFindings = data?.threats_detected || 0;
+      const initialHasScanData = data?.has_scan_data || false;
       const isQueued = data?.message && data.message.includes("Scan queued");
 
       if (isQueued) {
-        setScanStatusMessage("Waiting for agent to report findings…");
-        const maxPollAttempts = 36; // 36 * 5s = 180s (3 minutes)
+        const maxPollAttempts = 48; // 48 * 5s = 240s (4 minutes, agent scans can be slow)
         for (let attempt = 0; attempt < maxPollAttempts; attempt++) {
+          const remainingSecs = (maxPollAttempts - attempt) * 5;
+          setScanStatusMessage(
+            `Waiting for agent to report findings… (${Math.ceil(remainingSecs / 60)}m ${remainingSecs % 60}s left)`
+          );
           await new Promise((resolve) => setTimeout(resolve, 5000));
           try {
             const pollData = await fetchDeviceScanSummary(devId);
-            if (pollData && (pollData.scanned_files_count > initialScanned || pollData.threats_detected > 0 || (pollData.scan_results && pollData.scan_results.length > 0))) {
+            // Consider scan complete when ANY of these signals change:
+            //   1. More files scanned than before the scan was queued
+            //   2. Findings/threats appeared
+            //   3. Scan results list became non-empty
+            //   4. has_scan_data flipped from false → true
+            const moreFiles = (pollData?.scanned_files_count || 0) > initialScanned;
+            const moreFindings = (pollData?.threats_detected || 0) > initialFindings;
+            const hasResults = pollData?.scan_results && pollData.scan_results.length > 0;
+            const dataArrived = !initialHasScanData && pollData?.has_scan_data;
+            if (pollData && (moreFiles || moreFindings || hasResults || dataArrived)) {
               latestSummary = pollData;
               break;
             }

@@ -956,6 +956,12 @@ def device_heartbeat_by_param(
         if payload.device_metadata:
             device.device_metadata = json.dumps(payload.device_metadata)
 
+    # Read scan_requested BEFORE clearing it so the agent receives the instruction
+    # exactly once. Clearing it here prevents re-triggering on subsequent heartbeats.
+    pending_scan = bool(getattr(device, "scan_requested", False))
+    if pending_scan:
+        device.scan_requested = False
+
     db.commit()
     db.refresh(device)
     _sync_to_firebase(device)
@@ -966,7 +972,7 @@ def device_heartbeat_by_param(
         last_seen=device.last_seen,
         policy_version="1.0",
         ack_timestamp=now,
-        scan_requested=bool(getattr(device, "scan_requested", False)),
+        scan_requested=pending_scan,
     )
 
 
@@ -1940,8 +1946,9 @@ def compute_device_scan_summary(device: Device, db: Session, is_simulated: bool 
 
     total_bytes = sum(sl.file_size or 0 for sl in scan_logs)
 
-    # Sync device fields
-    device.files_scanned = len(scan_logs)
+    # Sync device fields — do NOT overwrite files_scanned here; it is
+    # accumulated incrementally by upload_device_findings and represents
+    # the true number of files the agent reported (not the batch count).
     device.incidents_count = len(incidents)
     device_info["risk_score"] = max_risk_score
     db.commit()
@@ -1951,7 +1958,7 @@ def compute_device_scan_summary(device: Device, db: Session, is_simulated: bool 
         "has_scan_data": True,
         "message": f"Scan summary for device '{device.device_name}' computed from persisted findings.",
         "device": device_info,
-        "scanned_files_count": len(scan_logs),
+        "scanned_files_count": device.files_scanned or len(scan_logs),
         "risk_level": overall_risk_level,
         "risk_score": max_risk_score,
         "block_level": overall_block_level,
