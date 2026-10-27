@@ -354,7 +354,7 @@ function analyzeTextDlp(text: string, filename: string, destination: string = "L
   for (const rule of DLP_RULES) {
     const matches = text.match(rule.pattern);
     if (matches && matches.length > 0) {
-      let validMatches = matches;
+      let validMatches: string[] = matches;
       if (rule.name === "PCI_CREDIT_CARD") {
         validMatches = matches.filter(luhnCheck);
       } else if (rule.name === "IP_ADDRESS") {
