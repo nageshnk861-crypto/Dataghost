@@ -449,7 +449,7 @@ async function tryProxyToBackend(
     process.env.BACKEND_INTERNAL_URL ||
     process.env.BACKEND_URL ||
     process.env.NEXT_PUBLIC_API_URL ||
-    "https://dataghost.onrender.com"
+    "https://dataghost-1.onrender.com"
   ).trim().replace(/\/+$/, "");
 
   const searchParams = req.nextUrl.search;
@@ -536,7 +536,26 @@ async function tryProxyToBackend(
   }
 
   wakeController.abort();
-  if (isVercel || !mockFallbackEnabled) {
+  // If the backend fails or is cold-starting, allow routes with built-in handlers
+  // (such as /api/scan, /api/scan/file, /api/scan/text, /api/dashboard/*, etc.)
+  // to fall through to the built-in DLP engine instead of failing with 502.
+  const hasLocalEngine =
+    fullPath.startsWith("/api/scan") ||
+    fullPath.startsWith("/api/v1/upload") ||
+    fullPath.startsWith("/api/upload") ||
+    fullPath.startsWith("/api/dashboard") ||
+    fullPath.startsWith("/api/incidents") ||
+    fullPath.startsWith("/api/findings") ||
+    fullPath.startsWith("/api/devices") ||
+    fullPath.startsWith("/api/events") ||
+    fullPath.startsWith("/api/policies") ||
+    fullPath.startsWith("/api/analytics");
+
+  if (hasLocalEngine || mockFallbackEnabled) {
+    return null;
+  }
+
+  if (isVercel) {
     return backend502(fullPath);
   }
   return null;
