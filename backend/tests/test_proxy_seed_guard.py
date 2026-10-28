@@ -94,7 +94,7 @@ def test_proxy_wakeup_message_contract():
         f"Expected wakeup message '{expected_error}' not found in route.ts"
     )
     assert "attempt()" in content, "retry attempt() function not found in route.ts"
-    assert "25_000" in content, "25-second timeout constant not found in route.ts"
+    assert "4_000" in content, "timeout constant not found in route.ts"
 
 
 # ---------------------------------------------------------------------------
