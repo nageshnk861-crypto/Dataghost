@@ -921,9 +921,12 @@ export default function DevicesPage() {
                       const statusBg = isRunning ? "rgba(0,212,255,0.12)" : isInterrupted ? "rgba(245,158,11,0.12)" : isFailed ? "rgba(255,59,59,0.12)" : "rgba(52,208,88,0.12)";
                       const statusBorder = isRunning ? "rgba(0,212,255,0.3)" : isInterrupted ? "rgba(245,158,11,0.3)" : isFailed ? "rgba(255,59,59,0.3)" : "rgba(52,208,88,0.3)";
 
-                      const pct = curScan.files_discovered > 0
-                        ? Math.min(100, Math.round((curScan.files_scanned / curScan.files_discovered) * 100))
-                        : (isCompleted ? 100 : 0);
+                      const triggerLabel = (curScan.trigger && curScan.trigger.trim()) ? curScan.trigger : "FULL-DISK";
+                      const filesDiscovered = curScan.files_discovered || curScan.files_scanned || 0;
+                      const filesScanned = curScan.files_scanned || 0;
+                      const pct = filesDiscovered > 0
+                        ? (filesScanned >= filesDiscovered ? 100 : Math.min(100, Math.round((filesScanned / filesDiscovered) * 100)))
+                        : (isCompleted || curScan.status === "ACTIVE" ? 100 : 0);
 
                       let durationStr = "—";
                       if (curScan.started_at) {
@@ -933,6 +936,8 @@ export default function DevicesPage() {
                         const m = Math.floor(diffSec / 60);
                         const s = diffSec % 60;
                         durationStr = m > 0 ? `${m}m ${s}s` : `${s}s`;
+                      } else {
+                        durationStr = "Completed";
                       }
 
                       return (
@@ -943,7 +948,7 @@ export default function DevicesPage() {
                           <div className="flex items-center justify-between text-[11px]">
                             <span className="text-slate-400 font-semibold flex items-center gap-1.5">
                               {isRunning && <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />}
-                              Scan ({curScan.trigger})
+                              Scan ({triggerLabel})
                             </span>
                             <span
                               className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider"
@@ -968,7 +973,7 @@ export default function DevicesPage() {
 
                           <div className="flex items-center justify-between text-[10px] text-slate-400">
                             <span>
-                              {curScan.files_scanned.toLocaleString()} / {curScan.files_discovered > 0 ? curScan.files_discovered.toLocaleString() : curScan.files_scanned.toLocaleString()} files ({pct}%)
+                              {filesScanned.toLocaleString()} / {filesDiscovered.toLocaleString()} files ({pct}%)
                             </span>
                             <span>{durationStr}</span>
                           </div>

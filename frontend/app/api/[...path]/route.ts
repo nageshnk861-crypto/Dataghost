@@ -1128,9 +1128,51 @@ export async function GET(request: NextRequest, { params }: { params: { path: st
   // ── Devices List & Details ──
   if (pathSegments[0] === "devices" && pathSegments[1] !== "enrollment") {
     if (pathSegments.length === 1) {
-      return NextResponse.json(devicesStore);
+      // Refresh last_seen for active devices to ensure they are marked ACTIVE in SOC dashboard
+      const nowIso = new Date().toISOString();
+      const updatedDevices = devicesStore.map((d) => ({
+        ...d,
+        last_seen: d.status === "ACTIVE" ? nowIso : d.last_seen,
+      }));
+      return NextResponse.json(updatedDevices);
     }
     const devId = pathSegments[1];
+
+    // ── Device Scans / Latest Scan (/devices/:id/scans/latest and /devices/:id/scans) ──
+    if (pathSegments[2] === "scans") {
+      const dev = devicesStore.find((d) => d.device_id === devId || String(d.id) === devId);
+      if (!dev) {
+        return NextResponse.json({ message: `Device '${devId}' not found.` }, { status: 404 });
+      }
+      const filesCount = dev.files_scanned || 142;
+      const scanSession = {
+        id: dev.id || 1,
+        scan_id: `scan-${dev.device_id || "full"}-01`,
+        device_id: dev.id || 1,
+        user_id: 1,
+        trigger: "FULL-DISK",
+        started_at: new Date(Date.now() - 3600000 * 2).toISOString(),
+        finished_at: new Date(Date.now() - 3600000 * 2 + 184000).toISOString(),
+        status: "COMPLETED",
+        files_discovered: filesCount,
+        files_scanned: filesCount,
+        files_skipped: 0,
+        findings_count: dev.incidents_count || 0,
+        current_path: null,
+        error_message: null,
+        created_at: new Date(Date.now() - 3600000 * 2).toISOString(),
+        updated_at: new Date(Date.now() - 3600000 * 2 + 184000).toISOString(),
+      };
+
+      if (pathSegments[3] === "latest") {
+        return NextResponse.json(scanSession);
+      }
+      return NextResponse.json({
+        items: [scanSession],
+        total: 1,
+      });
+    }
+
     if (pathSegments[2] === "scan-summary") {
       const dev = devicesStore.find((d) => d.device_id === devId || String(d.id) === devId);
       if (!dev) {
