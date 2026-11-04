@@ -25,7 +25,7 @@ from auth import get_password_hash
 from config import settings
 from database import SessionLocal, init_db
 from firebase_auth import initialize_firebase_admin
-from models import Device, Incident, ScanLog, User
+from models import Device, Finding, Incident, ScanLog, User
 from schemas.schemas import HealthResponse
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:     %(message)s")
@@ -89,6 +89,13 @@ async def lifespan(app: FastAPI):
                 "Demo seeding is SKIPPED on Render unless DATAGHOST_SEED_DEMO=true is "
                 "explicitly set. Remove the flag or add DATAGHOST_SEED_DEMO=true."
             )
+
+        # ─── Purge legacy / hardcoded demo devices ────────────────────────────────
+        # Previous versions shipped hardcoded device IDs (dg-win-7dfa,
+        # dg-mac-91e2) and device-name pairs injected by an old seeder or
+        # the frontend mock layer.  Delete them from the production DB on
+        # every startup.  This is idempotent — no-op on a clean database.
+        _purge_legacy_demo_devices(db)
     finally:
         db.close()
     yield
@@ -262,6 +269,88 @@ def _ensure_classifier():
             logger.info("Classifier trained and saved.")
         except Exception as exc:
             logger.warning("Could not train classifier: %s", exc)
+
+
+
+# ---------------------------------------------------------------------------
+# Legacy demo device purge
+# ---------------------------------------------------------------------------
+
+# Exact hardcoded device IDs from the old frontend mock / old seeder.
+# These IDs were never meant to exist in production and must be removed.
+_LEGACY_DEMO_DEVICE_IDS = [
+    "dg-win-7dfa",
+    "dg-mac-91e2",
+]
+
+# Old demo device names associated with those IDs (belt-and-suspenders).
+_LEGACY_DEMO_DEVICE_NAMES = ["Windows-PC", "MacBook-Engineering"]
+
+
+def _purge_legacy_demo_devices(db) -> None:
+    """Remove hardcoded legacy demo devices and their associated data.
+
+    Targets:
+      - Exact old device IDs: dg-win-7dfa, dg-mac-91e2
+      - Old demo device names: Windows-PC, MacBook-Engineering
+      - Old DGD- prefixed devices (created by _seed_demo_data on Render)
+
+    This function is idempotent and safe to call on a clean database.
+    """
+    try:
+        # Collect IDs to purge
+        legacy_devices = (
+            db.query(Device)
+            .filter(
+                or_(
+                    Device.device_id.in_(_LEGACY_DEMO_DEVICE_IDS),
+                    Device.device_name.in_(_LEGACY_DEMO_DEVICE_NAMES),
+                    Device.device_id.like("DGD-%"),
+                )
+            )
+            .all()
+        )
+        if not legacy_devices:
+            logger.info("No legacy demo devices found — database is clean.")
+            return
+
+        ids_to_purge = [d.device_id for d in legacy_devices]
+        logger.warning(
+            "Purging %d legacy demo device(s): %s",
+            len(ids_to_purge),
+            ids_to_purge,
+        )
+
+        # Cascade: delete dependent rows first (order matters for FK constraints)
+        del_findings = (
+            db.query(Finding)
+            .filter(Finding.device_id.in_(ids_to_purge))
+            .delete(synchronize_session=False)
+        )
+        del_inc = (
+            db.query(Incident)
+            .filter(Incident.device_id.in_(ids_to_purge))
+            .delete(synchronize_session=False)
+        )
+        del_sl = (
+            db.query(ScanLog)
+            .filter(ScanLog.device_id.in_(ids_to_purge))
+            .delete(synchronize_session=False)
+        )
+        del_dev = (
+            db.query(Device)
+            .filter(Device.device_id.in_(ids_to_purge))
+            .delete(synchronize_session=False)
+        )
+        db.commit()
+        logger.warning(
+            "Legacy demo purge complete: %d device(s), %d scan log(s), "
+            "%d incident(s), %d finding(s) deleted.",
+            del_dev, del_sl, del_inc, del_findings,
+        )
+    except Exception as exc:
+        db.rollback()
+        logger.error("Failed to purge legacy demo devices: %s", exc)
 
 
 # ---------------------------------------------------------------------------

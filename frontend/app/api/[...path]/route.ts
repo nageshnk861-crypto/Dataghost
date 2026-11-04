@@ -630,7 +630,7 @@ if (pathStr === "/dashboard/activity") {
     });
     return {
       date: dateName,
-      scans: 10 + dayIncidents.length * 4,
+      scans: dayIncidents.length * 4,
       sensitive: dayIncidents.length,
       blocked: dayIncidents.filter((inc) => inc.action_taken === "BLOCKED").length,
     };
@@ -877,7 +877,7 @@ if (pathSegments[0] === "devices" && pathSegments[1] !== "enrollment") {
     if (!dev) {
       return NextResponse.json({ message: `Device '${devId}' not found.` }, { status: 404 });
     }
-    const filesCount = dev.files_scanned || 142;
+    const filesCount = dev.files_scanned || 0;
     const scanSession = {
       id: dev.id || 1,
       scan_id: `scan-${dev.device_id || "full"}-01`,
@@ -885,8 +885,8 @@ if (pathSegments[0] === "devices" && pathSegments[1] !== "enrollment") {
       user_id: 1,
       trigger: "FULL-DISK",
       started_at: new Date(Date.now() - 3600000 * 2).toISOString(),
-      finished_at: new Date(Date.now() - 3600000 * 2 + 184000).toISOString(),
-      status: "COMPLETED",
+      finished_at: filesCount > 0 ? new Date(Date.now() - 3600000 * 2 + 184000).toISOString() : null,
+      status: filesCount > 0 ? "COMPLETED" : "WAITING_FOR_AGENT",
       files_discovered: filesCount,
       files_scanned: filesCount,
       files_skipped: 0,
