@@ -37,13 +37,7 @@ def _allowed_device_ids_for_analyst(db: Session, current_user: User) -> List[str
     """Return device_ids visible to analyst role (owned devices & shared demo devices scope)."""
     devices = (
         db.query(Device.device_id)
-        .filter(
-            or_(
-                Device.user_id == current_user.id,
-                Device.user_id == 1,
-                Device.device_id.like("DGD-%"),
-            )
-        )
+        .filter(Device.user_id == current_user.id)
         .all()
     )
     return [d.device_id for d in devices if d.device_id]

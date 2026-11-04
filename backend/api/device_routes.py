@@ -240,16 +240,10 @@ def list_devices(
     if current_user.role == "admin":
         devices = db.query(Device).order_by(Device.device_name).all()
     else:
-        # Analyst sees their own devices plus organization demo/agent devices (user_id == 1 or org match)
+        # Analyst sees strictly their own devices
         devices = (
             db.query(Device)
-            .filter(
-                or_(
-                    Device.user_id == current_user.id,
-                    Device.user_id == 1,
-                    Device.device_id.like("DGD-%"),
-                )
-            )
+            .filter(Device.user_id == current_user.id)
             .order_by(Device.device_name)
             .all()
         )
@@ -1180,178 +1174,37 @@ def auto_enroll_and_scan_stream(
                 "auth_token": device_token,
             })
 
-        # ── 3. Collect files to scan ─────────────────────────────────────────
-        SCAN_EXTENSIONS = {
-            ".txt", ".csv", ".json", ".xml", ".log", ".md", ".env",
-            ".doc", ".docx", ".xls", ".xlsx", ".pdf", ".html", ".htm",
-            ".ini", ".cfg", ".conf", ".yaml", ".yml", ".toml",
-            ".sql", ".py", ".js", ".ts", ".pem", ".key", ".crt", ".db", ".bak",
-        }
-        IGNORED_DIRS = {
-            ".git", "node_modules", ".venv", "venv", ".next", "__pycache__",
-            "AppData", ".gemini", "dist", "build", "target", ".idea", ".vscode",
-        }
-        MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB per file
-        MAX_FILES = 2000
+        # ── 3. Await real device agent scanning ──────────────────────────────
+        # The backend does NOT scan server-side filesystem on behalf of endpoint devices.
+        # The actual enrolled agent (Windows/macOS/Android) scans local files and uploads findings.
+        yield _sse({
+            "type": "waiting_for_agent",
+            "message": "Device is enrolled. Waiting for DataGhost agent to connect and report file scans.",
+            "device_id": device.device_id,
+            "device_name": device.device_name,
+        })
 
-        scan_dirs = []
-        is_android = (device.platform or "").lower() == "android"
+        # Poll briefly (up to 3s) in case an active agent is currently uploading scan results
+        agent_scanned = False
+        for _ in range(3):
+            await asyncio.sleep(1.0)
+            db.refresh(device)
+            if (device.files_scanned and device.files_scanned > 0) or (device.total_scans and device.total_scans > 0):
+                agent_scanned = True
+                break
 
-        # On Android or if client is non-Windows, inspect mobile-specific locations if they exist
-        if is_android:
-            for p in ["/sdcard", "/storage/emulated/0", "/data/data/com.dataghost.agent/files"]:
-                if os.path.exists(p):
-                    scan_dirs.append(p)
-        else:
-            home = pathlib.Path.home()
-            if home.exists():
-                scan_dirs.append(str(home))
-            scan_dirs.append(tempfile.gettempdir())
-
-        files_to_scan = []
-        for scan_dir in scan_dirs:
-            base = pathlib.Path(scan_dir)
-            for root, dirs, filenames in os.walk(base):
-                dirs[:] = [d for d in dirs if d not in IGNORED_DIRS]
-                for fn in filenames:
-                    if len(files_to_scan) >= MAX_FILES:
-                        break
-                    ext = os.path.splitext(fn)[1].lower()
-                    if ext not in SCAN_EXTENSIONS:
-                        continue
-                    fp = os.path.join(root, fn)
-                    try:
-                        if os.path.getsize(fp) <= MAX_FILE_SIZE:
-                            files_to_scan.append({"path": fp, "filename": fn})
-                    except OSError:
-                        pass
-                if len(files_to_scan) >= MAX_FILES:
-                    break
-
-        # ── 3. Await real device scan or process actual agent reports ────────────────
-        if not files_to_scan:
-            # When no local disk files exist on the backend server, wait for the actual
-            # DataGhost Agent on Windows/Android to run its scan and report results.
-            yield _sse({
-                "type": "waiting_for_agent",
-                "message": "Waiting for DataGhost Agent to connect and report real file scans.",
-                "device_id": device.device_id,
-            })
-
-            # Check if agent has reported real scan sessions or logs within a short timeout
-            for _ in range(5):
-                await asyncio.sleep(1.0)
-                db.refresh(device)
-                if device.files_scanned and device.files_scanned > 0:
-                    yield _sse({
-                        "type": "scan_complete",
-                        "device_id": device.device_id,
-                        "device_name": device.device_name,
-                        "files_scanned": device.files_scanned,
-                        "findings": len(device.findings) if hasattr(device, "findings") and device.findings else 0,
-                        "incidents": device.incidents_count or 0,
-                    })
-                    return
-
-            # Completed enrollment stage, device is now armed and awaiting agent CLI/service scan
-            yield _sse({
-                "type": "scan_complete",
-                "device_id": device.device_id,
-                "device_name": device.device_name,
-                "files_scanned": device.files_scanned or 0,
-                "findings": 0,
-                "incidents": device.incidents_count or 0,
-                "message": "Enrolled. Agent is armed and ready for DLP scanning.",
-            })
-            return
-
-        total = len(files_to_scan)
-        yield _sse({"type": "scan_start", "total_files": total, "device_id": device.device_id})
-
-        # ── 4. Scan each real file ───────────────────────────────────────────
-        try:
-            from api.scan_routes import _process_scan
-        except ImportError:
-            yield _sse({"type": "error", "message": "Scan engine not available."})
-            return
-
-        findings_count = 0
-        incidents_created = 0
-
-        for i, item in enumerate(files_to_scan):
-            yield _sse({
-                "type": "scanning_file",
-                "index": i + 1,
-                "total": total,
-                "filename": item["filename"],
-                "path": item["path"],
-            })
-            await asyncio.sleep(0.04)
-
-            try:
-                if "_content" in item:
-                    content = item["_content"]
-                else:
-                    with open(item["path"], "rb") as fh:
-                        content = fh.read()
-
-                result = _process_scan(
-                    content=content,
-                    filename=item["filename"],
-                    destination="INTERNAL",
-                    action="SCAN",
-                    device_id=device.device_id,
-                    db=db,
-                    user_id=device.user_id,
-                    organization_id=device.organization_id or "default-org",
-                )
-
-                # Emit findings in real time
-                for finding in (result.findings or []):
-                    sev = finding.severity
-                    if sev in ("HIGH", "CRITICAL"):
-                        findings_count += 1
-                        yield _sse({
-                            "type": "finding",
-                            "filename": item["filename"],
-                            "severity": sev,
-                            "category": finding.category,
-                            "description": f"{finding.rule} detected in {item['filename']}",
-                        })
-
-                        # Create incident for high/critical
-                        inc_id = f"INC-{secrets.token_hex(4).upper()}"
-                        incident = Incident(
-                            incident_id=inc_id,
-                            device_id=device.device_id,
-                            filename=item["filename"],
-                            classification=finding.category or "SENSITIVE_DATA",
-                            risk_score=result.risk_score or 70,
-                            severity=sev,
-                            action_taken="LOGGED",
-                            action="SCAN",
-                            destination="INTERNAL",
-                        )
-                        db.add(incident)
-                        incidents_created += 1
-
-            except Exception as scan_err:
-                logger.debug("Scan error for %s: %s", item["filename"], scan_err)
-
-        # Persist final counts
-        device.files_scanned = (device.files_scanned or 0) + total
-        device.incidents_count = (device.incidents_count or 0) + incidents_created
-        device.scan_requested = False
-        device.last_seen = _utc_now()
-        db.commit()
+        findings_cnt = db.query(Finding).filter(Finding.device_id == device.device_id).count()
+        incidents_cnt = db.query(Incident).filter(Incident.device_id == device.device_id).count()
 
         yield _sse({
             "type": "scan_complete",
             "device_id": device.device_id,
             "device_name": device.device_name,
-            "files_scanned": total,
-            "findings": findings_count,
-            "incidents": incidents_created,
+            "files_scanned": device.files_scanned or 0,
+            "findings": findings_cnt,
+            "incidents": incidents_cnt,
+            "status": "ACTIVE" if agent_scanned else "WAITING_FOR_AGENT",
+            "message": "Scan completed by endpoint agent." if agent_scanned else "Device registered and active. Waiting for agent scan.",
         })
 
     return StreamingResponse(

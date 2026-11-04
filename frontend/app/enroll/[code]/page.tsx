@@ -625,10 +625,12 @@ export default function EnrollPage() {
             <div className="text-center">
               <div className="text-5xl mb-3">✅</div>
               <p className="text-xl font-bold" style={{ color: "#34d058" }}>
-                Full-Disk Scan Complete!
+                {finalStats.files > 0 ? "Full-Disk Scan Complete!" : "Device Enrolled & Armed!"}
               </p>
               <p className="text-sm mt-1" style={{ color: "#94a3b8" }}>
-                {deviceName} is now actively protected by DataGhost DLP.
+                {finalStats.files > 0
+                  ? `${deviceName} is now actively protected by DataGhost DLP.`
+                  : "Device is enrolled, waiting for agent connection."}
               </p>
             </div>
 
@@ -648,6 +650,30 @@ export default function EnrollPage() {
                 </div>
               ))}
             </div>
+
+            {/* Agent connection instructions when awaiting real agent scan */}
+            {finalStats.files === 0 && (
+              <div
+                className="rounded-xl p-3.5 space-y-2 text-xs text-left"
+                style={{ background: "rgba(0,212,255,0.04)", border: "1px solid rgba(0,212,255,0.18)" }}
+              >
+                <div className="flex items-center gap-2 font-semibold text-[#00d4ff]">
+                  <span>💻</span>
+                  <span>Connect Real Endpoint Agent:</span>
+                </div>
+                <p className="text-[11px]" style={{ color: "#94a3b8" }}>
+                  Run the Python or Android agent on this device to perform continuous DLP scanning of your local folders:
+                </p>
+                <pre
+                  className="p-2 rounded bg-[#040a17] text-[#34d058] font-mono text-[11px] overflow-x-auto select-all border border-[#1a2744]"
+                >
+                  python agent/dataghost_agent.py --enroll {code}
+                </pre>
+                <p className="text-[10px]" style={{ color: "#64748b" }}>
+                  Or use the buttons below to scan real device files directly in this browser session.
+                </p>
+              </div>
+            )}
 
             {/* Device info */}
             <div className="text-xs space-y-1.5" style={{ color: "#475569" }}>

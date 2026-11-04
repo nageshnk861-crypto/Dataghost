@@ -53,21 +53,12 @@ def _apply_rbac_scope(query, current_user: User, db: Session):
     # Analyst: find all devices belonging to this user or shared demo devices
     user_devices = (
         db.query(Device.device_id)
-        .filter(
-            or_(
-                Device.user_id == current_user.id,
-                Device.user_id == 1,
-                Device.device_id.like("DGD-%"),
-            )
-        )
+        .filter(Device.user_id == current_user.id)
         .all()
     )
     device_ids = [d.device_id for d in user_devices if d.device_id]
 
-    conditions = [
-        Finding.user_id == current_user.id,
-        Finding.user_id == 1,
-    ]
+    conditions = [Finding.user_id == current_user.id]
     if device_ids:
         conditions.append(Finding.device_id.in_(device_ids))
 
@@ -227,18 +218,12 @@ def get_finding(
     if current_user.role != "admin":
         user_devices = (
             db.query(Device.device_id)
-            .filter(
-                or_(
-                    Device.user_id == current_user.id,
-                    Device.user_id == 1,
-                    Device.device_id.like("DGD-%"),
-                )
-            )
+            .filter(Device.user_id == current_user.id)
             .all()
         )
         allowed_device_ids = {d.device_id for d in user_devices if d.device_id}
 
-        is_owner = (finding.user_id == current_user.id) or (finding.user_id == 1) or (finding.device_id in allowed_device_ids)
+        is_owner = (finding.user_id == current_user.id) or (finding.device_id in allowed_device_ids)
         if not is_owner:
             # 404 to avoid leaking existence of other users' findings
             raise HTTPException(status_code=404, detail="Finding not found.")

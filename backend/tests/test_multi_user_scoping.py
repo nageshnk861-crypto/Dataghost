@@ -347,3 +347,68 @@ def test_device_token_cannot_upload_for_another_device():
         headers={"Authorization": f"Bearer {token_a}"},
     )
     assert bad_upload.status_code == 401
+
+
+def test_fresh_new_user_sees_zero_data():
+    """A newly registered analyst with no enrolled devices sees strictly 0 devices, 0 files, 0 findings, 0 incidents."""
+    fresh_username = f"fresh_user_{uuid.uuid4().hex[:6]}"
+    db = SessionLocal()
+    try:
+        user_fresh = User(
+            username=fresh_username,
+            email=f"{fresh_username}@dataghost.local",
+            hashed_password=get_password_hash("Password123!"),
+            role="analyst",
+            is_active=True,
+        )
+        db.add(user_fresh)
+
+        # Ensure there is a legacy or shared user_id == 1 / DGD device in database
+        shared_dev = db.query(Device).filter(Device.device_id == "DGD-SHARED-DEMO").first()
+        if not shared_dev:
+            shared_dev = Device(
+                device_id="DGD-SHARED-DEMO",
+                device_name="Shared Legacy Demo PC",
+                user_id=1,
+                status="ACTIVE",
+                files_scanned=500,
+            )
+            db.add(shared_dev)
+
+        db.commit()
+        db.refresh(user_fresh)
+        fresh_id = user_fresh.id
+    finally:
+        db.close()
+
+    tok_fresh = create_access_token({"sub": fresh_username, "role": "analyst", "id": fresh_id})
+    headers = {"Authorization": f"Bearer {tok_fresh}"}
+
+    # 1. Devices list must be empty
+    dev_res = client.get("/api/devices", headers=headers)
+    assert dev_res.status_code == 200
+    devices = dev_res.json()
+    assert len(devices) == 0, f"Expected 0 devices for new user, got: {devices}"
+
+    # 2. Dashboard stats must be zero
+    dash_res = client.get("/api/dashboard/stats", headers=headers)
+    assert dash_res.status_code == 200
+    dash_data = dash_res.json()
+    assert dash_data["protected_devices"] == 0
+    assert dash_data["files_scanned"] == 0
+    assert dash_data["sensitive_files"] == 0
+    assert dash_data["blocked_transfers"] == 0
+    assert dash_data["critical_incidents"] == 0
+    assert len(dash_data.get("recent_threats", [])) == 0
+
+    # 3. Findings list must be empty
+    findings_res = client.get("/api/findings", headers=headers)
+    assert findings_res.status_code == 200
+    findings_data = findings_res.json()
+    assert len(findings_data.get("items", [])) == 0
+
+    # 4. Incidents list must be empty
+    incidents_res = client.get("/api/incidents", headers=headers)
+    assert incidents_res.status_code == 200
+    incidents_data = incidents_res.json()
+    assert len(incidents_data.get("items", [])) == 0

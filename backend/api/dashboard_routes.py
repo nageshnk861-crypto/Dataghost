@@ -37,13 +37,7 @@ def _analyst_device_ids(db: Session, current_user: User) -> list[str]:
     """
     devices = (
         db.query(Device.device_id)
-        .filter(
-            or_(
-                Device.user_id == current_user.id,
-                Device.user_id == 1,
-                Device.device_id.like("DGD-%"),
-            )
-        )
+        .filter(Device.user_id == current_user.id)
         .all()
     )
     return [d.device_id for d in devices if d.device_id]

@@ -69,112 +69,6 @@ interface EnrollmentSession {
 // ─── In-Memory Storage ────────────────────────────────────────────────────────
 const enrollmentSessions = new Map<string, EnrollmentSession>();
 
-const defaultIncidents: IncidentRecord[] = [
-  {
-    id: 1,
-    incident_id: "DG-2026-0001",
-    user: "Windows-Workstation",
-    filename: "employee_credentials.env",
-    file_hash: "a1b2c3d4e5f60718293a4b5c6d7e8f90",
-    classification: "RESTRICTED",
-    risk_score: 95,
-    severity: "CRITICAL",
-    status: "OPEN",
-    destination: "EXTERNAL",
-    action: "UPLOAD",
-    action_taken: "BLOCKED",
-    findings: [
-      { rule: "AWS_ACCESS_KEY", category: "CREDENTIALS", severity: "CRITICAL", matched_text: "AKIAIOSFODNN7EXAMPLE", detail: "AWS Access Key ID Detected" },
-      { rule: "PASSWORD_FIELD", category: "CREDENTIALS", severity: "HIGH", matched_text: "DB_PASS=SuperSecret123!", detail: "Database Secret/Password Variable Detected" },
-    ],
-    device_id: "dg-win-7dfa",
-    created_at: new Date(Date.now() - 3600000 * 2).toISOString(),
-    timestamp: new Date(Date.now() - 3600000 * 2).toISOString(),
-  },
-  {
-    id: 2,
-    incident_id: "DG-2026-0002",
-    user: "Windows-Workstation",
-    filename: "customer_export.csv",
-    file_hash: "f9e8d7c6b5a43210f9e8d7c6b5a43210",
-    classification: "RESTRICTED",
-    risk_score: 85,
-    severity: "HIGH",
-    status: "OPEN",
-    destination: "EXTERNAL",
-    action: "TRANSFER",
-    action_taken: "ALERTED",
-    findings: [
-      { rule: "CREDIT_CARD", category: "FINANCIAL", severity: "HIGH", matched_text: "4111222233334444", detail: "Payment Card Number Detected" },
-      { rule: "EMAIL_ADDRESS", category: "PII", severity: "MEDIUM", matched_text: "alice@corp.com", detail: "Corporate Email Address Detected" },
-    ],
-    device_id: "dg-win-7dfa",
-    created_at: new Date(Date.now() - 3600000 * 5).toISOString(),
-    timestamp: new Date(Date.now() - 3600000 * 5).toISOString(),
-  },
-  {
-    id: 3,
-    incident_id: "DG-2026-0003",
-    user: "Windows-Workstation",
-    filename: "tax_records.json",
-    file_hash: "1234567890abcdef1234567890abcdef",
-    classification: "CONFIDENTIAL",
-    risk_score: 75,
-    severity: "HIGH",
-    status: "ACKNOWLEDGED",
-    destination: "INTERNAL",
-    action: "SCAN",
-    action_taken: "ALERTED",
-    findings: [
-      { rule: "PAN_CARD", category: "PII", severity: "HIGH", matched_text: "ABCDE1234F", detail: "Government Tax / PAN Card Detected" },
-      { rule: "AADHAAR_CARD", category: "PII", severity: "HIGH", matched_text: "2345 6789 0123", detail: "National ID (Aadhaar) Detected" },
-    ],
-    device_id: "dg-win-7dfa",
-    created_at: new Date(Date.now() - 3600000 * 12).toISOString(),
-    timestamp: new Date(Date.now() - 3600000 * 12).toISOString(),
-  },
-  {
-    id: 4,
-    incident_id: "DG-2026-0004",
-    user: "MacBook-Engineering",
-    filename: "source_code_backup.py",
-    file_hash: "abcdef1234567890abcdef1234567890",
-    classification: "CONFIDENTIAL",
-    risk_score: 65,
-    severity: "MEDIUM",
-    status: "OPEN",
-    destination: "CLOUD",
-    action: "UPLOAD",
-    action_taken: "ALERTED",
-    findings: [
-      { rule: "SLACK_TOKEN", category: "CREDENTIALS", severity: "HIGH", matched_text: "xoxb-1234567890-abcdefg", detail: "Slack Bot Token Detected" },
-    ],
-    device_id: "dg-mac-91e2",
-    created_at: new Date(Date.now() - 3600000 * 24).toISOString(),
-    timestamp: new Date(Date.now() - 3600000 * 24).toISOString(),
-  },
-  {
-    id: 5,
-    incident_id: "DG-2026-0005",
-    user: "Windows-Workstation",
-    filename: "patient_records.csv",
-    file_hash: "567890abcdef1234567890abcdef1234",
-    classification: "CONFIDENTIAL",
-    risk_score: 60,
-    severity: "MEDIUM",
-    status: "RESOLVED",
-    destination: "INTERNAL",
-    action: "SCAN",
-    action_taken: "ALLOWED",
-    findings: [
-      { rule: "PHONE_NUMBER", category: "PII", severity: "MEDIUM", matched_text: "9876543210", detail: "Contact Phone Number Detected" },
-    ],
-    device_id: "dg-win-7dfa",
-    created_at: new Date(Date.now() - 3600000 * 48).toISOString(),
-    timestamp: new Date(Date.now() - 3600000 * 48).toISOString(),
-  },
-];
-
 const defaultDevices: DeviceRecord[] = [];
 const defaultIncidents: IncidentRecord[] = [];
 
@@ -643,29 +537,25 @@ async function tryProxyToBackend(
   }
 
   wakeController.abort();
-  // If the backend fails or is cold-starting, allow routes with built-in handlers
-  // (such as /api/scan, /api/scan/file, /api/scan/text, /api/dashboard/*, etc.)
-  // to fall through to the built-in DLP engine instead of failing with 502.
-  const hasLocalEngine =
-    fullPath.startsWith("/api/scan") ||
-    fullPath.startsWith("/api/v1/upload") ||
-    fullPath.startsWith("/api/upload") ||
-    fullPath.startsWith("/api/dashboard") ||
-    fullPath.startsWith("/api/incidents") ||
-    fullPath.startsWith("/api/findings") ||
-    fullPath.startsWith("/api/devices") ||
-    fullPath.startsWith("/api/events") ||
-    fullPath.startsWith("/api/policies") ||
-    fullPath.startsWith("/api/analytics");
-
-  if (hasLocalEngine || mockFallbackEnabled) {
+  if (mockFallbackEnabled) {
     return null;
   }
 
-  if (isVercel) {
-    return backend502(fullPath);
+  // Direct file scans dropped into browser can use local engine if backend is waking
+  const isDirectFileScan =
+    fullPath === "/api/scan" ||
+    fullPath.startsWith("/api/scan/file") ||
+    fullPath.startsWith("/api/scan/text") ||
+    fullPath.startsWith("/api/v1/upload") ||
+    fullPath.startsWith("/api/upload");
+
+  if (isDirectFileScan) {
+    return null;
   }
-  return null;
+
+  // All real user data (devices, dashboard stats, incidents, findings) must come from the backend.
+  // In production / Vercel, emit 502 with friendly waking message so client can retry cleanly.
+  return backend502(fullPath);
 }
 
 /** Emit a 502 JSON response prompting the caller to retry. */
@@ -690,19 +580,10 @@ export async function GET(request: NextRequest, { params }: { params: { path: st
 
   // Forward to real backend; returns null only in local dev with ENABLE_MOCK_FALLBACK=true.
   const proxyRes = await tryProxyToBackend(request, fullApiPath);
-  // Real user data must always come from the backend or return an empty/loading state.
-  // Never fall through to mock devices for live users.
-  if (mockFallbackEnabled) {
-    return null;
-  }
+  if (proxyRes !== null) return proxyRes;
 
-  if (isVercel) {
-    return backend502(fullPath);
-  }
-  return null;
-  created_at: new Date().toISOString(),
-    });
-  }
+  const origin = request.nextUrl.origin;
+  const currentUser = extractUserFromRequest(request);
 
 // ── Dashboard Stats ──
 if (pathStr === "/dashboard/stats") {
@@ -945,121 +826,25 @@ if (pathSegments[0] === "devices" && pathSegments[1] === "auto-enroll-scan") {
       });
       await new Promise((r) => setTimeout(r, 400));
 
-      // Generate files to scan with comprehensive full-disk DLP inspection
-      const demoFiles = [
-        { name: "employee_credentials.env", content: "DB_PASS=SuperSecret123!\nAWS_KEY=AKIAIOSFODNN7EXAMPLE\n" },
-        { name: "customer_export.csv", content: "id,name,email,card\n1,Alice,alice@corp.com,4111222233334444\n" },
-        { name: "tax_records.json", content: '{"pan": "ABCDE1234F", "aadhaar": "2345 6789 0123"}' },
-        { name: "system_architecture.pdf", content: "DataGhost architecture design document v2.4" },
-        { name: "network_config.yaml", content: "internal_ip: 10.0.0.1\nfirewall: active" },
-        { name: "quarterly_budget.xlsx", content: "Payroll: $240,000, Total Salary Expenses: $450,000" },
-        { name: "patient_records.csv", content: "patient_id,name,phone,condition\n101,John,9876543210,Stable" },
-        { name: "source_code_backup.py", content: "import os\napi_key = 'xoxb-1234567890-abcdefg'" },
-        { name: "audit_trail.log", content: "2026-10-27 user auth successful for admin" },
-        { name: "security_policy.md", content: "# Corporate DLP Policy\nStrict data exfiltration controls." },
-        { name: "aws_keys.env", content: "AWS_ACCESS_KEY_ID=AKIA3X7NEXAMPLE\nAWS_SECRET=x99fKlm389zKl\n" },
-        { name: "client_nda_agreement.docx", content: "CONFIDENTIAL Non-Disclosure Agreement. Trade secret clause active." },
-        { name: "hr_payroll_q3.xlsx", content: "Employee: Marcus Ray, Base Salary: $165,000, Bank: 9876543210" },
-        { name: "github_tokens.txt", content: "ghp_Abcdef1234567890Ghijklmnopqrstuvwxyz" },
-        { name: "db_dump_users.sql", content: "INSERT INTO users (id, name, email, ssn) VALUES (1, 'Eve', 'eve@corp.com', '123-45-6789');" },
-        { name: "id_verifications.csv", content: "user,pan,aadhaar\nBob,PQRST5678A,9876 5432 1098" },
-        { name: "payment_gateway.log", content: "Charge failed for card ending in 4111-2222-3333-4444" },
-        { name: "production_ssh_keys.pem", content: "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0\n-----END RSA PRIVATE KEY-----" },
-        { name: "slack_integration.py", content: "SLACK_BOT_TOKEN = 'xoxb-9876543210-9876543210-abcd'" },
-        { name: "employee_medical_leaves.csv", content: "emp_id,diagnoses,doctor,contact_phone\nE44,Diabetes,Dr. Smith,9123456789" },
-        { name: "api_routes.ts", content: "export async function handler() { return { status: 'ok' }; }" },
-        { name: "docker-compose.prod.yml", content: "version: '3.8'\nservices:\n  app:\n    image: dataghost:latest" },
-        { name: "cloud_storage_backup.json", content: '{"bucket": "corp-finance-vault", "region": "us-east-1"}' },
-        { name: "meeting_notes_internal.txt", content: "Internal sync on project roadmap and launch timelines." },
-        { name: "sales_pipeline_2026.xlsx", content: "Lead: Acme Corp, Deal Size: $1,200,000, Stage: Closing" },
-        { name: "vpn_profiles.ovpn", content: "client\ndev tun\nproto udp\nremote vpn.corp.internal 1194" },
-        { name: "customer_support_chats.log", content: "User reported login issue, verified email john.doe@corp.com" },
-        { name: "marketing_plan_q4.pptx", content: "Q4 GTM strategy for enterprise compliance security product" },
-        { name: "passwords_backup.txt", content: "admin_pass: SecretPass#2026!\nstaging_db: MongoDbPass99!" },
-        { name: "vendor_invoices.pdf", content: "Invoice #INV-9921 from Cloud Services Provider" },
-        { name: "employee_handbook.pdf", content: "Company guidelines on acceptable computing device usage" },
-        { name: "compliance_audit.xml", content: "<audit><soc2 status='compliant'/><iso27001 status='passed'/></audit>" },
-      ];
+      send({
+        type: "waiting_for_agent",
+        message: "Device is enrolled. Waiting for DataGhost agent to connect and report real file scans.",
+        device_id: dev.device_id,
+        device_name: dev.device_name,
+      });
 
-      send({ type: "scan_start", total_files: demoFiles.length, device_id: dev.device_id });
-
-      let findingsCount = 0;
-      let incidentsCount = 0;
-
-      for (let i = 0; i < demoFiles.length; i++) {
-        const item = demoFiles[i];
-        send({
-          type: "scanning_file",
-          index: i + 1,
-          total: demoFiles.length,
-          filename: item.name,
-          path: `/local/${item.name}`,
-        });
-
-        await new Promise((r) => setTimeout(r, 60));
-
-        // Run DLP scanner on content
-        const fileFindings: Array<{ rule: string; category: string; severity: string; matched_text: string }> = [];
-        for (const rule of DLP_RULES) {
-          rule.pattern.lastIndex = 0;
-          const matches = item.content.match(rule.pattern);
-          if (matches && matches.length > 0) {
-            fileFindings.push({
-              rule: rule.name,
-              category: rule.category,
-              severity: rule.severity,
-              matched_text: matches[0],
-            });
-          }
-        }
-
-        if (fileFindings.length > 0) {
-          for (const f of fileFindings) {
-            findingsCount++;
-            send({
-              type: "finding",
-              filename: item.name,
-              severity: f.severity,
-              category: f.category,
-              description: `${f.rule} detected in ${item.name}`,
-            });
-          }
-
-          incidentsCount++;
-          incidentsStore.unshift({
-            id: incidentsStore.length + 1,
-            incident_id: `INC-${Math.random().toString(16).substring(2, 8).toUpperCase()}`,
-            user: dev.device_name,
-            filename: item.name,
-            file_hash: crypto.createHash("sha256").update(item.content).digest("hex"),
-            classification: fileFindings.some((f) => f.severity === "CRITICAL") ? "RESTRICTED" : "CONFIDENTIAL",
-            risk_score: 75,
-            severity: fileFindings.some((f) => f.severity === "CRITICAL") ? "CRITICAL" : "HIGH",
-            status: "OPEN",
-            destination: "INTERNAL",
-            action: "SCAN",
-            action_taken: "ALERTED",
-            findings: fileFindings,
-            device_id: dev.device_id,
-            created_at: new Date().toISOString(),
-            timestamp: new Date().toISOString(),
-          });
-        }
-      }
-
-      dev.files_scanned = (dev.files_scanned || 0) + demoFiles.length;
-      dev.sensitive_files_count = (dev.sensitive_files_count || 0) + incidentsCount;
-      dev.incidents_count = (dev.incidents_count || 0) + incidentsCount;
+      await new Promise((r) => setTimeout(r, 800));
 
       send({
         type: "scan_complete",
         device_id: dev.device_id,
         device_name: dev.device_name,
-        files_scanned: demoFiles.length,
-        findings: findingsCount,
-        incidents: incidentsCount,
+        files_scanned: dev.files_scanned || 0,
+        findings: 0,
+        incidents: dev.incidents_count || 0,
+        status: "WAITING_FOR_AGENT",
+        message: "Device registered and active. Waiting for endpoint agent scan.",
       });
-
       controller.close();
     },
   });
