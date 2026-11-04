@@ -60,15 +60,17 @@ def dashboard_stats(
         # Admin: full system-wide view
         protected_devices = db.query(Device).filter(Device.status == "ACTIVE").count()
 
-        # Count completed scans from ScanLog for accuracy across all scan sources
-        files_scanned = (
+        files_from_devices = (
+            db.query(func.sum(Device.files_scanned))
+            .scalar()
+            or 0
+        )
+        files_from_logs = (
             db.query(ScanLog)
             .filter(ScanLog.status == "COMPLETED")
             .count()
         )
-        # Fall back to device-level counter if ScanLog is empty (legacy deployments)
-        if files_scanned == 0:
-            files_scanned = db.query(func.sum(Device.files_scanned)).scalar() or 0
+        files_scanned = max(files_from_devices, files_from_logs)
 
         # Sensitive files: any scan that found something (findings_count > 0) OR risk >= 30
         sensitive_files = (
@@ -127,7 +129,13 @@ def dashboard_stats(
         if allowed_device_ids:
             incident_conditions.append(Incident.device_id.in_(allowed_device_ids))
 
-        files_scanned = (
+        files_from_devices = (
+            db.query(func.sum(Device.files_scanned))
+            .filter(or_(*device_filter))
+            .scalar()
+            or 0
+        )
+        files_from_logs = (
             db.query(ScanLog)
             .filter(
                 ScanLog.status == "COMPLETED",
@@ -135,13 +143,7 @@ def dashboard_stats(
             )
             .count()
         )
-        if files_scanned == 0:
-            files_scanned = (
-                db.query(func.sum(Device.files_scanned))
-                .filter(or_(*device_filter))
-                .scalar()
-                or 0
-            )
+        files_scanned = max(files_from_devices, files_from_logs)
 
         sensitive_files = (
             db.query(ScanLog)

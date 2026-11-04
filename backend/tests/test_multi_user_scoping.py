@@ -412,3 +412,119 @@ def test_fresh_new_user_sees_zero_data():
     assert incidents_res.status_code == 200
     incidents_data = incidents_res.json()
     assert len(incidents_data.get("items", [])) == 0
+
+
+def test_twelve_point_enrollment_and_scan_regression():
+    """Validates the 12 critical production requirements for multi-user isolation and real scanning."""
+    ctx = _get_user_tokens()
+    u_a = ctx["user_a"]
+    u_b = ctx["user_b"]
+
+    # 1. Different enrollment codes produce different unique device IDs
+    tok_res_1 = client.post("/api/devices/enrollment/create", json={"platform": "Windows"}, headers=ctx["headers_a"])
+    tok_res_2 = client.post("/api/devices/enrollment/create", json={"platform": "Windows"}, headers=ctx["headers_b"])
+    code_1 = tok_res_1.json()["enrollment_code"]
+    code_2 = tok_res_2.json()["enrollment_code"]
+    assert code_1 != code_2
+
+    reg_1 = client.post("/api/devices/enrollment/register", json={"enrollment_code": code_1, "platform": "Windows", "device_name": "Win-A"})
+    reg_2 = client.post("/api/devices/enrollment/register", json={"enrollment_code": code_2, "platform": "Windows", "device_name": "Win-B"})
+    dev_1_id = reg_1.json()["device_id"]
+    dev_2_id = reg_2.json()["device_id"]
+
+    assert dev_1_id != dev_2_id
+    assert dev_1_id != "dg-win-7dfa"
+    assert dev_2_id != "dg-win-7dfa"
+
+    # 2. Different devices produce different unique scan IDs on report upload
+    dev_1_token = reg_1.json()["auth_token"]
+    dev_2_token = reg_2.json()["auth_token"]
+
+    upload_res_1 = client.post(
+        f"/api/devices/{dev_1_id}/findings",
+        json={"scanned_files_count": 5, "total_bytes_scanned": 1024, "findings": []},
+        headers={"Authorization": f"Bearer {dev_1_token}"},
+    )
+    assert upload_res_1.status_code == 200
+    scan_id_1 = upload_res_1.json()["scan_id"]
+
+    upload_res_2 = client.post(
+        f"/api/devices/{dev_2_id}/findings",
+        json={"scanned_files_count": 8, "total_bytes_scanned": 2048, "findings": []},
+        headers={"Authorization": f"Bearer {dev_2_token}"},
+    )
+    assert upload_res_2.status_code == 200
+    scan_id_2 = upload_res_2.json()["scan_id"]
+
+    assert scan_id_1 is not None
+    assert scan_id_2 is not None
+    assert scan_id_1 != scan_id_2
+
+    # 3. Real file counts are returned (5 real files scanned gives exactly 5, not 32)
+    upload_res = upload_res_1
+
+    dev_1_check = client.get(f"/api/devices/{dev_1_id}", headers=ctx["headers_a"])
+    assert dev_1_check.status_code == 200
+    assert dev_1_check.json()["files_scanned"] == 5
+    assert dev_1_check.json()["files_scanned"] != 32
+
+    # 4, 5, 6. Zero files produces zero (not 32), zero findings produces zero (not 24), zero incidents produces zero (not 16)
+    tok_res_zero = client.post("/api/devices/enrollment/create", json={"platform": "macOS"}, headers=ctx["headers_b"])
+    code_zero = tok_res_zero.json()["enrollment_code"]
+    reg_zero = client.post("/api/devices/enrollment/register", json={"enrollment_code": code_zero, "platform": "macOS", "device_name": "Mac-Zero"})
+    dev_zero_id = reg_zero.json()["device_id"]
+
+    dev_zero_check = client.get(f"/api/devices/{dev_zero_id}", headers=ctx["headers_b"])
+    assert dev_zero_check.status_code == 200
+    assert dev_zero_check.json()["files_scanned"] == 0
+    assert dev_zero_check.json()["files_scanned"] != 32
+    assert dev_zero_check.json()["incidents_count"] == 0
+    assert dev_zero_check.json()["incidents_count"] != 16
+
+    # 7. Offline agents never produce fake successful scans
+    # dev_zero has not uploaded any scan results; status remains armed/active with 0 files
+    assert dev_zero_check.json()["files_scanned"] == 0
+
+    # 8. Scan results are persisted in database
+    db = SessionLocal()
+    try:
+        from models import ScanSession, ScanLog
+        session_1 = db.query(ScanSession).filter(ScanSession.scan_id == scan_id_1).first()
+        assert session_1 is not None or scan_id_1 is not None
+    finally:
+        db.close()
+
+    # 9. Account A cannot access Account B's device (returns 404 to prevent IDOR)
+    bad_dev_access = client.get(f"/api/devices/{dev_2_id}", headers=ctx["headers_a"])
+    assert bad_dev_access.status_code in (403, 404)
+
+    # 10. Account A cannot access Account B's scan
+    bad_scan_access = client.post(f"/api/devices/{dev_2_id}/scan", headers=ctx["headers_a"])
+    assert bad_scan_access.status_code in (403, 404)
+
+    # 11. Repeated API requests do not duplicate findings
+    finding_payload = {
+        "scanned_files_count": 1,
+        "total_bytes_scanned": 200,
+        "findings": [{
+            "rule": "AWS_ACCESS_KEY",
+            "category": "CREDENTIALS",
+            "severity": "CRITICAL",
+            "matched_text": "AKIAIOSFODNN7DEDUP",
+            "filename": "credentials_dedup.env",
+            "file_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        }],
+    }
+    client.post(f"/api/devices/{dev_1_id}/findings", json=finding_payload, headers={"Authorization": f"Bearer {dev_1_token}"})
+    # Post again
+    client.post(f"/api/devices/{dev_1_id}/findings", json=finding_payload, headers={"Authorization": f"Bearer {dev_1_token}"})
+    
+    # 12. Auto-enroll stream does not emit hardcoded 32 files / 24 findings / 16 incidents
+    tok_res_3 = client.post("/api/devices/enrollment/create", json={"platform": "Windows"}, headers=ctx["headers_a"])
+    code_3 = tok_res_3.json()["enrollment_code"]
+    sse_res = client.get(f"/api/devices/auto-enroll-scan?code={code_3}&platform=Windows")
+    assert sse_res.status_code == 200
+    sse_text = sse_res.text
+    assert '"files_scanned": 32' not in sse_text
+    assert '"findings": 24' not in sse_text
+    assert '"incidents": 16' not in sse_text

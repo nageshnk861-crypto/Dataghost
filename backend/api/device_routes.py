@@ -1189,7 +1189,7 @@ def auto_enroll_and_scan_stream(
         for _ in range(3):
             await asyncio.sleep(1.0)
             db.refresh(device)
-            if (device.files_scanned and device.files_scanned > 0) or (device.total_scans and device.total_scans > 0):
+            if device.files_scanned and device.files_scanned > 0:
                 agent_scanned = True
                 break
 
@@ -2469,6 +2469,7 @@ def upload_device_findings(
     return AgentFindingsUploadResponse(
         status="success",
         device_id=device.device_id,
+        scan_id=scan_id,
         persisted_findings_count=persisted_count,
         incidents_created_count=incidents_created,
         risk_score=max_risk,

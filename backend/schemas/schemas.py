@@ -290,6 +290,7 @@ class AgentFindingsUploadRequest(BaseModel):
 class AgentFindingsUploadResponse(BaseModel):
     status: str = "success"
     device_id: str
+    scan_id: Optional[str] = None
     persisted_findings_count: int
     incidents_created_count: int
     risk_score: int
