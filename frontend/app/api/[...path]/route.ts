@@ -175,55 +175,11 @@ const defaultIncidents: IncidentRecord[] = [
   },
 ];
 
-const defaultDevices: DeviceRecord[] = [
-  {
-    id: 1,
-    device_id: "dg-win-7dfa",
-    device_name: "Windows-PC",
-    hostname: "windows-pc.local",
-    platform: "Windows",
-    os_name: "Windows 11 Enterprise",
-    os_type: "Windows",
-    os_version: "11 x64",
-    status: "ACTIVE",
-    last_seen: new Date().toISOString(),
-    ip_address: "192.168.1.105",
-    agent_version: "2.4.0",
-    risk_score: 95,
-    policy_status: "ENFORCED",
-    sensitive_files_count: 8,
-    files_scanned: 142,
-    total_scans: 14,
-    blocked_transfers_count: 3,
-    incidents_count: 8,
-    created_at: new Date(Date.now() - 3600000 * 72).toISOString(),
-  },
-  {
-    id: 2,
-    device_id: "dg-mac-91e2",
-    device_name: "MacBook-Engineering",
-    hostname: "macbook.local",
-    platform: "macOS",
-    os_name: "macOS Sonoma",
-    os_type: "macOS",
-    os_version: "14.4",
-    status: "ACTIVE",
-    last_seen: new Date().toISOString(),
-    ip_address: "192.168.1.112",
-    agent_version: "2.4.0",
-    risk_score: 45,
-    policy_status: "ENFORCED",
-    sensitive_files_count: 2,
-    files_scanned: 96,
-    total_scans: 8,
-    blocked_transfers_count: 1,
-    incidents_count: 2,
-    created_at: new Date(Date.now() - 3600000 * 96).toISOString(),
-  },
-];
+const defaultDevices: DeviceRecord[] = [];
+const defaultIncidents: IncidentRecord[] = [];
 
-const devicesStore: DeviceRecord[] = [...defaultDevices];
-const incidentsStore: IncidentRecord[] = [...defaultIncidents];
+const devicesStore: DeviceRecord[] = [];
+const incidentsStore: IncidentRecord[] = [];
 
 // Helper to generate a code like DG-A1B2-C3D4
 function generateEnrollmentCode(): string {
@@ -616,7 +572,7 @@ async function tryProxyToBackend(
   // ── Wake-ping: fire a cheap GET /api/health to unfreeze the dyno if it is asleep.
   const healthUrl = `${backendUrl}/api/health`;
   const wakeController = new AbortController();
-  fetch(healthUrl, { method: "GET", signal: wakeController.signal }).catch(() => {});
+  fetch(healthUrl, { method: "GET", signal: wakeController.signal }).catch(() => { });
 
   // Body must be read once before the first attempt so it can be re-sent on retry.
   const bodyBuffer =
@@ -734,529 +690,521 @@ export async function GET(request: NextRequest, { params }: { params: { path: st
 
   // Forward to real backend; returns null only in local dev with ENABLE_MOCK_FALLBACK=true.
   const proxyRes = await tryProxyToBackend(request, fullApiPath);
-  if (proxyRes !== null) return proxyRes;
-
-  const origin = request.nextUrl.origin;
-  const currentUser = extractUserFromRequest(request);
-
-  // ── Health ──
-  if (pathStr === "/health" || pathStr === "/v1/health") {
-    return NextResponse.json({ status: "healthy", timestamp: new Date().toISOString(), platform: "cloud" });
+  // Real user data must always come from the backend or return an empty/loading state.
+  // Never fall through to mock devices for live users.
+  if (mockFallbackEnabled) {
+    return null;
   }
 
-  // ── Authentication Profile ──
-  if (pathStr === "/auth/me" || pathStr === "/users/me") {
-    return NextResponse.json({
-      id: 1,
-      username: currentUser,
-      email: `${currentUser}@dataghost.local`,
-      role: currentUser.toLowerCase().includes("admin") ? "admin" : "analyst",
-      is_active: true,
-      created_at: new Date().toISOString(),
+  if (isVercel) {
+    return backend502(fullPath);
+  }
+  return null;
+  created_at: new Date().toISOString(),
     });
   }
 
-  // ── Dashboard Stats ──
-  if (pathStr === "/dashboard/stats") {
-    const totalFilesScanned = devicesStore.reduce((acc, d) => acc + (d.files_scanned || d.total_scans || 0), 0);
-    const activeCount = devicesStore.filter((d) => d.status === "ACTIVE").length;
-    // sensitive_files: scans with any findings (matches real backend: findings_count > 0 OR risk >= 30)
-    const sensitiveFiles = incidentsStore.length || devicesStore.reduce((acc, d) => acc + (d.sensitive_files_count || 0), 0);
-    // security events: BLOCKED + ALERTED (matches real backend)
-    const blockedTransfers = incidentsStore.filter((i) => i.action_taken === "BLOCKED" || i.action_taken === "ALERTED").length;
-    const criticalIncidents = incidentsStore.filter((i) => i.severity === "CRITICAL").length;
+// ── Dashboard Stats ──
+if (pathStr === "/dashboard/stats") {
+  const totalFilesScanned = devicesStore.reduce((acc, d) => acc + (d.files_scanned || d.total_scans || 0), 0);
+  const activeCount = devicesStore.filter((d) => d.status === "ACTIVE").length;
+  // sensitive_files: scans with any findings (matches real backend: findings_count > 0 OR risk >= 30)
+  const sensitiveFiles = incidentsStore.length || devicesStore.reduce((acc, d) => acc + (d.sensitive_files_count || 0), 0);
+  // security events: BLOCKED + ALERTED (matches real backend)
+  const blockedTransfers = incidentsStore.filter((i) => i.action_taken === "BLOCKED" || i.action_taken === "ALERTED").length;
+  const criticalIncidents = incidentsStore.filter((i) => i.severity === "CRITICAL").length;
 
-    const recentThreats = incidentsStore.slice(0, 5).map((i) => ({
-      incident_id: i.incident_id,
-      filename: i.filename,
-      risk_score: i.risk_score,
-      severity: i.severity,
-      user: i.user,
-      timestamp: i.timestamp,
-      action_taken: i.action_taken,
-    }));
+  const recentThreats = incidentsStore.slice(0, 5).map((i) => ({
+    incident_id: i.incident_id,
+    filename: i.filename,
+    risk_score: i.risk_score,
+    severity: i.severity,
+    user: i.user,
+    timestamp: i.timestamp,
+    action_taken: i.action_taken,
+  }));
 
-    return NextResponse.json({
-      protected_devices: activeCount,
-      active_devices: activeCount,
-      files_scanned: totalFilesScanned,
-      total_scans: totalFilesScanned,
-      sensitive_files: sensitiveFiles,
-      blocked_transfers: blockedTransfers,
-      critical_incidents: criticalIncidents,
-      recent_threats: recentThreats,
+  return NextResponse.json({
+    protected_devices: activeCount,
+    active_devices: activeCount,
+    files_scanned: totalFilesScanned,
+    total_scans: totalFilesScanned,
+    sensitive_files: sensitiveFiles,
+    blocked_transfers: blockedTransfers,
+    critical_incidents: criticalIncidents,
+    recent_threats: recentThreats,
+  });
+}
+
+if (pathStr === "/dashboard/activity") {
+  const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const now = new Date();
+  const activity = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(now);
+    d.setDate(d.getDate() - (6 - i));
+    const dateName = days[d.getDay()];
+    const dayIncidents = incidentsStore.filter((inc) => {
+      const incDate = new Date(inc.timestamp);
+      return incDate.toDateString() === d.toDateString();
     });
+    return {
+      date: dateName,
+      scans: 10 + dayIncidents.length * 4,
+      sensitive: dayIncidents.length,
+      blocked: dayIncidents.filter((inc) => inc.action_taken === "BLOCKED").length,
+    };
+  });
+  return NextResponse.json(activity);
+}
+
+// ── Incidents (/api/incidents) ──
+if (pathStr === "/incidents") {
+  const search = (request.nextUrl.searchParams.get("search") || "").toLowerCase();
+  const severityFilter = request.nextUrl.searchParams.get("severity");
+  const statusFilter = request.nextUrl.searchParams.get("status");
+  const page = parseInt(request.nextUrl.searchParams.get("page") || "1", 10);
+  const perPage = parseInt(request.nextUrl.searchParams.get("per_page") || "100", 10);
+
+  let filtered = [...incidentsStore];
+  if (severityFilter && severityFilter !== "ALL") {
+    filtered = filtered.filter((i) => i.severity === severityFilter);
+  }
+  if (statusFilter && statusFilter !== "ALL") {
+    filtered = filtered.filter((i) => i.status === statusFilter);
+  }
+  if (search) {
+    filtered = filtered.filter(
+      (i) =>
+        i.filename.toLowerCase().includes(search) ||
+        i.user.toLowerCase().includes(search) ||
+        i.incident_id.toLowerCase().includes(search)
+    );
   }
 
-  if (pathStr === "/dashboard/activity") {
-    const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    const now = new Date();
-    const activity = Array.from({ length: 7 }, (_, i) => {
-      const d = new Date(now);
-      d.setDate(d.getDate() - (6 - i));
-      const dateName = days[d.getDay()];
-      const dayIncidents = incidentsStore.filter((inc) => {
-        const incDate = new Date(inc.timestamp);
-        return incDate.toDateString() === d.toDateString();
+  const start = (page - 1) * perPage;
+  const pagedItems = filtered.slice(start, start + perPage);
+
+  return NextResponse.json({
+    items: pagedItems,
+    total: filtered.length,
+    page,
+    per_page: perPage,
+    total_pages: Math.max(1, Math.ceil(filtered.length / perPage)),
+  });
+}
+
+// ── Findings & Finding Stats (/api/findings and /api/findings/stats) ──
+if (pathStr === "/findings/stats") {
+  const allFindings: Array<{ rule: string; category: string; severity: string }> = [];
+  for (const inc of incidentsStore) {
+    if (Array.isArray(inc.findings)) {
+      allFindings.push(...inc.findings);
+    }
+  }
+  const totalFindings = allFindings.length;
+  const severityBreakdown: Record<string, number> = { LOW: 0, MEDIUM: 0, HIGH: 0, CRITICAL: 0 };
+  const categoryBreakdown: Record<string, number> = { PII: 0, FINANCIAL: 0, CREDENTIALS: 0, CORPORATE: 0, AI_MODELS: 0 };
+  for (const f of allFindings) {
+    const sev = (f.severity || "LOW").toUpperCase();
+    if (sev in severityBreakdown) severityBreakdown[sev]++;
+    const cat = (f.category || "PII").toUpperCase();
+    if (cat in categoryBreakdown) categoryBreakdown[cat]++;
+  }
+  return NextResponse.json({
+    total_findings: totalFindings,
+    by_severity: severityBreakdown,
+    by_category: categoryBreakdown,
+    open_findings: totalFindings,
+    resolved_findings: 0,
+    suppressed_findings: 0,
+  });
+}
+
+if (pathStr === "/findings") {
+  const list: any[] = [];
+  let idx = 1;
+  for (const inc of incidentsStore) {
+    for (const f of inc.findings || []) {
+      list.push({
+        id: idx++,
+        rule_id: f.rule,
+        rule_name: f.rule,
+        category: f.category,
+        severity: f.severity,
+        filename: inc.filename,
+        device_id: inc.device_id,
+        user: inc.user,
+        status: inc.status,
+        evidence_redacted: f.matched_text,
+        detail: f.detail || f.rule,
+        timestamp: inc.timestamp,
       });
-      return {
-        date: dateName,
-        scans: 10 + dayIncidents.length * 4,
-        sensitive: dayIncidents.length,
-        blocked: dayIncidents.filter((inc) => inc.action_taken === "BLOCKED").length,
+    }
+  }
+  return NextResponse.json({
+    items: list,
+    total: list.length,
+    page: 1,
+    per_page: 100,
+    total_pages: 1,
+  });
+}
+
+// ── Enrollment Status (/devices/enrollment/status/:code) ──
+if (pathSegments[0] === "devices" && pathSegments[1] === "enrollment" && pathSegments[2] === "status") {
+  const code = decodeURIComponent(pathSegments[3] || "");
+  const session = enrollmentSessions.get(code);
+
+  if (session) {
+    const isExpired = Date.now() > session.expiresAt;
+    return NextResponse.json({
+      enrollment_code: session.code,
+      platform: session.platform,
+      status: isExpired ? "EXPIRED" : session.status,
+      device_id: session.deviceId,
+      device_name: session.deviceName,
+      is_expired: isExpired,
+      expires_in_seconds: Math.max(0, Math.floor((session.expiresAt - Date.now()) / 1000)),
+    });
+  }
+
+  return NextResponse.json({
+    enrollment_code: code,
+    platform: "Windows",
+    status: "PENDING",
+    is_expired: false,
+    expires_in_seconds: 540,
+  });
+}
+
+// ── Auto-Enroll & Scan SSE Stream (/devices/auto-enroll-scan) ──
+if (pathSegments[0] === "devices" && pathSegments[1] === "auto-enroll-scan") {
+  const code = (request.nextUrl.searchParams.get("code") || "").trim().toUpperCase();
+  const platform = request.nextUrl.searchParams.get("platform") || "Windows";
+  const customDeviceName = request.nextUrl.searchParams.get("device_name");
+
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    async start(controller) {
+      const send = (data: object) => {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
       };
-    });
-    return NextResponse.json(activity);
-  }
 
-  // ── Incidents (/api/incidents) ──
-  if (pathStr === "/incidents") {
-    const search = (request.nextUrl.searchParams.get("search") || "").toLowerCase();
-    const severityFilter = request.nextUrl.searchParams.get("severity");
-    const statusFilter = request.nextUrl.searchParams.get("status");
-    const page = parseInt(request.nextUrl.searchParams.get("page") || "1", 10);
-    const perPage = parseInt(request.nextUrl.searchParams.get("per_page") || "100", 10);
+      send({ type: "connected" });
+      await new Promise((r) => setTimeout(r, 200));
 
-    let filtered = [...incidentsStore];
-    if (severityFilter && severityFilter !== "ALL") {
-      filtered = filtered.filter((i) => i.severity === severityFilter);
-    }
-    if (statusFilter && statusFilter !== "ALL") {
-      filtered = filtered.filter((i) => i.status === statusFilter);
-    }
-    if (search) {
-      filtered = filtered.filter(
-        (i) =>
-          i.filename.toLowerCase().includes(search) ||
-          i.user.toLowerCase().includes(search) ||
-          i.incident_id.toLowerCase().includes(search)
-      );
-    }
+      send({ type: "enrolling", enrollment_code: code });
+      await new Promise((r) => setTimeout(r, 300));
 
-    const start = (page - 1) * perPage;
-    const pagedItems = filtered.slice(start, start + perPage);
+      // Find or create device
+      const prefixMap: Record<string, string> = {
+        windows: "dg-win",
+        android: "dg-android",
+        ios: "dg-ios",
+        macos: "dg-mac",
+        linux: "dg-lin",
+      };
+      const pKey = platform.toLowerCase();
+      const prefix = prefixMap[pKey] || "dg-dev";
+      const suffix = Math.random().toString(16).substring(2, 6);
+      const deviceId = `${prefix}-${suffix}`;
+      const finalDeviceName = customDeviceName || `${platform}-${code.replace(/[^A-Z0-9]/g, "").slice(-4) || "Endpoint"}`;
 
-    return NextResponse.json({
-      items: pagedItems,
-      total: filtered.length,
-      page,
-      per_page: perPage,
-      total_pages: Math.max(1, Math.ceil(filtered.length / perPage)),
-    });
-  }
-
-  // ── Findings & Finding Stats (/api/findings and /api/findings/stats) ──
-  if (pathStr === "/findings/stats") {
-    const allFindings: Array<{ rule: string; category: string; severity: string }> = [];
-    for (const inc of incidentsStore) {
-      if (Array.isArray(inc.findings)) {
-        allFindings.push(...inc.findings);
+      let dev = devicesStore.find((d) => d.device_name === finalDeviceName);
+      if (!dev) {
+        dev = {
+          id: devicesStore.length + 1,
+          device_id: deviceId,
+          device_name: finalDeviceName,
+          hostname: `${finalDeviceName.toLowerCase()}.local`,
+          platform,
+          os_name: platform,
+          os_type: platform,
+          os_version: "1.0",
+          status: "ACTIVE",
+          last_seen: new Date().toISOString(),
+          ip_address: "192.168.1." + (100 + devicesStore.length),
+          agent_version: "2.4.0",
+          risk_score: 15,
+          policy_status: "ENFORCED",
+          sensitive_files_count: 0,
+          files_scanned: 0,
+          total_scans: 1,
+          blocked_transfers_count: 0,
+          incidents_count: 0,
+          created_at: new Date().toISOString(),
+        };
+        devicesStore.unshift(dev);
       }
-    }
-    const totalFindings = allFindings.length;
-    const severityBreakdown: Record<string, number> = { LOW: 0, MEDIUM: 0, HIGH: 0, CRITICAL: 0 };
-    const categoryBreakdown: Record<string, number> = { PII: 0, FINANCIAL: 0, CREDENTIALS: 0, CORPORATE: 0, AI_MODELS: 0 };
-    for (const f of allFindings) {
-      const sev = (f.severity || "LOW").toUpperCase();
-      if (sev in severityBreakdown) severityBreakdown[sev]++;
-      const cat = (f.category || "PII").toUpperCase();
-      if (cat in categoryBreakdown) categoryBreakdown[cat]++;
-    }
-    return NextResponse.json({
-      total_findings: totalFindings,
-      by_severity: severityBreakdown,
-      by_category: categoryBreakdown,
-      open_findings: totalFindings,
-      resolved_findings: 0,
-      suppressed_findings: 0,
-    });
-  }
 
-  if (pathStr === "/findings") {
-    const list: any[] = [];
-    let idx = 1;
-    for (const inc of incidentsStore) {
-      for (const f of inc.findings || []) {
-        list.push({
-          id: idx++,
-          rule_id: f.rule,
-          rule_name: f.rule,
-          category: f.category,
-          severity: f.severity,
-          filename: inc.filename,
-          device_id: inc.device_id,
-          user: inc.user,
-          status: inc.status,
-          evidence_redacted: f.matched_text,
-          detail: f.detail || f.rule,
-          timestamp: inc.timestamp,
-        });
-      }
-    }
-    return NextResponse.json({
-      items: list,
-      total: list.length,
-      page: 1,
-      per_page: 100,
-      total_pages: 1,
-    });
-  }
-
-  // ── Enrollment Status (/devices/enrollment/status/:code) ──
-  if (pathSegments[0] === "devices" && pathSegments[1] === "enrollment" && pathSegments[2] === "status") {
-    const code = decodeURIComponent(pathSegments[3] || "");
-    const session = enrollmentSessions.get(code);
-
-    if (session) {
-      const isExpired = Date.now() > session.expiresAt;
-      return NextResponse.json({
-        enrollment_code: session.code,
-        platform: session.platform,
-        status: isExpired ? "EXPIRED" : session.status,
-        device_id: session.deviceId,
-        device_name: session.deviceName,
-        is_expired: isExpired,
-        expires_in_seconds: Math.max(0, Math.floor((session.expiresAt - Date.now()) / 1000)),
+      send({
+        type: "enrolled",
+        device_id: dev.device_id,
+        device_name: dev.device_name,
+        platform: dev.platform,
       });
-    }
+      await new Promise((r) => setTimeout(r, 400));
 
-    return NextResponse.json({
-      enrollment_code: code,
-      platform: "Windows",
-      status: "PENDING",
-      is_expired: false,
-      expires_in_seconds: 540,
-    });
-  }
+      // Generate files to scan with comprehensive full-disk DLP inspection
+      const demoFiles = [
+        { name: "employee_credentials.env", content: "DB_PASS=SuperSecret123!\nAWS_KEY=AKIAIOSFODNN7EXAMPLE\n" },
+        { name: "customer_export.csv", content: "id,name,email,card\n1,Alice,alice@corp.com,4111222233334444\n" },
+        { name: "tax_records.json", content: '{"pan": "ABCDE1234F", "aadhaar": "2345 6789 0123"}' },
+        { name: "system_architecture.pdf", content: "DataGhost architecture design document v2.4" },
+        { name: "network_config.yaml", content: "internal_ip: 10.0.0.1\nfirewall: active" },
+        { name: "quarterly_budget.xlsx", content: "Payroll: $240,000, Total Salary Expenses: $450,000" },
+        { name: "patient_records.csv", content: "patient_id,name,phone,condition\n101,John,9876543210,Stable" },
+        { name: "source_code_backup.py", content: "import os\napi_key = 'xoxb-1234567890-abcdefg'" },
+        { name: "audit_trail.log", content: "2026-10-27 user auth successful for admin" },
+        { name: "security_policy.md", content: "# Corporate DLP Policy\nStrict data exfiltration controls." },
+        { name: "aws_keys.env", content: "AWS_ACCESS_KEY_ID=AKIA3X7NEXAMPLE\nAWS_SECRET=x99fKlm389zKl\n" },
+        { name: "client_nda_agreement.docx", content: "CONFIDENTIAL Non-Disclosure Agreement. Trade secret clause active." },
+        { name: "hr_payroll_q3.xlsx", content: "Employee: Marcus Ray, Base Salary: $165,000, Bank: 9876543210" },
+        { name: "github_tokens.txt", content: "ghp_Abcdef1234567890Ghijklmnopqrstuvwxyz" },
+        { name: "db_dump_users.sql", content: "INSERT INTO users (id, name, email, ssn) VALUES (1, 'Eve', 'eve@corp.com', '123-45-6789');" },
+        { name: "id_verifications.csv", content: "user,pan,aadhaar\nBob,PQRST5678A,9876 5432 1098" },
+        { name: "payment_gateway.log", content: "Charge failed for card ending in 4111-2222-3333-4444" },
+        { name: "production_ssh_keys.pem", content: "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0\n-----END RSA PRIVATE KEY-----" },
+        { name: "slack_integration.py", content: "SLACK_BOT_TOKEN = 'xoxb-9876543210-9876543210-abcd'" },
+        { name: "employee_medical_leaves.csv", content: "emp_id,diagnoses,doctor,contact_phone\nE44,Diabetes,Dr. Smith,9123456789" },
+        { name: "api_routes.ts", content: "export async function handler() { return { status: 'ok' }; }" },
+        { name: "docker-compose.prod.yml", content: "version: '3.8'\nservices:\n  app:\n    image: dataghost:latest" },
+        { name: "cloud_storage_backup.json", content: '{"bucket": "corp-finance-vault", "region": "us-east-1"}' },
+        { name: "meeting_notes_internal.txt", content: "Internal sync on project roadmap and launch timelines." },
+        { name: "sales_pipeline_2026.xlsx", content: "Lead: Acme Corp, Deal Size: $1,200,000, Stage: Closing" },
+        { name: "vpn_profiles.ovpn", content: "client\ndev tun\nproto udp\nremote vpn.corp.internal 1194" },
+        { name: "customer_support_chats.log", content: "User reported login issue, verified email john.doe@corp.com" },
+        { name: "marketing_plan_q4.pptx", content: "Q4 GTM strategy for enterprise compliance security product" },
+        { name: "passwords_backup.txt", content: "admin_pass: SecretPass#2026!\nstaging_db: MongoDbPass99!" },
+        { name: "vendor_invoices.pdf", content: "Invoice #INV-9921 from Cloud Services Provider" },
+        { name: "employee_handbook.pdf", content: "Company guidelines on acceptable computing device usage" },
+        { name: "compliance_audit.xml", content: "<audit><soc2 status='compliant'/><iso27001 status='passed'/></audit>" },
+      ];
 
-  // ── Auto-Enroll & Scan SSE Stream (/devices/auto-enroll-scan) ──
-  if (pathSegments[0] === "devices" && pathSegments[1] === "auto-enroll-scan") {
-    const code = (request.nextUrl.searchParams.get("code") || "").trim().toUpperCase();
-    const platform = request.nextUrl.searchParams.get("platform") || "Windows";
-    const customDeviceName = request.nextUrl.searchParams.get("device_name");
+      send({ type: "scan_start", total_files: demoFiles.length, device_id: dev.device_id });
 
-    const encoder = new TextEncoder();
-    const stream = new ReadableStream({
-      async start(controller) {
-        const send = (data: object) => {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
-        };
+      let findingsCount = 0;
+      let incidentsCount = 0;
 
-        send({ type: "connected" });
-        await new Promise((r) => setTimeout(r, 200));
-
-        send({ type: "enrolling", enrollment_code: code });
-        await new Promise((r) => setTimeout(r, 300));
-
-        // Find or create device
-        const prefixMap: Record<string, string> = {
-          windows: "dg-win",
-          android: "dg-android",
-          ios: "dg-ios",
-          macos: "dg-mac",
-          linux: "dg-lin",
-        };
-        const pKey = platform.toLowerCase();
-        const prefix = prefixMap[pKey] || "dg-dev";
-        const suffix = Math.random().toString(16).substring(2, 6);
-        const deviceId = `${prefix}-${suffix}`;
-        const finalDeviceName = customDeviceName || `${platform}-${code.replace(/[^A-Z0-9]/g, "").slice(-4) || "Endpoint"}`;
-
-        let dev = devicesStore.find((d) => d.device_name === finalDeviceName);
-        if (!dev) {
-          dev = {
-            id: devicesStore.length + 1,
-            device_id: deviceId,
-            device_name: finalDeviceName,
-            hostname: `${finalDeviceName.toLowerCase()}.local`,
-            platform,
-            os_name: platform,
-            os_type: platform,
-            os_version: "1.0",
-            status: "ACTIVE",
-            last_seen: new Date().toISOString(),
-            ip_address: "192.168.1." + (100 + devicesStore.length),
-            agent_version: "2.4.0",
-            risk_score: 15,
-            policy_status: "ENFORCED",
-            sensitive_files_count: 0,
-            files_scanned: 0,
-            total_scans: 1,
-            blocked_transfers_count: 0,
-            incidents_count: 0,
-            created_at: new Date().toISOString(),
-          };
-          devicesStore.unshift(dev);
-        }
-
+      for (let i = 0; i < demoFiles.length; i++) {
+        const item = demoFiles[i];
         send({
-          type: "enrolled",
-          device_id: dev.device_id,
-          device_name: dev.device_name,
-          platform: dev.platform,
+          type: "scanning_file",
+          index: i + 1,
+          total: demoFiles.length,
+          filename: item.name,
+          path: `/local/${item.name}`,
         });
-        await new Promise((r) => setTimeout(r, 400));
 
-        // Generate files to scan with comprehensive full-disk DLP inspection
-        const demoFiles = [
-          { name: "employee_credentials.env", content: "DB_PASS=SuperSecret123!\nAWS_KEY=AKIAIOSFODNN7EXAMPLE\n" },
-          { name: "customer_export.csv", content: "id,name,email,card\n1,Alice,alice@corp.com,4111222233334444\n" },
-          { name: "tax_records.json", content: '{"pan": "ABCDE1234F", "aadhaar": "2345 6789 0123"}' },
-          { name: "system_architecture.pdf", content: "DataGhost architecture design document v2.4" },
-          { name: "network_config.yaml", content: "internal_ip: 10.0.0.1\nfirewall: active" },
-          { name: "quarterly_budget.xlsx", content: "Payroll: $240,000, Total Salary Expenses: $450,000" },
-          { name: "patient_records.csv", content: "patient_id,name,phone,condition\n101,John,9876543210,Stable" },
-          { name: "source_code_backup.py", content: "import os\napi_key = 'xoxb-1234567890-abcdefg'" },
-          { name: "audit_trail.log", content: "2026-10-27 user auth successful for admin" },
-          { name: "security_policy.md", content: "# Corporate DLP Policy\nStrict data exfiltration controls." },
-          { name: "aws_keys.env", content: "AWS_ACCESS_KEY_ID=AKIA3X7NEXAMPLE\nAWS_SECRET=x99fKlm389zKl\n" },
-          { name: "client_nda_agreement.docx", content: "CONFIDENTIAL Non-Disclosure Agreement. Trade secret clause active." },
-          { name: "hr_payroll_q3.xlsx", content: "Employee: Marcus Ray, Base Salary: $165,000, Bank: 9876543210" },
-          { name: "github_tokens.txt", content: "ghp_Abcdef1234567890Ghijklmnopqrstuvwxyz" },
-          { name: "db_dump_users.sql", content: "INSERT INTO users (id, name, email, ssn) VALUES (1, 'Eve', 'eve@corp.com', '123-45-6789');" },
-          { name: "id_verifications.csv", content: "user,pan,aadhaar\nBob,PQRST5678A,9876 5432 1098" },
-          { name: "payment_gateway.log", content: "Charge failed for card ending in 4111-2222-3333-4444" },
-          { name: "production_ssh_keys.pem", content: "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0\n-----END RSA PRIVATE KEY-----" },
-          { name: "slack_integration.py", content: "SLACK_BOT_TOKEN = 'xoxb-9876543210-9876543210-abcd'" },
-          { name: "employee_medical_leaves.csv", content: "emp_id,diagnoses,doctor,contact_phone\nE44,Diabetes,Dr. Smith,9123456789" },
-          { name: "api_routes.ts", content: "export async function handler() { return { status: 'ok' }; }" },
-          { name: "docker-compose.prod.yml", content: "version: '3.8'\nservices:\n  app:\n    image: dataghost:latest" },
-          { name: "cloud_storage_backup.json", content: '{"bucket": "corp-finance-vault", "region": "us-east-1"}' },
-          { name: "meeting_notes_internal.txt", content: "Internal sync on project roadmap and launch timelines." },
-          { name: "sales_pipeline_2026.xlsx", content: "Lead: Acme Corp, Deal Size: $1,200,000, Stage: Closing" },
-          { name: "vpn_profiles.ovpn", content: "client\ndev tun\nproto udp\nremote vpn.corp.internal 1194" },
-          { name: "customer_support_chats.log", content: "User reported login issue, verified email john.doe@corp.com" },
-          { name: "marketing_plan_q4.pptx", content: "Q4 GTM strategy for enterprise compliance security product" },
-          { name: "passwords_backup.txt", content: "admin_pass: SecretPass#2026!\nstaging_db: MongoDbPass99!" },
-          { name: "vendor_invoices.pdf", content: "Invoice #INV-9921 from Cloud Services Provider" },
-          { name: "employee_handbook.pdf", content: "Company guidelines on acceptable computing device usage" },
-          { name: "compliance_audit.xml", content: "<audit><soc2 status='compliant'/><iso27001 status='passed'/></audit>" },
-        ];
+        await new Promise((r) => setTimeout(r, 60));
 
-        send({ type: "scan_start", total_files: demoFiles.length, device_id: dev.device_id });
-
-        let findingsCount = 0;
-        let incidentsCount = 0;
-
-        for (let i = 0; i < demoFiles.length; i++) {
-          const item = demoFiles[i];
-          send({
-            type: "scanning_file",
-            index: i + 1,
-            total: demoFiles.length,
-            filename: item.name,
-            path: `/local/${item.name}`,
-          });
-
-          await new Promise((r) => setTimeout(r, 60));
-
-          // Run DLP scanner on content
-          const fileFindings: Array<{ rule: string; category: string; severity: string; matched_text: string }> = [];
-          for (const rule of DLP_RULES) {
-            rule.pattern.lastIndex = 0;
-            const matches = item.content.match(rule.pattern);
-            if (matches && matches.length > 0) {
-              fileFindings.push({
-                rule: rule.name,
-                category: rule.category,
-                severity: rule.severity,
-                matched_text: matches[0],
-              });
-            }
-          }
-
-          if (fileFindings.length > 0) {
-            for (const f of fileFindings) {
-              findingsCount++;
-              send({
-                type: "finding",
-                filename: item.name,
-                severity: f.severity,
-                category: f.category,
-                description: `${f.rule} detected in ${item.name}`,
-              });
-            }
-
-            incidentsCount++;
-            incidentsStore.unshift({
-              id: incidentsStore.length + 1,
-              incident_id: `INC-${Math.random().toString(16).substring(2, 8).toUpperCase()}`,
-              user: dev.device_name,
-              filename: item.name,
-              file_hash: crypto.createHash("sha256").update(item.content).digest("hex"),
-              classification: fileFindings.some((f) => f.severity === "CRITICAL") ? "RESTRICTED" : "CONFIDENTIAL",
-              risk_score: 75,
-              severity: fileFindings.some((f) => f.severity === "CRITICAL") ? "CRITICAL" : "HIGH",
-              status: "OPEN",
-              destination: "INTERNAL",
-              action: "SCAN",
-              action_taken: "ALERTED",
-              findings: fileFindings,
-              device_id: dev.device_id,
-              created_at: new Date().toISOString(),
-              timestamp: new Date().toISOString(),
+        // Run DLP scanner on content
+        const fileFindings: Array<{ rule: string; category: string; severity: string; matched_text: string }> = [];
+        for (const rule of DLP_RULES) {
+          rule.pattern.lastIndex = 0;
+          const matches = item.content.match(rule.pattern);
+          if (matches && matches.length > 0) {
+            fileFindings.push({
+              rule: rule.name,
+              category: rule.category,
+              severity: rule.severity,
+              matched_text: matches[0],
             });
           }
         }
 
-        dev.files_scanned = (dev.files_scanned || 0) + demoFiles.length;
-        dev.sensitive_files_count = (dev.sensitive_files_count || 0) + incidentsCount;
-        dev.incidents_count = (dev.incidents_count || 0) + incidentsCount;
+        if (fileFindings.length > 0) {
+          for (const f of fileFindings) {
+            findingsCount++;
+            send({
+              type: "finding",
+              filename: item.name,
+              severity: f.severity,
+              category: f.category,
+              description: `${f.rule} detected in ${item.name}`,
+            });
+          }
 
-        send({
-          type: "scan_complete",
-          device_id: dev.device_id,
-          device_name: dev.device_name,
-          files_scanned: demoFiles.length,
-          findings: findingsCount,
-          incidents: incidentsCount,
-        });
+          incidentsCount++;
+          incidentsStore.unshift({
+            id: incidentsStore.length + 1,
+            incident_id: `INC-${Math.random().toString(16).substring(2, 8).toUpperCase()}`,
+            user: dev.device_name,
+            filename: item.name,
+            file_hash: crypto.createHash("sha256").update(item.content).digest("hex"),
+            classification: fileFindings.some((f) => f.severity === "CRITICAL") ? "RESTRICTED" : "CONFIDENTIAL",
+            risk_score: 75,
+            severity: fileFindings.some((f) => f.severity === "CRITICAL") ? "CRITICAL" : "HIGH",
+            status: "OPEN",
+            destination: "INTERNAL",
+            action: "SCAN",
+            action_taken: "ALERTED",
+            findings: fileFindings,
+            device_id: dev.device_id,
+            created_at: new Date().toISOString(),
+            timestamp: new Date().toISOString(),
+          });
+        }
+      }
 
-        controller.close();
-      },
-    });
+      dev.files_scanned = (dev.files_scanned || 0) + demoFiles.length;
+      dev.sensitive_files_count = (dev.sensitive_files_count || 0) + incidentsCount;
+      dev.incidents_count = (dev.incidents_count || 0) + incidentsCount;
 
-    return new Response(stream, {
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache, no-transform",
-        Connection: "keep-alive",
-      },
+      send({
+        type: "scan_complete",
+        device_id: dev.device_id,
+        device_name: dev.device_name,
+        files_scanned: demoFiles.length,
+        findings: findingsCount,
+        incidents: incidentsCount,
+      });
+
+      controller.close();
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+    },
+  });
+}
+
+// ── Devices List & Details ──
+if (pathSegments[0] === "devices" && pathSegments[1] !== "enrollment") {
+  if (pathSegments.length === 1) {
+    // Refresh last_seen for active devices to ensure they are marked ACTIVE in SOC dashboard
+    const nowIso = new Date().toISOString();
+    const updatedDevices = devicesStore.map((d) => ({
+      ...d,
+      last_seen: d.status === "ACTIVE" ? nowIso : d.last_seen,
+    }));
+    return NextResponse.json(updatedDevices);
+  }
+  const devId = pathSegments[1];
+
+  // ── Device Scans / Latest Scan (/devices/:id/scans/latest and /devices/:id/scans) ──
+  if (pathSegments[2] === "scans") {
+    const dev = devicesStore.find((d) => d.device_id === devId || String(d.id) === devId);
+    if (!dev) {
+      return NextResponse.json({ message: `Device '${devId}' not found.` }, { status: 404 });
+    }
+    const filesCount = dev.files_scanned || 142;
+    const scanSession = {
+      id: dev.id || 1,
+      scan_id: `scan-${dev.device_id || "full"}-01`,
+      device_id: dev.id || 1,
+      user_id: 1,
+      trigger: "FULL-DISK",
+      started_at: new Date(Date.now() - 3600000 * 2).toISOString(),
+      finished_at: new Date(Date.now() - 3600000 * 2 + 184000).toISOString(),
+      status: "COMPLETED",
+      files_discovered: filesCount,
+      files_scanned: filesCount,
+      files_skipped: 0,
+      findings_count: dev.incidents_count || 0,
+      current_path: null,
+      error_message: null,
+      created_at: new Date(Date.now() - 3600000 * 2).toISOString(),
+      updated_at: new Date(Date.now() - 3600000 * 2 + 184000).toISOString(),
+    };
+
+    if (pathSegments[3] === "latest") {
+      return NextResponse.json(scanSession);
+    }
+    return NextResponse.json({
+      items: [scanSession],
+      total: 1,
     });
   }
 
-  // ── Devices List & Details ──
-  if (pathSegments[0] === "devices" && pathSegments[1] !== "enrollment") {
-    if (pathSegments.length === 1) {
-      // Refresh last_seen for active devices to ensure they are marked ACTIVE in SOC dashboard
-      const nowIso = new Date().toISOString();
-      const updatedDevices = devicesStore.map((d) => ({
-        ...d,
-        last_seen: d.status === "ACTIVE" ? nowIso : d.last_seen,
-      }));
-      return NextResponse.json(updatedDevices);
+  if (pathSegments[2] === "scan-summary") {
+    const dev = devicesStore.find((d) => d.device_id === devId || String(d.id) === devId);
+    if (!dev) {
+      return NextResponse.json({ message: `Device '${devId}' not found.` }, { status: 404 });
     }
-    const devId = pathSegments[1];
-
-    // ── Device Scans / Latest Scan (/devices/:id/scans/latest and /devices/:id/scans) ──
-    if (pathSegments[2] === "scans") {
-      const dev = devicesStore.find((d) => d.device_id === devId || String(d.id) === devId);
-      if (!dev) {
-        return NextResponse.json({ message: `Device '${devId}' not found.` }, { status: 404 });
-      }
-      const filesCount = dev.files_scanned || 142;
-      const scanSession = {
-        id: dev.id || 1,
-        scan_id: `scan-${dev.device_id || "full"}-01`,
-        device_id: dev.id || 1,
-        user_id: 1,
-        trigger: "FULL-DISK",
-        started_at: new Date(Date.now() - 3600000 * 2).toISOString(),
-        finished_at: new Date(Date.now() - 3600000 * 2 + 184000).toISOString(),
-        status: "COMPLETED",
-        files_discovered: filesCount,
-        files_scanned: filesCount,
-        files_skipped: 0,
-        findings_count: dev.incidents_count || 0,
-        current_path: null,
-        error_message: null,
-        created_at: new Date(Date.now() - 3600000 * 2).toISOString(),
-        updated_at: new Date(Date.now() - 3600000 * 2 + 184000).toISOString(),
-      };
-
-      if (pathSegments[3] === "latest") {
-        return NextResponse.json(scanSession);
-      }
+    const devIncidents = incidentsStore.filter((i) => i.device_id === dev.device_id);
+    if ((dev.files_scanned || 0) === 0 && devIncidents.length === 0) {
       return NextResponse.json({
-        items: [scanSession],
-        total: 1,
-      });
-    }
-
-    if (pathSegments[2] === "scan-summary") {
-      const dev = devicesStore.find((d) => d.device_id === devId || String(d.id) === devId);
-      if (!dev) {
-        return NextResponse.json({ message: `Device '${devId}' not found.` }, { status: 404 });
-      }
-      const devIncidents = incidentsStore.filter((i) => i.device_id === dev.device_id);
-      if ((dev.files_scanned || 0) === 0 && devIncidents.length === 0) {
-        return NextResponse.json({
-          status: "no_data",
-          has_scan_data: false,
-          message: "No scan data yet",
-          device: dev,
-          risk_score: null,
-          risk_level: null,
-          block_level: null,
-          sensitive_files: 0,
-          blocked_transfers: 0,
-          critical_incidents: 0,
-          threats_detected: 0,
-          user_information_count: 0,
-          ai_model_sharing_count: 0,
-          scanned_files_count: 0,
-          total_bytes_scanned: 0,
-          scan_results: [],
-          is_simulated: false,
-        });
-      }
-      return NextResponse.json({
-        status: "success",
-        has_scan_data: true,
+        status: "no_data",
+        has_scan_data: false,
+        message: "No scan data yet",
         device: dev,
-        risk_score: dev.risk_score,
-        risk_level: dev.risk_score >= 80 ? "CRITICAL" : dev.risk_score >= 60 ? "HIGH" : dev.risk_score >= 30 ? "MEDIUM" : "LOW",
-        block_level: dev.blocked_transfers_count > 0 ? "BLOCKED" : devIncidents.length > 0 ? "ALERTED" : "ALLOWED",
-        sensitive_files: dev.sensitive_files_count || 0,
-        blocked_transfers: dev.blocked_transfers_count || 0,
-        critical_incidents: devIncidents.filter((i) => i.severity === "CRITICAL").length,
-        threats_detected: devIncidents.length,
-        user_information_count: devIncidents.length,
+        risk_score: null,
+        risk_level: null,
+        block_level: null,
+        sensitive_files: 0,
+        blocked_transfers: 0,
+        critical_incidents: 0,
+        threats_detected: 0,
+        user_information_count: 0,
         ai_model_sharing_count: 0,
-        scanned_files_count: dev.files_scanned || 0,
+        scanned_files_count: 0,
         total_bytes_scanned: 0,
         scan_results: [],
         is_simulated: false,
       });
     }
-    const dev = devicesStore.find((d) => d.device_id === devId || String(d.id) === devId);
-    if (dev) {
-      const devIncidents = incidentsStore.filter((i) => i.device_id === dev.device_id);
-      return NextResponse.json({
-        ...dev,
-        recent_incidents: devIncidents.slice(0, 10),
-      });
-    }
-    return NextResponse.json(
-      { message: `Device '${devId}' not found.` },
-      { status: 404 }
-    );
+    return NextResponse.json({
+      status: "success",
+      has_scan_data: true,
+      device: dev,
+      risk_score: dev.risk_score,
+      risk_level: dev.risk_score >= 80 ? "CRITICAL" : dev.risk_score >= 60 ? "HIGH" : dev.risk_score >= 30 ? "MEDIUM" : "LOW",
+      block_level: dev.blocked_transfers_count > 0 ? "BLOCKED" : devIncidents.length > 0 ? "ALERTED" : "ALLOWED",
+      sensitive_files: dev.sensitive_files_count || 0,
+      blocked_transfers: dev.blocked_transfers_count || 0,
+      critical_incidents: devIncidents.filter((i) => i.severity === "CRITICAL").length,
+      threats_detected: devIncidents.length,
+      user_information_count: devIncidents.length,
+      ai_model_sharing_count: 0,
+      scanned_files_count: dev.files_scanned || 0,
+      total_bytes_scanned: 0,
+      scan_results: [],
+      is_simulated: false,
+    });
   }
-
-  // ── DLP Rules ──
-  if (pathStr === "/dlp-rules") {
-    return NextResponse.json(
-      DLP_RULES.map((r) => ({
-        name: r.name.toLowerCase(),
-        display_name: r.name.replace(/_/g, " "),
-        category: r.category,
-        severity: r.severity,
-        action: r.severity === "CRITICAL" ? "BLOCK" : "ALERT",
-        description: r.detail,
-        enabled: true,
-      }))
-    );
+  const dev = devicesStore.find((d) => d.device_id === devId || String(d.id) === devId);
+  if (dev) {
+    const devIncidents = incidentsStore.filter((i) => i.device_id === dev.device_id);
+    return NextResponse.json({
+      ...dev,
+      recent_incidents: devIncidents.slice(0, 10),
+    });
   }
+  return NextResponse.json(
+    { message: `Device '${devId}' not found.` },
+    { status: 404 }
+  );
+}
 
-  // ── Users ──
-  if (pathStr === "/users") {
-    return NextResponse.json([
-      { id: 1, username: currentUser, email: `${currentUser}@dataghost.local`, role: "analyst", is_active: true, created_at: new Date().toISOString() },
-      { id: 2, username: "admin", email: "admin@dataghost.local", role: "admin", is_active: true, created_at: new Date().toISOString() },
-    ]);
-  }
+// ── DLP Rules ──
+if (pathStr === "/dlp-rules") {
+  return NextResponse.json(
+    DLP_RULES.map((r) => ({
+      name: r.name.toLowerCase(),
+      display_name: r.name.replace(/_/g, " "),
+      category: r.category,
+      severity: r.severity,
+      action: r.severity === "CRITICAL" ? "BLOCK" : "ALERT",
+      description: r.detail,
+      enabled: true,
+    }))
+  );
+}
 
-  return NextResponse.json({ message: "Not found", path: fullApiPath }, { status: 404 });
+// ── Users ──
+if (pathStr === "/users") {
+  return NextResponse.json([
+    { id: 1, username: currentUser, email: `${currentUser}@dataghost.local`, role: "analyst", is_active: true, created_at: new Date().toISOString() },
+    { id: 2, username: "admin", email: "admin@dataghost.local", role: "admin", is_active: true, created_at: new Date().toISOString() },
+  ]);
+}
+
+return NextResponse.json({ message: "Not found", path: fullApiPath }, { status: 404 });
 }
 
 // ─── POST Handlers ────────────────────────────────────────────────────────────
