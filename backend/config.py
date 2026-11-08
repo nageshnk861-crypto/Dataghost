@@ -83,7 +83,7 @@ class Settings(BaseSettings):
                     pass
             return [item.strip().rstrip("/") for item in v.split(",") if item.strip()]
         elif isinstance(v, (list, tuple, set)):
-            return [str(item).strip().rstrip("/") for item in v if str(item).strip()]
+            return [item.strip().rstrip("/") for item in v if isinstance(item, str) and item.strip()]
         return v
 
     @property
@@ -99,6 +99,13 @@ class Settings(BaseSettings):
 
 
     # Firebase Admin Configuration
+
+    # Enable Firestore synchronization (default true in production)
+    ENABLE_FIRESTORE_SYNC: bool = True
+
+    # Allow automatic device restoration for unknown identifiers (dangerous in prod)
+    ALLOW_AUTO_RESTORE: bool = False
+
 
     FIREBASE_CREDENTIALS_PATH: Optional[str] = None
     FIREBASE_CREDENTIALS_JSON: Optional[str] = None

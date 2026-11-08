@@ -59,6 +59,15 @@ async def lifespan(app: FastAPI):
         logger.warning("Firebase Admin initialization deferred: %s", fb_exc)
 
     db = SessionLocal()
+    # Verify Firestore sync configuration (fail fast if enabled but client unavailable)
+    from config import settings
+    if getattr(settings, "ENABLE_FIRESTORE_SYNC", False):
+        try:
+            from firebase_db import get_firestore_db
+            _ = get_firestore_db()
+        except Exception as e:
+            logger.error("Firestore synchronization is enabled but initialization failed: %s", e)
+            raise
     try:
         _seed_admin(db)
         _ensure_classifier()

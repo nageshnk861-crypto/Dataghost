@@ -15,7 +15,10 @@ _firestore_client: Optional[firestore.Client] = None
 
 
 def get_firestore_db() -> Optional[firestore.Client]:
-    """Get or initialize Firestore database client."""
+    """Get or initialize Firestore client.
+    In production (settings.ENABLE_FIRESTORE_SYNC=True) the client must be
+    available; otherwise a RuntimeError is raised so the application fails fast.
+    """
     global _firestore_client
     if _firestore_client is not None:
         return _firestore_client
@@ -33,7 +36,11 @@ def get_firestore_db() -> Optional[firestore.Client]:
             return _firestore_client
         except Exception as exc:
             logger.debug("Firestore client initialization deferred: %s", exc)
-            return None
+            # fall through
+    # If we reach here Firestore is not initialised
+    from config import settings
+    if getattr(settings, "ENABLE_FIRESTORE_SYNC", False):
+        raise RuntimeError("Firestore sync is enabled but the client could not be initialized. Check GOOGLE_APPLICATION_CREDENTIALS or FIREBASE_CREDENTIALS_PATH.")
     return None
 
 

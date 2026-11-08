@@ -447,7 +447,7 @@ async function tryProxyToBackend(
   const isVercel = Boolean(process.env.VERCEL || process.env.NEXT_PUBLIC_VERCEL_ENV);
 
   // In local dev, set ENABLE_MOCK_FALLBACK=true in .env.local to keep mock behaviour.
-  const mockFallbackEnabled = !isVercel && process.env.ENABLE_MOCK_FALLBACK === "true";
+  const mockFallbackEnabled = false; // Mock fallback disabled for production
 
   const backendUrl = (
     process.env.BACKEND_INTERNAL_URL ||

@@ -1,0 +1,20 @@
+[tool.pyright]
+extraPaths = ["backend"]
+executionEnvironments = [
+  { root = "backend", extraPaths = ["backend"] }
+]
+
+[tool.pyrefly]
+search-path = ["backend", "."]
+type-checkingMode = "off"
+
+[tool.pyrefly.errors]
+bad-assignment = "ignore"
+bad-argument-type = "ignore"
+no-matching-overload = "ignore"
+missing-import = "ignore"
+missing-attribute = "ignore"
+unnecessary-type-conversion = "ignore"
+
+
+

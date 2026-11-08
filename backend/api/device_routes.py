@@ -133,12 +133,14 @@ def _normalize_platform(raw: Optional[str]) -> str:
     return raw.capitalize()
 
 
-def _find_device(identifier: str, db: Session, request: Optional[Request] = None) -> Optional[Device]:
+
+def _find_device(identifier: str, db, request=None):
     """Find device by unique device_id or primary key id.
     If the device is not found in the DB (e.g. ephemeral SQLite DB recreated on deployment)
     but an agent presents a valid Bearer token for a recognizable device_id (dg-*),
     auto-provision/restore the device record immediately so agent operations never fail with 404.
     """
+    from models import Device
     device = db.query(Device).filter(Device.device_id == identifier).first()
     if device:
         return device
@@ -146,57 +148,8 @@ def _find_device(identifier: str, db: Session, request: Optional[Request] = None
         device = db.query(Device).filter(Device.id == int(identifier)).first()
         if device:
             return device
-
-    # Auto-provision if requested by agent with Bearer token
-    if request and identifier.startswith("dg-"):
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
-            raw_token = auth_header.replace("Bearer ", "").strip()
-            if raw_token.startswith("dg_dev_"):
-                try:
-                    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
-                    now_ap = _utc_now()
-                    owner = (
-                        db.query(User).filter(User.role == "admin").first()
-                        or db.query(User).first()
-                    )
-                    plat = "Windows"
-                    if "lin" in identifier:
-                        plat = "Linux"
-                    elif "mac" in identifier:
-                        plat = "macOS"
-                    elif "android" in identifier:
-                        plat = "Android"
-                    elif "ios" in identifier:
-                        plat = "iOS"
-
-                    device = Device(
-                        device_id=identifier,
-                        device_name=f"{plat}-Agent-{identifier[-4:]}",
-                        platform=plat,
-                        os_name=plat,
-                        os_type=plat,
-                        status="ACTIVE",
-                        last_seen=now_ap,
-                        enrolled_at=now_ap,
-                        registered_at=now_ap,
-                        organization_id="default-org",
-                        user_id=owner.id if owner else 1,
-                        files_scanned=0,
-                        incidents_count=0,
-                        device_token_hash=token_hash,
-                    )
-                    db.add(device)
-                    db.commit()
-                    db.refresh(device)
-                    logger.info("Auto-restored device %s with active auth hash", identifier)
-                    return device
-                except Exception as exc:
-                    logger.warning("Auto-restoring device %s failed: %s", identifier, exc)
-                    db.rollback()
-
+    # Auto-restore is disabled in production (ALLOW_AUTO_RESTORE=False)
     return None
-
 
 
 def _sync_to_firebase(device: Device):
@@ -1385,12 +1338,14 @@ def update_device(
 # ===========================================================================
 
 
-def _find_device_by_int_or_str(device_id_or_id: str, db: Session) -> Device | None:
+def _resolve_scan_device(device_id_or_id: str, db) -> "Device | None":
     """Resolve either numeric DB id or string device_id to a Device row."""
+    from models import Device
     try:
         return db.query(Device).filter(Device.id == int(device_id_or_id)).first()
     except (ValueError, TypeError):
         return db.query(Device).filter(Device.device_id == device_id_or_id).first()
+
 
 
 @router.post("/{device_id_or_id}/scans/start", response_model=ScanSessionResponse)

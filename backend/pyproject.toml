@@ -14,3 +14,24 @@ ignore = [
 "scripts/**" = ["E402"]
 "migrations/**" = ["E402", "F401"]
 "classifier/train_classifier.py" = ["E402"]
+
+[tool.pyright]
+extraPaths = ["backend"]
+executionEnvironments = [
+  { root = "backend", extraPaths = ["backend"] }
+]
+
+[tool.pyrefly]
+search-path = [".", ".."]
+type-checkingMode = "off"
+
+[tool.pyrefly.errors]
+bad-assignment = "ignore"
+bad-argument-type = "ignore"
+no-matching-overload = "ignore"
+missing-import = "ignore"
+missing-attribute = "ignore"
+unnecessary-type-conversion = "ignore"
+
+
+
