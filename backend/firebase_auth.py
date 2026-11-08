@@ -86,7 +86,21 @@ def initialize_firebase_admin() -> Optional[Any]:
     cred_path = settings.FIREBASE_CREDENTIALS_PATH or os.environ.get(
         "GOOGLE_APPLICATION_CREDENTIALS"
     )
+    cred_json = settings.FIREBASE_CREDENTIALS_JSON or os.environ.get(
+        "FIREBASE_CREDENTIALS_JSON"
+    )
     project_id = _FIREBASE_PROJECT_ID
+
+    if cred_json:
+        try:
+            import json
+            cred_dict = json.loads(cred_json) if isinstance(cred_json, str) else cred_json
+            cred = _fb_creds.Certificate(cred_dict)
+            _firebase_admin_app = firebase_admin.initialize_app(cred)
+            logger.info("Firebase Admin initialised with inline JSON credentials.")
+            return _firebase_admin_app
+        except Exception as json_err:
+            logger.warning("Service account JSON string could not be loaded: %s", json_err)
 
     if cred_path:
         # Resolve relative paths to the backend directory.

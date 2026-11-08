@@ -59,9 +59,15 @@ async def lifespan(app: FastAPI):
         logger.warning("Firebase Admin initialization deferred: %s", fb_exc)
 
     db = SessionLocal()
-    # Verify Firestore sync configuration (fail fast if enabled but client unavailable)
+    # Verify Firestore sync configuration (fail fast if enabled with credentials but client unavailable)
     from config import settings
-    if getattr(settings, "ENABLE_FIRESTORE_SYNC", False):
+    has_creds = bool(
+        getattr(settings, "FIREBASE_CREDENTIALS_PATH", None)
+        or getattr(settings, "FIREBASE_CREDENTIALS_JSON", None)
+        or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        or os.environ.get("FIREBASE_CREDENTIALS_JSON")
+    )
+    if getattr(settings, "ENABLE_FIRESTORE_SYNC", False) and has_creds:
         try:
             from firebase_db import get_firestore_db
             _ = get_firestore_db()

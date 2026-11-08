@@ -3,6 +3,7 @@ DataGhost – Firebase Firestore Sync Service.
 Mirrors incidents, devices, and scan events to Firestore cloud collections.
 """
 import logging
+import os
 from typing import Any, Dict, Optional
 
 import firebase_admin
@@ -39,7 +40,15 @@ def get_firestore_db() -> Optional[firestore.Client]:
             # fall through
     # If we reach here Firestore is not initialised
     from config import settings
-    if getattr(settings, "ENABLE_FIRESTORE_SYNC", False):
+    # If explicit credentials are not provided in environment, do not crash backend startup;
+    # log warning and allow FastAPI to run with local database.
+    has_creds = bool(
+        getattr(settings, "FIREBASE_CREDENTIALS_PATH", None)
+        or getattr(settings, "FIREBASE_CREDENTIALS_JSON", None)
+        or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        or os.environ.get("FIREBASE_CREDENTIALS_JSON")
+    )
+    if getattr(settings, "ENABLE_FIRESTORE_SYNC", False) and has_creds:
         raise RuntimeError("Firestore sync is enabled but the client could not be initialized. Check GOOGLE_APPLICATION_CREDENTIALS or FIREBASE_CREDENTIALS_PATH.")
     return None
 
