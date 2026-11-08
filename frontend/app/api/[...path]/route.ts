@@ -449,12 +449,17 @@ async function tryProxyToBackend(
   // In local dev, set ENABLE_MOCK_FALLBACK=true in .env.local to keep mock behaviour.
   const mockFallbackEnabled = false; // Mock fallback disabled for production
 
-  const backendUrl = (
+  let backendUrl = (
     process.env.BACKEND_INTERNAL_URL ||
     process.env.BACKEND_URL ||
     process.env.NEXT_PUBLIC_API_URL ||
     "https://dataghost.onrender.com"
   ).trim().replace(/\/+$/, "");
+
+  // Auto-correct stale render URL if present in env vars
+  if (backendUrl.includes("dataghost-1.onrender.com")) {
+    backendUrl = "https://dataghost.onrender.com";
+  }
 
   const searchParams = req.nextUrl.search;
   const target = `${backendUrl}${fullPath}${searchParams}`;
