@@ -365,13 +365,13 @@ def _extract_provisioning_id_from_token(authorization_token: str, db: Session) -
         DeviceProvisioning.bootstrap_token_hash == token_hash
     ).first()
     if prov:
-        return prov.id
+        return int(prov.id)
 
     enrollment = db.query(EnrollmentToken).filter(
         EnrollmentToken.token_hash == token_hash
     ).first()
     if enrollment:
-        return enrollment.id
+        return int(enrollment.id)
 
     return None
 
@@ -428,6 +428,7 @@ def bootstrap_enrollment(
     prov = _consume_provisioning_token(token_hash, db)
 
     # Support both request body and query parameters
+    model: Optional[str] = None
     if req is not None and req.device_platform:
         plat = req.device_platform
         model = req.device_model

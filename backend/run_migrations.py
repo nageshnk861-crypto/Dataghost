@@ -10,6 +10,7 @@ Handles safe migration startup on both Render (managed PostgreSQL) and local dev
 import os
 import sys
 import logging
+from typing import Optional
 from pathlib import Path
 from sqlalchemy import create_engine, inspect
 from alembic.config import Config
@@ -19,7 +20,7 @@ logger = logging.getLogger("migration_runner")
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 
-def run_safe_migrations(db_url: str = None) -> None:
+def run_safe_migrations(db_url: Optional[str] = None) -> None:
     backend_dir = Path(__file__).resolve().parent
     alembic_ini_path = backend_dir / "alembic.ini"
     alembic_cfg = Config(str(alembic_ini_path))

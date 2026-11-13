@@ -11,18 +11,24 @@ SECURITY:
   • JWT payloads embed only the username; role is resolved from the DB on every request.
 """
 from datetime import datetime, timedelta
+import logging
+import re
+import secrets
 from typing import Optional
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
 from passlib.context import CryptContext
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from config import settings
 from database import get_db
 from firebase_auth import verify_firebase_token
 from models import User
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Password hashing
@@ -77,55 +83,115 @@ def _resolve_firebase_user(firebase_claims: dict, db: Session) -> Optional[User]
     or email values unless the token signature has passed.
     """
     uid = firebase_claims.get("uid") or firebase_claims.get("sub")
+    if not uid:
+        logger.warning("Firebase claims missing uid and sub")
+        return None
+
     email = firebase_claims.get("email")
+    if email:
+        email = email.strip().lower()
+    email_verified = bool(firebase_claims.get("email_verified", False))
     name = firebase_claims.get("name") or firebase_claims.get("display_name")
 
-    # Derive a safe username from email or UID.
+    # 1. Look up by Firebase UID (canonical, primary path)
+    user = db.query(User).filter(User.firebase_uid == uid).first()
+    if user:
+        return user if user.is_active else None
+
+    # 2. Fallback: look up by verified email (safe linking for pre-existing accounts)
+    if email and email_verified:
+        existing_by_email = db.query(User).filter(User.email == email).first()
+        if existing_by_email:
+            # Prevent account hijacking: never overwrite if already linked to another UID
+            if existing_by_email.firebase_uid and existing_by_email.firebase_uid != uid:
+                logger.warning(
+                    "Security alert: Firebase UID %s attempted to claim email %s already bound to UID %s",
+                    uid, email, existing_by_email.firebase_uid,
+                )
+                # Do NOT link or overwrite. Will fall through to safe isolated creation.
+            elif existing_by_email.firebase_uid == uid:
+                return existing_by_email if existing_by_email.is_active else None
+            else:
+                # Account exists without firebase_uid (e.g. legacy password or seeded user).
+                # Safe to link because email is verified by Firebase.
+                try:
+                    existing_by_email.firebase_uid = uid
+                    db.commit()
+                    db.refresh(existing_by_email)
+                    return existing_by_email if existing_by_email.is_active else None
+                except IntegrityError:
+                    db.rollback()
+                    # Concurrent request may have linked or created
+                    user = db.query(User).filter(User.firebase_uid == uid).first()
+                    if user:
+                        return user if user.is_active else None
+
+    # 3. Provision a new account idempotently.
+    # Derive a base username from email, name, or UID (never trust username for linking).
     if email:
-        username = email.split("@")[0]
+        clean_prefix = re.sub(r"[^a-zA-Z0-9_\-]", "", email.split("@")[0])[:32]
+        base_username = clean_prefix or "user"
     elif name:
-        # Strip spaces, keep ASCII letters/digits/hyphens, max 48 chars
-        username = "".join(c for c in name if c.isalnum() or c in "_-")[:48] or "user"
+        clean_name = re.sub(r"[^a-zA-Z0-9_\-]", "", name)[:32]
+        base_username = clean_name or "user"
     else:
-        username = (uid or "firebase_user")[:48]
+        clean_uid = re.sub(r"[^a-zA-Z0-9_\-]", "", str(uid))[:16]
+        base_username = f"user_{clean_uid}"
 
-    # 1. Look up by Firebase UID (canonical path)
-    user = None
-    if uid:
+    max_retries = 5
+    for attempt in range(max_retries):
+        # Check if user was created concurrently
         user = db.query(User).filter(User.firebase_uid == uid).first()
+        if user:
+            return user if user.is_active else None
 
-    # 2. Fallback: look up by email (for accounts created before firebase_uid column existed)
-    if not user and email:
-        user = db.query(User).filter(User.email == email).first()
-        if user and uid and not user.firebase_uid:
-            # Link the Firebase UID to the existing account.
-            user.firebase_uid = uid
-            db.commit()
-            db.refresh(user)
+        # Determine candidate username with safe collision handling
+        if attempt == 0:
+            candidate_username = base_username
+            if db.query(User).filter(User.username == candidate_username).first():
+                candidate_username = f"{base_username}_{secrets.token_hex(3)}"
+        else:
+            candidate_username = f"{base_username}_{secrets.token_hex(3)}"
 
-    # 3. Auto-provision a new account for verified Firebase identities.
-    if not user:
-        # Ensure username uniqueness (email prefix may collide).
-        base_username = username
-        suffix = 1
-        while db.query(User).filter(User.username == username).first():
-            username = f"{base_username}{suffix}"
-            suffix += 1
+        # Determine candidate email (ensure unique constraint won't conflict)
+        if email:
+            email_exists = db.query(User).filter(User.email == email).first()
+            if email_exists and email_exists.firebase_uid != uid:
+                candidate_email = f"{candidate_username}@firebase.dataghost.local"
+            else:
+                candidate_email = email
+        else:
+            candidate_email = f"{candidate_username}@firebase.dataghost.local"
 
-        user = User(
-            username=username,
-            email=email or f"{username}@firebase.dataghost.local",
-            # A dummy non-usable hash – this account is Firebase-managed.
-            hashed_password=get_password_hash("firebase_managed_auth"),
-            role="analyst",   # Always least-privilege for self-registered accounts
+        new_user = User(
+            username=candidate_username[:64],
+            email=candidate_email[:255] if candidate_email else None,
+            hashed_password=get_password_hash(secrets.token_urlsafe(32)),
+            role="analyst",  # Always least-privilege for new accounts; existing roles preserved
             is_active=True,
             firebase_uid=uid,
         )
-        db.add(user)
-        db.commit()
-        db.refresh(user)
 
-    return user if user.is_active else None
+        try:
+            db.add(new_user)
+            db.commit()
+            db.refresh(new_user)
+            return new_user if new_user.is_active else None
+        except IntegrityError:
+            db.rollback()
+            # Race condition: concurrent request may have inserted user with this firebase_uid
+            user = db.query(User).filter(User.firebase_uid == uid).first()
+            if user:
+                return user if user.is_active else None
+            # Otherwise it was a username/email collision -> loop retries with new random suffix
+            continue
+        except Exception:
+            db.rollback()
+            raise
+
+    # Final check after retries
+    user = db.query(User).filter(User.firebase_uid == uid).first()
+    return user if (user and user.is_active) else None
 
 
 # ---------------------------------------------------------------------------

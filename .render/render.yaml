@@ -19,16 +19,15 @@ services:
       - key: ACCESS_TOKEN_EXPIRE_MINUTES
         value: 1440
       - key: DATABASE_URL
-        value: sqlite:///./dataghost.db
-      - key: POSTGRES_USER
-        value: dataghost
-      - key: POSTGRES_PASSWORD
-        generateValue: true
-      - key: POSTGRES_DB
-        value: dataghost
-      - key: POSTGRES_HOST
-        value: localhost
-      - key: POSTGRES_PORT
-        value: 5432
+        fromDatabase:
+          name: dataghost-db
+          property: connectionString
       - key: CORS_ORIGINS
-        value: "https://dataghost-five.vercel.app"
+        value: "https://dataghost-five.vercel.app,https://dataghost.onrender.com"
+
+databases:
+  - name: dataghost-db
+    plan: free
+    region: oregon
+    databaseName: dataghost
+    user: dataghost

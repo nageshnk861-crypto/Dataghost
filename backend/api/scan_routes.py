@@ -489,10 +489,10 @@ def _resolve_authorized_device_id(
         return "web-console"
 
     if getattr(current_user, "role", None) == "admin":
-        return dev.device_id
+        return str(dev.device_id)
 
     if dev.user_id is not None and str(dev.user_id) == str(current_user.id):
-        return dev.device_id
+        return str(dev.device_id)
 
     return "web-console"
 

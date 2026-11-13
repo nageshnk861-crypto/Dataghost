@@ -8,6 +8,7 @@ Usage:
 import os
 import sys
 import logging
+from typing import Optional
 
 # Allow running from the backend root directory.
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -290,7 +291,7 @@ def build_training_data():
     return texts, labels
 
 
-def train_and_save(model_dir: str = None):
+def train_and_save(model_dir: Optional[str] = None):
     """
     Train the TF-IDF + LinearSVC classifier and save it to model_dir.
 
