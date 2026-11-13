@@ -1,0 +1,16 @@
+search-path = [".", ".."]
+
+[errors]
+bad-assignment = "ignore"
+bad-argument-type = "ignore"
+no-matching-overload = "ignore"
+missing-import = "ignore"
+missing-attribute = "ignore"
+unnecessary-type-conversion = "ignore"
+bad-return = "ignore"
+unbound-name = "ignore"
+bad-function-definition = "ignore"
+bad-index = "ignore"
+attribute-assign-on-never = "ignore"
+untyped-import = "ignore"
+deprecated = "ignore"

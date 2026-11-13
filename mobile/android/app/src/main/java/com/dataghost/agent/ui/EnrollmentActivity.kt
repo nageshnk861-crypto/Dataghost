@@ -42,6 +42,19 @@ class EnrollmentActivity : AppCompatActivity() {
     private var scanButton: android.widget.Button? = null
     private var enrollButton: android.widget.Button? = null
 
+    // Guard against duplicate enrollment submissions
+    @Volatile private var isEnrolling = false
+
+    companion object {
+        /** Validates the DG-XXXX-XXXX enrollment code format. */
+        fun validateEnrollmentCode(code: String): Boolean =
+            Regex("^DG-[A-Z0-9]{4}-[A-Z0-9]{4}$").matches(code)
+
+        /** Validates that a server URL has an http:// or https:// scheme. */
+        fun validateServerUrl(url: String): Boolean =
+            url.startsWith("http://") || url.startsWith("https://")
+    }
+
     // Camera permission launcher
     private val cameraPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -193,12 +206,34 @@ class EnrollmentActivity : AppCompatActivity() {
                         id = android.R.id.button2
                         text = "Enroll Device"
                         setOnClickListener {
+                            if (isEnrolling) return@setOnClickListener
                             val serverUrl = serverUrlInput?.text?.toString()?.trim() ?: ""
                             val code = codeInput?.text?.toString()?.trim()?.uppercase() ?: ""
-                            if (serverUrl.isEmpty() || code.isEmpty()) {
-                                showError("Please enter both the server URL and enrollment code")
+
+                            // Server URL validation
+                            if (serverUrl.isEmpty()) {
+                                showError("Please enter the server URL")
+                                serverUrlInput?.requestFocus()
                                 return@setOnClickListener
                             }
+                            if (!validateServerUrl(serverUrl)) {
+                                showError("Server URL must start with http:// or https://")
+                                serverUrlInput?.requestFocus()
+                                return@setOnClickListener
+                            }
+
+                            // Enrollment code validation
+                            if (code.isEmpty()) {
+                                showError("Please enter the enrollment code")
+                                codeInput?.requestFocus()
+                                return@setOnClickListener
+                            }
+                            if (!validateEnrollmentCode(code)) {
+                                showError("Enrollment code must be in format DG-XXXX-XXXX (e.g. DG-8F3A-7B2C)")
+                                codeInput?.requestFocus()
+                                return@setOnClickListener
+                            }
+
                             performEnrollment(serverUrl = serverUrl, token = "", code = code)
                         }
                         enrollButton = this
@@ -255,6 +290,8 @@ class EnrollmentActivity : AppCompatActivity() {
     // ── Enrollment ────────────────────────────────────────────────────────────
 
     private fun performEnrollment(serverUrl: String, token: String, code: String) {
+        if (isEnrolling) return
+        isEnrolling = true
         setStatus("Enrolling device…")
         setButtonsEnabled(false)
 
@@ -279,6 +316,7 @@ class EnrollmentActivity : AppCompatActivity() {
                     finish()
                 }, 1500)
             }.onFailure { err ->
+                isEnrolling = false
                 setStatus("")
                 showError("Enrollment failed: ${err.message}")
                 setButtonsEnabled(true)

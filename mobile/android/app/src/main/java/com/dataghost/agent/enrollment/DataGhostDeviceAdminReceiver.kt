@@ -4,6 +4,7 @@ import android.app.admin.DeviceAdminReceiver
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.PersistableBundle
 import android.util.Log
 import com.dataghost.agent.DataGhostApp
@@ -123,8 +124,15 @@ class DataGhostDeviceAdminReceiver : DeviceAdminReceiver() {
 
     // ── Core: Handle Provisioning Extras and Register with Backend ────────────
     private fun handleProvisioningComplete(context: Context, intent: Intent) {
-        val extras: PersistableBundle? =
+        val extras: PersistableBundle? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(
+                "android.app.extra.PROVISIONING_ADMIN_EXTRAS_BUNDLE",
+                PersistableBundle::class.java
+            )
+        } else {
+            @Suppress("DEPRECATION")
             intent.getParcelableExtra("android.app.extra.PROVISIONING_ADMIN_EXTRAS_BUNDLE")
+        }
 
         if (extras == null) {
             Log.w(TAG, "No PROVISIONING_ADMIN_EXTRAS_BUNDLE in intent — falling back to manual enrollment UI")

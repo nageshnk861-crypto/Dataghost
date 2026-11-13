@@ -4,6 +4,7 @@ import android.app.Activity
 import android.app.admin.DevicePolicyManager
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.os.PersistableBundle
 import android.util.Log
@@ -55,9 +56,15 @@ class AdminPolicyComplianceActivity : Activity() {
         setContentView(layout)
 
         // Read provisioning admin extras bundle
-        val adminExtras: PersistableBundle? = intent.getParcelableExtra(
-            DevicePolicyManager.EXTRA_PROVISIONING_ADMIN_EXTRAS_BUNDLE
-        )
+        val adminExtras: PersistableBundle? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(
+                DevicePolicyManager.EXTRA_PROVISIONING_ADMIN_EXTRAS_BUNDLE,
+                PersistableBundle::class.java
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra(DevicePolicyManager.EXTRA_PROVISIONING_ADMIN_EXTRAS_BUNDLE)
+        }
 
         val serverUrl = adminExtras?.getString(DataGhostDeviceAdminReceiver.EXTRA_SERVER_URL) ?: ""
         val token = adminExtras?.getString(DataGhostDeviceAdminReceiver.EXTRA_ENROLLMENT_TOKEN) ?: ""

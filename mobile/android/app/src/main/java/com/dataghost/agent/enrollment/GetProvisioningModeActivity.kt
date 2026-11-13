@@ -37,9 +37,15 @@ class GetProvisioningModeActivity : Activity() {
         Log.i(TAG, "Allowed provisioning modes: $allowedModes")
 
         // Read the admin extras bundle
-        val adminExtras: PersistableBundle? = intent.getParcelableExtra(
-            DevicePolicyManager.EXTRA_PROVISIONING_ADMIN_EXTRAS_BUNDLE
-        )
+        val adminExtras: PersistableBundle? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(
+                DevicePolicyManager.EXTRA_PROVISIONING_ADMIN_EXTRAS_BUNDLE,
+                PersistableBundle::class.java
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra(DevicePolicyManager.EXTRA_PROVISIONING_ADMIN_EXTRAS_BUNDLE)
+        }
 
         // Select mode: Prioritize Fully Managed if allowed, otherwise Managed Profile
         val selectedMode = when {
